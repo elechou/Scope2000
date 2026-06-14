@@ -1,0 +1,238 @@
+use std::time::Instant;
+
+use crate::app::ScopeApp;
+use crate::console::LogLevel;
+use crate::source::{
+    CAP_CAL, CAP_DAQ_LIVE, CAP_DAQ_SNAPSHOT, CAP_NATIVE_BLOCK, CAP_PRE_TRIGGER, ParamWrite,
+    ScopeConfig, ScopeMode, SourceCommand, TriggerEdge, VarDescriptor,
+};
+use crate::wave::pane::PaneKind;
+
+impl ScopeApp {
+    pub(in crate::app) fn send(&self, command: SourceCommand) {
+        let _ = self.source.commands.send(command);
+    }
+
+    pub(in crate::app) fn connect(&mut self) {
+        let Some(endpoint) = self.hardware.endpoint() else {
+            self.log
+                .push(LogLevel::Warn, "Select a serial port first".to_owned());
+            return;
+        };
+        self.hardware.connecting = true;
+        self.hardware.info = None;
+        self.hardware.status = None;
+        self.send(SourceCommand::Connect(endpoint));
+    }
+
+    pub(in crate::app) fn disconnect_or_warn(&mut self) {
+        if self.hardware.is_running() {
+            self.ui.stop_warning_action = Some("Disconnect");
+        } else {
+            self.send(SourceCommand::Disconnect);
+        }
+    }
+
+    pub(in crate::app) fn poll_watch_reads(&mut self) {
+        if !self.hardware.connected || !self.has_capability(CAP_CAL) {
+            return;
+        }
+        if Instant::now() < self.next_watch_read {
+            return;
+        }
+        for (start, count) in self.inspector.read_ranges() {
+            self.send(SourceCommand::ReadValues { start, count });
+        }
+        self.next_watch_read = Instant::now() + super::super::WATCH_READ_PERIOD;
+    }
+
+    pub(in crate::app) fn write_variables(&mut self, writes: Vec<(usize, f64)>) {
+        if !self.hardware.connected || !self.has_capability(CAP_CAL) {
+            self.log
+                .push(LogLevel::Warn, "CAL capability is not available".to_owned());
+            return;
+        }
+        let param_writes: Vec<ParamWrite> = writes
+            .into_iter()
+            .filter_map(|(index, value)| self.inspector.param_write_for(index, value))
+            .collect();
+        if param_writes.is_empty() {
+            return;
+        }
+        if param_writes.len() > 16 {
+            self.log.push(
+                LogLevel::Error,
+                format!(
+                    "Parameter commit rejected: {} writes exceed the native batch limit of 16",
+                    param_writes.len()
+                ),
+            );
+            return;
+        }
+        self.send(SourceCommand::WriteParams(param_writes));
+        self.send(SourceCommand::CommitParams);
+    }
+
+    pub(in crate::app) fn start_acquisition(&mut self, mode: ScopeMode) {
+        if !self.hardware.connected {
+            self.log.push(LogLevel::Warn, "Not connected".to_owned());
+            return;
+        }
+        if !self.has_capability(CAP_NATIVE_BLOCK) {
+            self.log.push(
+                LogLevel::Warn,
+                "NATIVE_BLOCK capability is not available".to_owned(),
+            );
+            return;
+        }
+        if mode == ScopeMode::Live && !self.has_capability(CAP_DAQ_LIVE) {
+            self.log.push(
+                LogLevel::Warn,
+                "DAQ_LIVE capability is not available".to_owned(),
+            );
+            return;
+        }
+        if mode == ScopeMode::SnapshotArmed && !self.has_capability(CAP_DAQ_SNAPSHOT) {
+            self.log.push(
+                LogLevel::Warn,
+                "DAQ_SNAPSHOT capability is not available".to_owned(),
+            );
+            return;
+        }
+        if mode == ScopeMode::SnapshotArmed && !self.has_capability(CAP_PRE_TRIGGER) {
+            self.log.push(
+                LogLevel::Warn,
+                "Device does not declare PRE_TRIGGER capability".to_owned(),
+            );
+        }
+
+        self.wave.settings.clamp();
+        let pane_vars = self.collect_time_series_vars();
+        let binding = self.resolve_scope_binding(&pane_vars);
+        if binding.is_empty() {
+            self.log.push(
+                LogLevel::Warn,
+                "Add scope-capable variables to a Time Series pane first".to_owned(),
+            );
+            return;
+        }
+
+        self.plot_data.set_max_points(self.wave.settings.max_points);
+        self.wave.pending_binding = binding.clone();
+        self.wave.settings_snapshot = self.wave.settings.clone();
+        self.wave.pane_vars_snapshot = pane_vars;
+
+        let group = self.wave.settings.group;
+        self.send(SourceCommand::ConfigureScope(ScopeConfig {
+            group,
+            mode: ScopeMode::Off,
+            trigger_slot: 0,
+            trigger_level: 0.0,
+            trigger_edge: TriggerEdge::Rise,
+            pre_trigger_percent: 0,
+            prescaler: self.wave.settings.prescaler,
+            block_ticks: self.wave.settings.block_ticks,
+        }));
+        self.send(SourceCommand::BindChannels {
+            group,
+            channels: binding.iter().map(|descriptor| descriptor.var).collect(),
+        });
+        self.send(SourceCommand::ConfigureScope(
+            self.scope_config(mode, &binding),
+        ));
+        self.log.push(
+            LogLevel::Info,
+            format!(
+                "Acquisition start: group {} {}, {} channel(s)",
+                group,
+                mode_name(mode),
+                binding.len()
+            ),
+        );
+    }
+
+    pub(in crate::app) fn stop_acquisition(&mut self) {
+        let group = self.wave.settings.group;
+        self.send(SourceCommand::ConfigureScope(ScopeConfig {
+            group,
+            mode: ScopeMode::Off,
+            trigger_slot: 0,
+            trigger_level: 0.0,
+            trigger_edge: TriggerEdge::Rise,
+            pre_trigger_percent: 0,
+            prescaler: self.wave.settings.prescaler,
+            block_ticks: self.wave.settings.block_ticks,
+        }));
+        self.wave.active = false;
+        self.wave.restart_pending = None;
+    }
+
+    pub(in crate::app) fn restart_acquisition(&mut self, mode: ScopeMode) {
+        self.stop_acquisition();
+        self.wave.restart_pending = Some(mode);
+    }
+
+    fn scope_config(&self, mode: ScopeMode, binding: &[VarDescriptor]) -> ScopeConfig {
+        let trigger_slot = self
+            .wave
+            .settings
+            .trigger_source
+            .as_ref()
+            .and_then(|name| {
+                binding
+                    .iter()
+                    .position(|descriptor| &descriptor.name == name)
+                    .map(|index| index as u16)
+            })
+            .unwrap_or(0);
+        ScopeConfig {
+            group: self.wave.settings.group,
+            mode,
+            trigger_slot,
+            trigger_level: self.wave.settings.trigger_level,
+            trigger_edge: self.wave.settings.trigger_edge,
+            pre_trigger_percent: self.wave.settings.pre_trigger_percent,
+            prescaler: self.wave.settings.prescaler,
+            block_ticks: self.wave.settings.block_ticks,
+        }
+    }
+
+    fn collect_time_series_vars(&self) -> Vec<String> {
+        let mut names = Vec::new();
+        for id in self.viewport.tree.tiles.tile_ids() {
+            let Some(egui_tiles::Tile::Pane(pane)) = self.viewport.tree.tiles.get(id) else {
+                continue;
+            };
+            if pane.kind != PaneKind::TimeSeries {
+                continue;
+            }
+            for series in &pane.series {
+                if !names.contains(&series.var_name) {
+                    names.push(series.var_name.clone());
+                }
+            }
+        }
+        names
+    }
+
+    fn resolve_scope_binding(&self, names: &[String]) -> Vec<VarDescriptor> {
+        names
+            .iter()
+            .filter_map(|name| self.inspector.descriptor_by_name(name))
+            .filter(|descriptor| descriptor.is_scope())
+            .take(8)
+            .cloned()
+            .collect()
+    }
+}
+
+fn mode_name(mode: ScopeMode) -> &'static str {
+    match mode {
+        ScopeMode::Off => "off",
+        ScopeMode::Live => "live",
+        ScopeMode::SnapshotArmed => "snapshot",
+        ScopeMode::SnapshotTriggered => "triggered",
+        ScopeMode::SnapshotFrozen => "frozen",
+        ScopeMode::Unknown(_) => "unknown",
+    }
+}
