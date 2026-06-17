@@ -76,10 +76,6 @@ pub struct VarDescriptor {
     pub name: String,
     pub var: VarRef,
     pub kind: u16,
-    pub min: f32,
-    pub max: f32,
-    pub scale: f32,
-    pub offset: f32,
     pub prescaler: u16,
     pub group: u16,
 }
@@ -159,7 +155,6 @@ pub struct DeviceStatus {
     pub system_state: u16,
     pub fault_code: u16,
     pub status_flags: u16,
-    pub unguarded_writes: u16,
     pub tick: u32,
     pub cpu1_heartbeat: u32,
     pub cpu2_heartbeat: u32,

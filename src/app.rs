@@ -171,11 +171,8 @@ impl ScopeApp {
                 status.tick, status.cpu1_heartbeat, status.cpu2_heartbeat
             ));
             ui.monospace(format!(
-                "cal seq={} result={} fail={} unguarded={}",
-                status.applied_seq,
-                status.calibration_result,
-                status.calibration_fail_index,
-                status.unguarded_writes
+                "cal seq={} result={} fail={}",
+                status.applied_seq, status.calibration_result, status.calibration_fail_index
             ));
             ui.monospace(format!(
                 "scope g0={} g1={} g2={} g3={}",

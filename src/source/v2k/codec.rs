@@ -64,10 +64,6 @@ fn read_u32(data: &[u8], offset: usize) -> Result<u32, CodecError> {
     })?))
 }
 
-fn read_f32(data: &[u8], offset: usize) -> Result<f32, CodecError> {
-    Ok(f32::from_bits(read_u32(data, offset)?))
-}
-
 fn put_u16(data: &mut Vec<u8>, value: u16) {
     data.extend_from_slice(&value.to_le_bytes());
 }
@@ -236,32 +232,31 @@ pub fn parse_hello(payload: &[u8]) -> Result<DeviceInfo, CodecError> {
 }
 
 pub fn parse_status(payload: &[u8]) -> Result<DeviceStatus, CodecError> {
-    if payload.len() < 36 {
+    if payload.len() < 42 {
         return Err(CodecError::MalformedPayload("STATUS is shorter than v1"));
     }
     Ok(DeviceStatus {
         system_state: read_u16(payload, 0)?,
         fault_code: read_u16(payload, 2)?,
         status_flags: read_u16(payload, 4)?,
-        unguarded_writes: read_u16(payload, 6)?,
-        tick: read_u32(payload, 8)?,
-        cpu1_heartbeat: read_u32(payload, 12)?,
-        cpu2_heartbeat: read_u32(payload, 16)?,
-        applied_seq: read_u32(payload, 20)?,
-        calibration_result: read_u16(payload, 24)?,
-        calibration_fail_index: read_u16(payload, 26)?,
-        build_hash: read_u32(payload, 28)?,
+        tick: read_u32(payload, 6)?,
+        cpu1_heartbeat: read_u32(payload, 10)?,
+        cpu2_heartbeat: read_u32(payload, 14)?,
+        applied_seq: read_u32(payload, 18)?,
+        calibration_result: read_u16(payload, 22)?,
+        calibration_fail_index: read_u16(payload, 24)?,
+        build_hash: read_u32(payload, 26)?,
         scope_modes: [
+            ScopeMode::from_wire(payload[30]),
+            ScopeMode::from_wire(payload[31]),
             ScopeMode::from_wire(payload[32]),
             ScopeMode::from_wire(payload[33]),
-            ScopeMode::from_wire(payload[34]),
-            ScopeMode::from_wire(payload[35]),
         ],
-        command_ack_seq: (payload.len() >= 44)
-            .then(|| read_u32(payload, 36))
+        command_ack_seq: (payload.len() >= 42)
+            .then(|| read_u32(payload, 34))
             .transpose()?,
-        command_result: (payload.len() >= 44)
-            .then(|| read_u16(payload, 40))
+        command_result: (payload.len() >= 42)
+            .then(|| read_u16(payload, 38))
             .transpose()?,
     })
 }
@@ -273,12 +268,12 @@ pub fn parse_descriptors(payload: &[u8]) -> Result<(u16, u16, Vec<VarDescriptor>
     let total = read_u16(payload, 0)?;
     let start = read_u16(payload, 2)?;
     let count = usize::from(payload[4]);
-    if payload.len() != 6 + count * 44 {
+    if payload.len() != 6 + count * 28 {
         return Err(CodecError::MalformedPayload("ENUM entry count"));
     }
     let mut descriptors = Vec::with_capacity(count);
     for index in 0..count {
-        let entry = &payload[6 + index * 44..6 + (index + 1) * 44];
+        let entry = &payload[6 + index * 28..6 + (index + 1) * 28];
         let name_len = entry[..16]
             .iter()
             .position(|&value| value == 0)
@@ -292,12 +287,8 @@ pub fn parse_descriptors(payload: &[u8]) -> Result<(u16, u16, Vec<VarDescriptor>
                 ty,
             },
             kind: read_u16(entry, 18)?,
-            min: read_f32(entry, 24)?,
-            max: read_f32(entry, 28)?,
-            scale: read_f32(entry, 32)?,
-            offset: read_f32(entry, 36)?,
-            prescaler: read_u16(entry, 40)?,
-            group: read_u16(entry, 42)?,
+            prescaler: read_u16(entry, 24)?,
+            group: read_u16(entry, 26)?,
         });
     }
     Ok((total, start, descriptors))

@@ -139,9 +139,8 @@ impl InspectorState {
             let Some(raw) = descriptor.var.ty.decode(&bits.to_le_bytes()) else {
                 continue;
             };
-            let physical = raw * f64::from(descriptor.scale) + f64::from(descriptor.offset);
             if let Some(slot) = self.values.get_mut(index) {
-                *slot = Some(physical);
+                *slot = Some(raw);
             }
         }
     }
@@ -185,15 +184,9 @@ impl InspectorState {
         if !descriptor.is_parameter() {
             return None;
         }
-        let scale = f64::from(descriptor.scale);
-        let raw = if scale == 0.0 {
-            value
-        } else {
-            (value - f64::from(descriptor.offset)) / scale
-        };
         Some(ParamWrite {
             var: descriptor.var,
-            value_bits: descriptor.var.ty.encode_value_bits(raw),
+            value_bits: descriptor.var.ty.encode_value_bits(value),
         })
     }
 }
@@ -275,10 +268,6 @@ mod tests {
                 ty: VarType::F32,
             },
             kind: 0,
-            min: 0.0,
-            max: 1.0,
-            scale: 1.0,
-            offset: 0.0,
             prescaler: 1,
             group: 0,
         }

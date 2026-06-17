@@ -129,8 +129,7 @@ impl PlotData {
                     .ty
                     .decode(&block.samples[offset..offset + width])
                     .ok_or_else(|| "sample type decode failed".to_owned())?;
-                let physical = raw * f64::from(descriptor.scale) + f64::from(descriptor.offset);
-                self.push(&descriptor.name, time, physical);
+                self.push(&descriptor.name, time, raw);
                 offset += width;
             }
         }
@@ -143,15 +142,11 @@ mod tests {
     use super::*;
     use crate::source::{ScopeBlock, VarRef, VarType};
 
-    fn descriptor(name: &str, ty: VarType, scale: f32, offset: f32) -> VarDescriptor {
+    fn descriptor(name: &str, ty: VarType) -> VarDescriptor {
         VarDescriptor {
             name: name.to_owned(),
             var: VarRef { addr: 0, ty },
             kind: 0,
-            min: 0.0,
-            max: 1.0,
-            scale,
-            offset,
             prescaler: 1,
             group: 0,
         }
@@ -160,11 +155,11 @@ mod tests {
     #[test]
     fn native_block_decode_preserves_wire_width_until_plot_boundary() {
         let binding = vec![
-            descriptor("i16", VarType::I16, 0.5, 1.0),
-            descriptor("u16", VarType::U16, 1.0, 0.0),
-            descriptor("i32", VarType::I32, 1.0, 0.0),
-            descriptor("u32", VarType::U32, 1.0, 0.0),
-            descriptor("f32", VarType::F32, 2.0, 0.0),
+            descriptor("i16", VarType::I16),
+            descriptor("u16", VarType::U16),
+            descriptor("i32", VarType::I32),
+            descriptor("u32", VarType::U32),
+            descriptor("f32", VarType::F32),
         ];
         let mut samples = Vec::new();
         samples.extend_from_slice(&(-2_i16).to_le_bytes());
@@ -185,16 +180,16 @@ mod tests {
         let mut data = PlotData::new(100);
         data.append_block(&block, &binding, 0, 1_000, 1)
             .expect("append block");
-        assert_eq!(data.series["i16"].values[0], 0.0);
+        assert_eq!(data.series["i16"].values[0], -2.0);
         assert_eq!(data.series["u16"].values[0], 7.0);
         assert_eq!(data.series["i32"].values[0], -3.0);
         assert_eq!(data.series["u32"].values[0], 9.0);
-        assert_eq!(data.series["f32"].values[0], 3.0);
+        assert_eq!(data.series["f32"].values[0], 1.5);
     }
 
     #[test]
     fn stream_gap_inserts_nan_breaks() {
-        let binding = vec![descriptor("signal", VarType::F32, 1.0, 0.0)];
+        let binding = vec![descriptor("signal", VarType::F32)];
         let mut data = PlotData::new(100);
         data.push("signal", 1.0, 2.0);
         data.append_gap(&binding);
