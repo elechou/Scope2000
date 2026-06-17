@@ -77,7 +77,6 @@ pub struct VarDescriptor {
     pub var: VarRef,
     pub kind: u16,
     pub prescaler: u16,
-    pub group: u16,
 }
 
 impl VarDescriptor {
@@ -109,8 +108,8 @@ impl DeviceInfo {
 
 pub const CAP_ENUM: u32 = 1 << 0;
 pub const CAP_CAL: u32 = 1 << 1;
-pub const CAP_DAQ_LIVE: u32 = 1 << 2;
-pub const CAP_DAQ_SNAPSHOT: u32 = 1 << 3;
+pub const CAP_SCOPE_STREAM: u32 = 1 << 2;
+pub const CAP_SCOPE_CAPTURE: u32 = 1 << 3;
 pub const CAP_PRE_TRIGGER: u32 = 1 << 4;
 pub const CAP_SYSTEM_CMD: u32 = 1 << 5;
 pub const CAP_NATIVE_BLOCK: u32 = 1 << 6;
@@ -119,10 +118,10 @@ pub const CAP_NATIVE_BLOCK: u32 = 1 << 6;
 pub enum ScopeMode {
     #[default]
     Off,
-    Live,
-    SnapshotArmed,
-    SnapshotTriggered,
-    SnapshotFrozen,
+    Stream,
+    CaptureArmed,
+    CapturePost,
+    CaptureFrozen,
     Unknown(u8),
 }
 
@@ -130,10 +129,10 @@ impl ScopeMode {
     pub fn from_wire(value: u8) -> Self {
         match value {
             0 => Self::Off,
-            1 => Self::Live,
-            2 => Self::SnapshotArmed,
-            3 => Self::SnapshotTriggered,
-            4 => Self::SnapshotFrozen,
+            1 => Self::Stream,
+            2 => Self::CaptureArmed,
+            3 => Self::CapturePost,
+            4 => Self::CaptureFrozen,
             other => Self::Unknown(other),
         }
     }
@@ -141,10 +140,10 @@ impl ScopeMode {
     pub fn wire_value(self) -> u8 {
         match self {
             Self::Off => 0,
-            Self::Live => 1,
-            Self::SnapshotArmed => 2,
-            Self::SnapshotTriggered => 3,
-            Self::SnapshotFrozen => 4,
+            Self::Stream => 1,
+            Self::CaptureArmed => 2,
+            Self::CapturePost => 3,
+            Self::CaptureFrozen => 4,
             Self::Unknown(value) => value,
         }
     }
@@ -162,7 +161,8 @@ pub struct DeviceStatus {
     pub calibration_result: u16,
     pub calibration_fail_index: u16,
     pub build_hash: u32,
-    pub scope_modes: [ScopeMode; 4],
+    pub scope_mode: ScopeMode,
+    pub scope_flags: u8,
     pub command_ack_seq: Option<u32>,
     pub command_result: Option<u16>,
 }
@@ -171,7 +171,7 @@ pub struct DeviceStatus {
 pub struct ScopeBlock {
     pub start_tick: u32,
     pub block_seq: u16,
-    pub group: u16,
+    pub flags: u16,
     pub sample_count: u16,
     pub channel_count: u16,
     pub bind_seq: u16,
@@ -187,7 +187,6 @@ pub enum TriggerEdge {
 
 #[derive(Debug, Clone)]
 pub struct ScopeConfig {
-    pub group: u8,
     pub mode: ScopeMode,
     pub trigger_slot: u16,
     pub trigger_level: f32,
@@ -227,7 +226,7 @@ pub enum SourceCommand {
     WriteParams(Vec<ParamWrite>),
     CommitParams,
     ReadValues { start: u16, count: u8 },
-    BindChannels { group: u8, channels: Vec<VarRef> },
+    BindChannels { channels: Vec<VarRef> },
     ConfigureScope(ScopeConfig),
     SystemCommand(SystemCommand),
 }
@@ -248,16 +247,13 @@ pub enum SourceEvent {
         values: Vec<u32>,
     },
     ChannelsBound {
-        group: u8,
         bind_sequence: u16,
     },
     ScopeConfigured {
-        group: u8,
         mode: ScopeMode,
     },
     Blocks(Vec<ScopeBlock>),
     StreamGap {
-        group: u8,
         expected: u16,
         received: u16,
     },

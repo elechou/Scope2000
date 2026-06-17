@@ -175,11 +175,9 @@ impl ScopeApp {
                 status.applied_seq, status.calibration_result, status.calibration_fail_index
             ));
             ui.monospace(format!(
-                "scope g0={} g1={} g2={} g3={}",
-                self.hardware.scope_mode_label(0),
-                self.hardware.scope_mode_label(1),
-                self.hardware.scope_mode_label(2),
-                self.hardware.scope_mode_label(3),
+                "scope={} flags=0x{:02X}",
+                self.hardware.scope_mode_label(),
+                status.scope_flags,
             ));
             ui.monospace(format!(
                 "cmd ack={} result={}",
@@ -320,9 +318,9 @@ impl eframe::App for ScopeApp {
                 ) {
                     use crate::wave::panel::WaveAction;
                     match action {
-                        WaveAction::StartLive => self.start_acquisition(ScopeMode::Live),
-                        WaveAction::ArmSnapshot => {
-                            self.start_acquisition(ScopeMode::SnapshotArmed);
+                        WaveAction::StartStream => self.start_acquisition(ScopeMode::Stream),
+                        WaveAction::ArmCapture => {
+                            self.start_acquisition(ScopeMode::CaptureArmed);
                         }
                         WaveAction::Stop => self.stop_acquisition(),
                         WaveAction::Restart(mode) => self.restart_acquisition(mode),

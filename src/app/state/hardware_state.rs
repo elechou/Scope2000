@@ -67,18 +67,17 @@ impl HardwareState {
         })
     }
 
-    pub fn scope_mode_label(&self, group: usize) -> &'static str {
+    pub fn scope_mode_label(&self) -> &'static str {
         let Some(status) = &self.status else {
             return "unknown";
         };
-        match status.scope_modes.get(group).copied() {
-            Some(ScopeMode::Off) => "off",
-            Some(ScopeMode::Live) => "live",
-            Some(ScopeMode::SnapshotArmed) => "armed",
-            Some(ScopeMode::SnapshotTriggered) => "triggered",
-            Some(ScopeMode::SnapshotFrozen) => "frozen",
-            Some(ScopeMode::Unknown(_)) => "unknown",
-            None => "unknown",
+        match status.scope_mode {
+            ScopeMode::Off => "off",
+            ScopeMode::Stream => "stream",
+            ScopeMode::CaptureArmed => "capture armed",
+            ScopeMode::CapturePost => "capture post",
+            ScopeMode::CaptureFrozen => "capture frozen",
+            ScopeMode::Unknown(_) => "unknown",
         }
     }
 }

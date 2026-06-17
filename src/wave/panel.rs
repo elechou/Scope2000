@@ -18,8 +18,8 @@ use super::csv::CsvState;
 
 /// Actions produced by the wave panel that the caller must handle.
 pub enum WaveAction {
-    StartLive,
-    ArmSnapshot,
+    StartStream,
+    ArmCapture,
     Stop,
     Restart(ScopeMode),
 }
@@ -56,17 +56,17 @@ pub fn show_wave_section(
 
     ui.horizontal(|ui| {
         let w = (ui.available_width() - ui.spacing().item_spacing.x * 2.0) / 3.0;
-        if theme::action_button_w(ui, "Live", theme::GREEN, connected && !wave.active, w) {
-            action = Some(WaveAction::StartLive);
+        if theme::action_button_w(ui, "Stream", theme::GREEN, connected && !wave.active, w) {
+            action = Some(WaveAction::StartStream);
         }
         if theme::action_button_w(
             ui,
-            "Snapshot",
+            "Capture",
             theme::SELECT_BG,
             connected && !wave.active,
             w,
         ) {
-            action = Some(WaveAction::ArmSnapshot);
+            action = Some(WaveAction::ArmCapture);
         }
         if theme::action_button_w(
             ui,
@@ -93,9 +93,6 @@ pub fn show_wave_section(
     let mut any_dragging = false;
 
     ui.horizontal(|ui| {
-        ui.label("Group");
-        let r = ui.add(egui::DragValue::new(&mut wave.settings.group).range(0..=3));
-        any_dragging |= r.dragged();
         ui.label("Prescaler");
         let r = ui.add(
             egui::DragValue::new(&mut wave.settings.prescaler)
@@ -190,10 +187,10 @@ pub fn show_wave_section(
 fn mode_label(mode: ScopeMode) -> &'static str {
     match mode {
         ScopeMode::Off => "off",
-        ScopeMode::Live => "live",
-        ScopeMode::SnapshotArmed => "snapshot",
-        ScopeMode::SnapshotTriggered => "triggered",
-        ScopeMode::SnapshotFrozen => "frozen",
+        ScopeMode::Stream => "stream",
+        ScopeMode::CaptureArmed => "capture",
+        ScopeMode::CapturePost => "capture post",
+        ScopeMode::CaptureFrozen => "capture frozen",
         ScopeMode::Unknown(_) => "unknown",
     }
 }

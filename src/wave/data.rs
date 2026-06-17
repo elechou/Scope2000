@@ -94,13 +94,10 @@ impl PlotData {
         &mut self,
         block: &ScopeBlock,
         binding: &[VarDescriptor],
-        expected_group: u8,
         tick_hz: u32,
         prescaler: u16,
     ) -> Result<(), String> {
-        if block.group != u16::from(expected_group) {
-            return Err("block group does not match active acquisition".to_owned());
-        }
+        let _reserved_flags = block.flags;
         if binding.len() != usize::from(block.channel_count) {
             return Err("block channel count does not match active binding".to_owned());
         }
@@ -148,7 +145,6 @@ mod tests {
             var: VarRef { addr: 0, ty },
             kind: 0,
             prescaler: 1,
-            group: 0,
         }
     }
 
@@ -170,7 +166,7 @@ mod tests {
         let block = ScopeBlock {
             start_tick: 100,
             block_seq: 1,
-            group: 0,
+            flags: 0,
             sample_count: 1,
             channel_count: binding.len() as u16,
             bind_seq: 3,
@@ -178,7 +174,7 @@ mod tests {
             samples,
         };
         let mut data = PlotData::new(100);
-        data.append_block(&block, &binding, 0, 1_000, 1)
+        data.append_block(&block, &binding, 1_000, 1)
             .expect("append block");
         assert_eq!(data.series["i16"].values[0], -2.0);
         assert_eq!(data.series["u16"].values[0], 7.0);

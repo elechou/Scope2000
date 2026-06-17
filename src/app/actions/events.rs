@@ -71,24 +71,21 @@ impl ScopeApp {
                         format!("Value mirror sequence {mirror_sequence}"),
                     );
                 }
-                SourceEvent::ChannelsBound {
-                    group,
-                    bind_sequence,
-                } => {
+                SourceEvent::ChannelsBound { bind_sequence } => {
                     self.wave.binding = std::mem::take(&mut self.wave.pending_binding);
                     self.wave.bind_sequence = Some(bind_sequence);
                     self.plot_data.ensure_series(&self.wave.binding);
                     self.log.push(
                         LogLevel::Info,
-                        format!("Group {group} binding accepted as sequence {bind_sequence}"),
+                        format!("Scope binding accepted as sequence {bind_sequence}"),
                     );
                 }
-                SourceEvent::ScopeConfigured { group, mode } => {
+                SourceEvent::ScopeConfigured { mode } => {
                     self.wave.mode = mode;
                     self.wave.active = mode != ScopeMode::Off;
                     self.log.push(
                         LogLevel::Info,
-                        format!("Group {group} configured as {}", mode_label(mode)),
+                        format!("Scope configured as {}", mode_label(mode)),
                     );
                     if mode == ScopeMode::Off
                         && let Some(restart_mode) = self.wave.restart_pending.take()
@@ -112,7 +109,6 @@ impl ScopeApp {
                         if let Err(error) = self.plot_data.append_block(
                             &block,
                             &self.wave.binding,
-                            self.wave.settings_snapshot.group,
                             tick_hz,
                             self.wave.settings_snapshot.prescaler,
                         ) {
@@ -120,17 +116,11 @@ impl ScopeApp {
                         }
                     }
                 }
-                SourceEvent::StreamGap {
-                    group,
-                    expected,
-                    received,
-                } => {
+                SourceEvent::StreamGap { expected, received } => {
                     self.plot_data.append_gap(&self.wave.binding);
                     self.log.push(
                         LogLevel::Warn,
-                        format!(
-                            "Group {group} block gap: expected {expected}, received {received}"
-                        ),
+                        format!("Scope block gap: expected {expected}, received {received}"),
                     );
                 }
                 SourceEvent::DeviceChanged { old_hash, new_hash } => {
@@ -174,10 +164,10 @@ fn clear_device_session_state(
 fn mode_label(mode: ScopeMode) -> &'static str {
     match mode {
         ScopeMode::Off => "off",
-        ScopeMode::Live => "live",
-        ScopeMode::SnapshotArmed => "snapshot armed",
-        ScopeMode::SnapshotTriggered => "snapshot triggered",
-        ScopeMode::SnapshotFrozen => "snapshot frozen",
+        ScopeMode::Stream => "stream",
+        ScopeMode::CaptureArmed => "capture armed",
+        ScopeMode::CapturePost => "capture post",
+        ScopeMode::CaptureFrozen => "capture frozen",
         ScopeMode::Unknown(_) => "unknown",
     }
 }
@@ -196,7 +186,6 @@ mod tests {
             },
             kind: 0x0002,
             prescaler: 1,
-            group: 0,
         }
     }
 

@@ -1,7 +1,6 @@
 pub mod codec;
 pub mod transport;
 
-use std::collections::HashMap;
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -15,7 +14,7 @@ use crate::source::{
     SourceHandle, TransportEndpoint,
 };
 
-const EXPECTED_CONTRACT_VERSION: u16 = 3;
+const EXPECTED_CONTRACT_VERSION: u16 = 4;
 #[cfg(not(test))]
 const REQUEST_TIMEOUT: Duration = Duration::from_millis(150);
 #[cfg(test)]
@@ -47,8 +46,8 @@ struct Session {
     decoder: FrameDecoder,
     next_sequence: u16,
     info: DeviceInfo,
-    active_groups: [bool; 4],
-    expected_block_sequence: HashMap<u8, u16>,
+    scope_active: bool,
+    expected_block_sequence: Option<u16>,
     next_status: Instant,
     next_block_poll: Instant,
 }
@@ -71,8 +70,8 @@ impl Session {
                 tick_hz: 0,
                 capabilities: 0,
             },
-            active_groups: [false; 4],
-            expected_block_sequence: HashMap::new(),
+            scope_active: false,
+            expected_block_sequence: None,
             next_status: now,
             next_block_poll: now,
         };
@@ -215,18 +214,17 @@ impl Session {
                     },
                 );
             }
-            SourceCommand::BindChannels { group, channels } => {
+            SourceCommand::BindChannels { channels } => {
                 let response = self.request(
                     codec::message::DAQ_BIND,
-                    &codec::daq_bind_request(group, &channels),
+                    &codec::daq_bind_request(&channels),
                     events,
                 )?;
                 let ack = require_ack(&response, codec::message::DAQ_BIND)?;
-                self.expected_block_sequence.remove(&group);
+                self.expected_block_sequence = None;
                 send_event(
                     events,
                     SourceEvent::ChannelsBound {
-                        group,
                         bind_sequence: ack.data as u16,
                     },
                 );
@@ -238,17 +236,8 @@ impl Session {
                     events,
                 )?;
                 require_ack(&response, codec::message::DAQ_CONTROL)?;
-                let group = usize::from(config.group);
-                if group < self.active_groups.len() {
-                    self.active_groups[group] = config.mode != ScopeMode::Off;
-                }
-                send_event(
-                    events,
-                    SourceEvent::ScopeConfigured {
-                        group: config.group,
-                        mode: config.mode,
-                    },
-                );
+                self.scope_active = config.mode != ScopeMode::Off;
+                send_event(events, SourceEvent::ScopeConfigured { mode: config.mode });
             }
             SourceCommand::SystemCommand(command) => {
                 let response = self.request(
@@ -285,51 +274,44 @@ impl Session {
     }
 
     fn poll_blocks(&mut self, events: &mpsc::Sender<SourceEvent>) -> Result<()> {
-        let mut backlog = false;
-        for group in 0..self.active_groups.len() {
-            if !self.active_groups[group] {
-                continue;
-            }
-            let response = self.request(
-                codec::message::BLOCK_REQUEST,
-                &codec::block_request(group as u8, 2),
-                events,
-            )?;
-            let batch = codec::parse_block_batch(&response.payload)?;
-            if batch.mode == ScopeMode::Off {
-                self.active_groups[group] = false;
-            }
-            backlog |= batch.remaining_hint != 0;
-            for block in &batch.blocks {
-                if let Some(expected) = self.expected_block_sequence.get(&batch.group).copied()
-                    && block.block_seq != expected
-                {
-                    send_event(
-                        events,
-                        SourceEvent::StreamGap {
-                            group: batch.group,
-                            expected,
-                            received: block.block_seq,
-                        },
-                    );
-                }
-                self.expected_block_sequence
-                    .insert(batch.group, block.block_seq.wrapping_add(1));
-            }
-            if batch.overrun_count != 0 {
+        if !self.scope_active {
+            self.next_block_poll = Instant::now() + BLOCK_POLL_PERIOD;
+            return Ok(());
+        }
+
+        let response = self.request(
+            codec::message::BLOCK_REQUEST,
+            &codec::block_request(2),
+            events,
+        )?;
+        let batch = codec::parse_block_batch(&response.payload)?;
+        if batch.mode == ScopeMode::Off {
+            self.scope_active = false;
+        }
+        for block in &batch.blocks {
+            if let Some(expected) = self.expected_block_sequence
+                && block.block_seq != expected
+            {
                 send_event(
                     events,
-                    SourceEvent::Log(format!(
-                        "group {} producer overruns: {}",
-                        batch.group, batch.overrun_count
-                    )),
+                    SourceEvent::StreamGap {
+                        expected,
+                        received: block.block_seq,
+                    },
                 );
             }
-            if !batch.blocks.is_empty() {
-                send_event(events, SourceEvent::Blocks(batch.blocks));
-            }
+            self.expected_block_sequence = Some(block.block_seq.wrapping_add(1));
         }
-        self.next_block_poll = if backlog {
+        if batch.overrun_count != 0 {
+            send_event(
+                events,
+                SourceEvent::Log(format!("scope producer overruns: {}", batch.overrun_count)),
+            );
+        }
+        if !batch.blocks.is_empty() {
+            send_event(events, SourceEvent::Blocks(batch.blocks));
+        }
+        self.next_block_poll = if batch.remaining_hint != 0 {
             Instant::now()
         } else {
             Instant::now() + BLOCK_POLL_PERIOD
@@ -488,7 +470,7 @@ mod tests {
             decoder: FrameDecoder::default(),
             next_sequence: 1,
             info: DeviceInfo {
-                protocol_version: 1,
+                protocol_version: 2,
                 contract_version: EXPECTED_CONTRACT_VERSION,
                 build_hash: 0,
                 descriptor_count: 0,
@@ -496,8 +478,8 @@ mod tests {
                 tick_hz: 0,
                 capabilities: 0,
             },
-            active_groups: [false; 4],
-            expected_block_sequence: HashMap::new(),
+            scope_active: false,
+            expected_block_sequence: None,
             next_status: now,
             next_block_poll: now,
         };
@@ -510,7 +492,7 @@ mod tests {
     #[test]
     fn incompatible_contract_is_rejected() {
         let mut payload = Vec::new();
-        payload.extend_from_slice(&1_u16.to_le_bytes());
+        payload.extend_from_slice(&2_u16.to_le_bytes());
         payload.extend_from_slice(&2_u16.to_le_bytes());
         payload.resize(36, 0);
         let info = codec::parse_hello(&payload).expect("parse old contract");
@@ -529,7 +511,7 @@ mod tests {
             decoder: FrameDecoder::default(),
             next_sequence: 1,
             info: DeviceInfo {
-                protocol_version: 1,
+                protocol_version: 2,
                 contract_version: EXPECTED_CONTRACT_VERSION,
                 build_hash: 0,
                 descriptor_count: 0,
@@ -537,8 +519,8 @@ mod tests {
                 tick_hz: 0,
                 capabilities: 0,
             },
-            active_groups: [false; 4],
-            expected_block_sequence: HashMap::new(),
+            scope_active: false,
+            expected_block_sequence: None,
             next_status: now,
             next_block_poll: now,
         };

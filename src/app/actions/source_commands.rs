@@ -3,7 +3,7 @@ use std::time::Instant;
 use crate::app::ScopeApp;
 use crate::console::LogLevel;
 use crate::source::{
-    CAP_CAL, CAP_DAQ_LIVE, CAP_DAQ_SNAPSHOT, CAP_NATIVE_BLOCK, CAP_PRE_TRIGGER, ParamWrite,
+    CAP_CAL, CAP_NATIVE_BLOCK, CAP_PRE_TRIGGER, CAP_SCOPE_CAPTURE, CAP_SCOPE_STREAM, ParamWrite,
     ScopeConfig, ScopeMode, SourceCommand, TriggerEdge, VarDescriptor,
 };
 use crate::wave::pane::PaneKind;
@@ -85,21 +85,21 @@ impl ScopeApp {
             );
             return;
         }
-        if mode == ScopeMode::Live && !self.has_capability(CAP_DAQ_LIVE) {
+        if mode == ScopeMode::Stream && !self.has_capability(CAP_SCOPE_STREAM) {
             self.log.push(
                 LogLevel::Warn,
-                "DAQ_LIVE capability is not available".to_owned(),
+                "SCOPE_STREAM capability is not available".to_owned(),
             );
             return;
         }
-        if mode == ScopeMode::SnapshotArmed && !self.has_capability(CAP_DAQ_SNAPSHOT) {
+        if mode == ScopeMode::CaptureArmed && !self.has_capability(CAP_SCOPE_CAPTURE) {
             self.log.push(
                 LogLevel::Warn,
-                "DAQ_SNAPSHOT capability is not available".to_owned(),
+                "SCOPE_CAPTURE capability is not available".to_owned(),
             );
             return;
         }
-        if mode == ScopeMode::SnapshotArmed && !self.has_capability(CAP_PRE_TRIGGER) {
+        if mode == ScopeMode::CaptureArmed && !self.has_capability(CAP_PRE_TRIGGER) {
             self.log.push(
                 LogLevel::Warn,
                 "Device does not declare PRE_TRIGGER capability".to_owned(),
@@ -122,9 +122,7 @@ impl ScopeApp {
         self.wave.settings_snapshot = self.wave.settings.clone();
         self.wave.pane_vars_snapshot = pane_vars;
 
-        let group = self.wave.settings.group;
         self.send(SourceCommand::ConfigureScope(ScopeConfig {
-            group,
             mode: ScopeMode::Off,
             trigger_slot: 0,
             trigger_level: 0.0,
@@ -134,7 +132,6 @@ impl ScopeApp {
             block_ticks: self.wave.settings.block_ticks,
         }));
         self.send(SourceCommand::BindChannels {
-            group,
             channels: binding.iter().map(|descriptor| descriptor.var).collect(),
         });
         self.send(SourceCommand::ConfigureScope(
@@ -143,8 +140,7 @@ impl ScopeApp {
         self.log.push(
             LogLevel::Info,
             format!(
-                "Acquisition start: group {} {}, {} channel(s)",
-                group,
+                "Acquisition start: {}, {} channel(s)",
                 mode_name(mode),
                 binding.len()
             ),
@@ -152,9 +148,7 @@ impl ScopeApp {
     }
 
     pub(in crate::app) fn stop_acquisition(&mut self) {
-        let group = self.wave.settings.group;
         self.send(SourceCommand::ConfigureScope(ScopeConfig {
-            group,
             mode: ScopeMode::Off,
             trigger_slot: 0,
             trigger_level: 0.0,
@@ -186,7 +180,6 @@ impl ScopeApp {
             })
             .unwrap_or(0);
         ScopeConfig {
-            group: self.wave.settings.group,
             mode,
             trigger_slot,
             trigger_level: self.wave.settings.trigger_level,
@@ -229,10 +222,10 @@ impl ScopeApp {
 fn mode_name(mode: ScopeMode) -> &'static str {
     match mode {
         ScopeMode::Off => "off",
-        ScopeMode::Live => "live",
-        ScopeMode::SnapshotArmed => "snapshot",
-        ScopeMode::SnapshotTriggered => "triggered",
-        ScopeMode::SnapshotFrozen => "frozen",
+        ScopeMode::Stream => "stream",
+        ScopeMode::CaptureArmed => "capture",
+        ScopeMode::CapturePost => "capture post",
+        ScopeMode::CaptureFrozen => "capture frozen",
         ScopeMode::Unknown(_) => "unknown",
     }
 }

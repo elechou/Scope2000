@@ -181,7 +181,6 @@ mod tests {
             },
             kind: 0,
             prescaler: 1,
-            group: 0,
         }
     }
 

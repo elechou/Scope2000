@@ -4,7 +4,7 @@ use crate::source::{
     DeviceInfo, DeviceStatus, ScopeBlock, ScopeMode, VarDescriptor, VarRef, VarType,
 };
 
-pub const WIRE_VERSION: u8 = 1;
+pub const WIRE_VERSION: u8 = 2;
 pub const VERSION_MAGIC: u8 = 0x50 | WIRE_VERSION;
 pub const MAX_PAYLOAD: usize = 1024;
 
@@ -204,7 +204,7 @@ impl FrameDecoder {
 
 pub fn parse_hello(payload: &[u8]) -> Result<DeviceInfo, CodecError> {
     if payload.len() < 28 {
-        return Err(CodecError::MalformedPayload("HELLO is shorter than v1"));
+        return Err(CodecError::MalformedPayload("HELLO is shorter than v2"));
     }
     let name_bytes = &payload[12..28];
     let name_len = name_bytes
@@ -233,7 +233,7 @@ pub fn parse_hello(payload: &[u8]) -> Result<DeviceInfo, CodecError> {
 
 pub fn parse_status(payload: &[u8]) -> Result<DeviceStatus, CodecError> {
     if payload.len() < 42 {
-        return Err(CodecError::MalformedPayload("STATUS is shorter than v1"));
+        return Err(CodecError::MalformedPayload("STATUS is shorter than v2"));
     }
     Ok(DeviceStatus {
         system_state: read_u16(payload, 0)?,
@@ -246,12 +246,8 @@ pub fn parse_status(payload: &[u8]) -> Result<DeviceStatus, CodecError> {
         calibration_result: read_u16(payload, 22)?,
         calibration_fail_index: read_u16(payload, 24)?,
         build_hash: read_u32(payload, 26)?,
-        scope_modes: [
-            ScopeMode::from_wire(payload[30]),
-            ScopeMode::from_wire(payload[31]),
-            ScopeMode::from_wire(payload[32]),
-            ScopeMode::from_wire(payload[33]),
-        ],
+        scope_mode: ScopeMode::from_wire(payload[30]),
+        scope_flags: payload[31],
         command_ack_seq: (payload.len() >= 42)
             .then(|| read_u32(payload, 34))
             .transpose()?,
@@ -288,7 +284,6 @@ pub fn parse_descriptors(payload: &[u8]) -> Result<(u16, u16, Vec<VarDescriptor>
             },
             kind: read_u16(entry, 18)?,
             prescaler: read_u16(entry, 24)?,
-            group: read_u16(entry, 26)?,
         });
     }
     Ok((total, start, descriptors))
@@ -314,7 +309,6 @@ pub fn parse_ack(payload: &[u8]) -> Result<Ack, CodecError> {
 
 #[derive(Debug)]
 pub struct BlockBatch {
-    pub group: u8,
     pub mode: ScopeMode,
     pub overrun_count: u16,
     pub remaining_hint: u16,
@@ -325,17 +319,14 @@ pub fn parse_block_batch(payload: &[u8]) -> Result<BlockBatch, CodecError> {
     if payload.len() < 8 {
         return Err(CodecError::MalformedPayload("BLOCK_DATA header"));
     }
-    let count = usize::from(payload[1]);
+    let count = usize::from(payload[0]);
     let mut offset = 8;
     let mut blocks = Vec::with_capacity(count);
     for _ in 0..count {
         if payload.len() < offset + 16 {
             return Err(CodecError::MalformedPayload("block header"));
         }
-        let block_group = read_u16(payload, offset + 6)?;
-        if block_group != u16::from(payload[0]) {
-            return Err(CodecError::MalformedPayload("block group mismatch"));
-        }
+        let flags = read_u16(payload, offset + 6)?;
         let sample_count = read_u16(payload, offset + 8)?;
         let stride = read_u16(payload, offset + 14)?;
         let sample_octets = usize::from(sample_count) * usize::from(stride);
@@ -346,7 +337,7 @@ pub fn parse_block_batch(payload: &[u8]) -> Result<BlockBatch, CodecError> {
         blocks.push(ScopeBlock {
             start_tick: read_u32(payload, offset)?,
             block_seq: read_u16(payload, offset + 4)?,
-            group: block_group,
+            flags,
             sample_count,
             channel_count: read_u16(payload, offset + 10)?,
             bind_seq: read_u16(payload, offset + 12)?,
@@ -359,8 +350,7 @@ pub fn parse_block_batch(payload: &[u8]) -> Result<BlockBatch, CodecError> {
         return Err(CodecError::MalformedPayload("trailing block data"));
     }
     Ok(BlockBatch {
-        group: payload[0],
-        mode: ScopeMode::from_wire(payload[2]),
+        mode: ScopeMode::from_wire(payload[1]),
         overrun_count: read_u16(payload, 4)?,
         remaining_hint: read_u16(payload, 6)?,
         blocks,
@@ -404,10 +394,10 @@ pub fn cal_read_request(start: u16, count: u8) -> Vec<u8> {
     payload
 }
 
-pub fn daq_bind_request(group: u8, channels: &[VarRef]) -> Vec<u8> {
+pub fn daq_bind_request(channels: &[VarRef]) -> Vec<u8> {
     let mut payload = Vec::with_capacity(2 + channels.len() * 8);
-    payload.push(group);
     payload.push(channels.len() as u8);
+    payload.push(0);
     for channel in channels {
         put_u32(&mut payload, channel.addr);
         put_u16(&mut payload, channel.ty as u16);
@@ -417,23 +407,25 @@ pub fn daq_bind_request(group: u8, channels: &[VarRef]) -> Vec<u8> {
 }
 
 pub fn daq_control_request(config: &crate::source::ScopeConfig) -> Vec<u8> {
-    let mut payload = Vec::with_capacity(14);
-    payload.push(config.group);
-    payload.push(config.mode.wire_value());
+    let mut payload = Vec::with_capacity(16);
+    put_u16(&mut payload, u16::from(config.mode.wire_value()));
     put_u16(&mut payload, config.trigger_slot);
     put_u32(&mut payload, config.trigger_level.to_bits());
-    payload.push(match config.trigger_edge {
-        crate::source::TriggerEdge::Rise => 0,
-        crate::source::TriggerEdge::Fall => 1,
-    });
-    payload.push(config.pre_trigger_percent);
+    put_u16(
+        &mut payload,
+        match config.trigger_edge {
+            crate::source::TriggerEdge::Rise => 0,
+            crate::source::TriggerEdge::Fall => 1,
+        },
+    );
+    put_u16(&mut payload, u16::from(config.pre_trigger_percent));
     put_u16(&mut payload, config.prescaler);
     put_u16(&mut payload, config.block_ticks);
     payload
 }
 
-pub fn block_request(group: u8, max_blocks: u8) -> Vec<u8> {
-    vec![group, max_blocks]
+pub fn block_request(max_blocks: u8) -> Vec<u8> {
+    vec![max_blocks, 0]
 }
 
 pub fn system_command_request(command: crate::source::SystemCommand) -> Vec<u8> {

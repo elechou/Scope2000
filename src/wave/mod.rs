@@ -14,7 +14,6 @@ use crate::source::{ScopeMode, TriggerEdge, VarDescriptor};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AcquisitionSettings {
-    pub group: u8,
     pub prescaler: u16,
     pub block_ticks: u16,
     pub trigger_source: Option<String>,
@@ -27,7 +26,6 @@ pub struct AcquisitionSettings {
 impl Default for AcquisitionSettings {
     fn default() -> Self {
         Self {
-            group: 0,
             prescaler: 1,
             block_ticks: 10,
             trigger_source: None,
@@ -41,7 +39,6 @@ impl Default for AcquisitionSettings {
 
 impl AcquisitionSettings {
     pub fn clamp(&mut self) {
-        self.group = self.group.min(3);
         self.prescaler = self.prescaler.clamp(1, 10_000);
         self.block_ticks = self.block_ticks.clamp(1, 100);
         self.pre_trigger_percent = self.pre_trigger_percent.min(100);
