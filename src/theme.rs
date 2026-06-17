@@ -285,6 +285,8 @@ pub fn apply_theme(ctx: &egui::Context) {
 /// 2x faster than egui's default `animation_time` (0.1s). Used only where
 /// we pre-tick an animation to override the global rate for a specific id.
 pub const FAST_ANIMATION_TIME: f32 = 0.05;
+const SIDE_PANEL_INNER_MARGIN_X: i8 = 8;
+const SIDE_PANEL_INNER_MARGIN_Y: i8 = 0;
 
 /// Pre-advance the expansion animation for an egui `Panel` at 2x speed.
 /// Call this just before `Panel::...show_animated_inside(...)` — egui's
@@ -302,17 +304,19 @@ pub fn pretick_panel_animation(ctx: &egui::Context, panel_id: &str, is_expanded:
 // ---- Helper widgets ----
 
 /// Full-width section header bar with dark background.
-/// Paints edge-to-edge by expanding to the panel's clip rect.
+/// Paints edge-to-edge by bleeding across the side-panel frame margins.
 pub fn section_header(ui: &mut egui::Ui, title: &str) -> egui::Response {
-    let desired = Vec2::new(ui.available_width(), 24.0);
+    let desired = Vec2::new(ui.max_rect().width(), 24.0);
     let (rect, response) = ui.allocate_exact_size(desired, egui::Sense::hover());
 
     if ui.is_rect_visible(rect) {
-        // Paint background to the full panel width (bleed past inner margins)
-        let paint_rect = egui::Rect::from_x_y_ranges(ui.clip_rect().x_range(), rect.y_range());
-        ui.painter().rect_filled(paint_rect, 0.0, TAB_BAR);
+        let paint_rect = egui::Rect::from_x_y_ranges(ui.max_rect().x_range(), rect.y_range())
+            .expand2(vec2(f32::from(SIDE_PANEL_INNER_MARGIN_X), 0.0));
+        let mut painter = ui.painter().clone();
+        painter.set_clip_rect(paint_rect);
+        painter.rect_filled(paint_rect, 0.0, TAB_BAR);
         let font_id = egui::TextStyle::Body.resolve(ui.style());
-        ui.painter().text(
+        painter.text(
             paint_rect.left_center() + vec2(8.0, 0.0),
             egui::Align2::LEFT_CENTER,
             title,
@@ -477,7 +481,7 @@ pub fn icon_button(ui: &mut egui::Ui, icon_uri: &str, text: &str, width: f32) ->
 /// Side panel frame (no separator, body bg).
 pub fn side_panel_frame() -> egui::Frame {
     egui::Frame {
-        inner_margin: egui::Margin::symmetric(8, 0),
+        inner_margin: egui::Margin::symmetric(SIDE_PANEL_INNER_MARGIN_X, SIDE_PANEL_INNER_MARGIN_Y),
         fill: BG_BODY,
         stroke: Stroke::NONE,
         ..Default::default()

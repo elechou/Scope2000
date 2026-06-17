@@ -128,15 +128,22 @@ impl ScopeApp {
                 }
             });
 
+        let button_gap = ui.spacing().item_spacing.x;
+        let pair_button_w = ((ui.available_width() - button_gap) / 2.0).max(0.0);
         ui.horizontal(|ui| {
             let can_connect = !self.hardware.connected
                 && !self.hardware.connecting
                 && !self.hardware.port.is_empty();
-            if theme::action_button_w(ui, "Connect", theme::GREEN, can_connect, 110.0) {
+            if theme::action_button_w(ui, "Connect", theme::GREEN, can_connect, pair_button_w) {
                 self.connect();
             }
-            if theme::action_button_w(ui, "Disconnect", theme::RED, self.hardware.connected, 110.0)
-            {
+            if theme::action_button_w(
+                ui,
+                "Disconnect",
+                theme::RED,
+                self.hardware.connected,
+                pair_button_w,
+            ) {
                 self.disconnect_or_warn();
             }
         });
@@ -189,14 +196,18 @@ impl ScopeApp {
         theme::section_header(ui, "System");
         ui.add_space(4.0);
         let enabled = self.hardware.connected && self.has_capability(CAP_SYSTEM_CMD);
+        let button_gap = ui.spacing().item_spacing.x;
+        let start_w = 70.0;
+        let stop_w = 70.0;
+        let clear_w = (ui.available_width() - start_w - stop_w - button_gap * 2.0).max(0.0);
         ui.horizontal(|ui| {
-            if theme::action_button_w(ui, "Start", theme::GREEN, enabled, 70.0) {
+            if theme::action_button_w(ui, "Start", theme::GREEN, enabled, start_w) {
                 self.send(SourceCommand::SystemCommand(SystemCommand::Start));
             }
-            if theme::action_button_w(ui, "Stop", theme::RED, enabled, 70.0) {
+            if theme::action_button_w(ui, "Stop", theme::RED, enabled, stop_w) {
                 self.send(SourceCommand::SystemCommand(SystemCommand::Stop));
             }
-            if theme::action_button_w(ui, "Clear Fault", theme::WIDGET_BG, enabled, 90.0) {
+            if theme::action_button_w(ui, "Clear Fault", theme::WIDGET_BG, enabled, clear_w) {
                 self.send(SourceCommand::SystemCommand(SystemCommand::ClearFault));
             }
         });
