@@ -8,6 +8,8 @@ use crate::source::{
 };
 use crate::wave::pane::PaneKind;
 
+const KEEP_DEVICE_BLOCK_TICKS: u16 = 0;
+
 impl ScopeApp {
     pub(in crate::app) fn send(&self, command: SourceCommand) {
         let _ = self.source.commands.send(command);
@@ -116,8 +118,20 @@ impl ScopeApp {
             );
             return;
         }
+        if let Some(trigger_source) = &self.wave.settings.trigger_source
+            && !binding
+                .iter()
+                .any(|descriptor| &descriptor.name == trigger_source)
+        {
+            self.log.push(
+                LogLevel::Warn,
+                format!("Trigger source is not in the active scope binding: {trigger_source}"),
+            );
+            return;
+        }
 
-        self.plot_data.set_max_points(self.wave.settings.max_points);
+        self.plot_data.clear();
+        self.wave.capture_frame_blocks.clear();
         self.wave.pending_binding = binding.clone();
         self.wave.settings_snapshot = self.wave.settings.clone();
         self.wave.pane_vars_snapshot = pane_vars;
@@ -126,10 +140,11 @@ impl ScopeApp {
             mode: ScopeMode::Off,
             trigger_slot: 0,
             trigger_level: 0.0,
+            trigger_hysteresis: 0.0,
             trigger_edge: TriggerEdge::Rise,
             pre_trigger_percent: 0,
             prescaler: self.wave.settings.prescaler,
-            block_ticks: self.wave.settings.block_ticks,
+            block_ticks: KEEP_DEVICE_BLOCK_TICKS,
         }));
         self.send(SourceCommand::BindChannels {
             channels: binding.iter().map(|descriptor| descriptor.var).collect(),
@@ -140,7 +155,7 @@ impl ScopeApp {
         self.log.push(
             LogLevel::Info,
             format!(
-                "Acquisition start: {}, {} channel(s)",
+                "Wave start: {}, {} channel(s)",
                 mode_name(mode),
                 binding.len()
             ),
@@ -152,10 +167,11 @@ impl ScopeApp {
             mode: ScopeMode::Off,
             trigger_slot: 0,
             trigger_level: 0.0,
+            trigger_hysteresis: 0.0,
             trigger_edge: TriggerEdge::Rise,
             pre_trigger_percent: 0,
             prescaler: self.wave.settings.prescaler,
-            block_ticks: self.wave.settings.block_ticks,
+            block_ticks: KEEP_DEVICE_BLOCK_TICKS,
         }));
         self.wave.active = false;
         self.wave.restart_pending = None;
@@ -164,6 +180,23 @@ impl ScopeApp {
     pub(in crate::app) fn restart_acquisition(&mut self, mode: ScopeMode) {
         self.stop_acquisition();
         self.wave.restart_pending = Some(mode);
+    }
+
+    pub(in crate::app) fn rearm_capture(&mut self) {
+        if !self.hardware.connected
+            || !self.wave.active
+            || self.wave.restart_pending.is_some()
+            || self.wave.binding.is_empty()
+        {
+            return;
+        }
+        self.wave.capture_frame_blocks.clear();
+        self.wave.settings_snapshot = self.wave.settings.clone();
+        self.send(SourceCommand::ConfigureScope(
+            self.scope_config(ScopeMode::CaptureArmed, &self.wave.binding),
+        ));
+        self.log
+            .push(LogLevel::Debug, "Capture re-armed".to_owned());
     }
 
     fn scope_config(&self, mode: ScopeMode, binding: &[VarDescriptor]) -> ScopeConfig {
@@ -183,10 +216,11 @@ impl ScopeApp {
             mode,
             trigger_slot,
             trigger_level: self.wave.settings.trigger_level,
+            trigger_hysteresis: self.wave.settings.trigger_hysteresis,
             trigger_edge: self.wave.settings.trigger_edge,
             pre_trigger_percent: self.wave.settings.pre_trigger_percent,
             prescaler: self.wave.settings.prescaler,
-            block_ticks: self.wave.settings.block_ticks,
+            block_ticks: KEEP_DEVICE_BLOCK_TICKS,
         }
     }
 

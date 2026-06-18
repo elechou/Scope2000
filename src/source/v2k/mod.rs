@@ -14,7 +14,7 @@ use crate::source::{
     SourceHandle, TransportEndpoint,
 };
 
-const EXPECTED_CONTRACT_VERSION: u16 = 4;
+const EXPECTED_CONTRACT_VERSION: u16 = 6;
 #[cfg(not(test))]
 const REQUEST_TIMEOUT: Duration = Duration::from_millis(150);
 #[cfg(test)]
@@ -236,6 +236,7 @@ impl Session {
                     events,
                 )?;
                 require_ack(&response, codec::message::DAQ_CONTROL)?;
+                self.expected_block_sequence = None;
                 self.scope_active = config.mode != ScopeMode::Off;
                 send_event(events, SourceEvent::ScopeConfigured { mode: config.mode });
             }
@@ -288,19 +289,23 @@ impl Session {
         if batch.mode == ScopeMode::Off {
             self.scope_active = false;
         }
-        for block in &batch.blocks {
-            if let Some(expected) = self.expected_block_sequence
-                && block.block_seq != expected
-            {
-                send_event(
-                    events,
-                    SourceEvent::StreamGap {
-                        expected,
-                        received: block.block_seq,
-                    },
-                );
+        if batch.mode == ScopeMode::Stream {
+            for block in &batch.blocks {
+                if let Some(expected) = self.expected_block_sequence
+                    && block.block_seq != expected
+                {
+                    send_event(
+                        events,
+                        SourceEvent::StreamGap {
+                            expected,
+                            received: block.block_seq,
+                        },
+                    );
+                }
+                self.expected_block_sequence = Some(block.block_seq.wrapping_add(1));
             }
-            self.expected_block_sequence = Some(block.block_seq.wrapping_add(1));
+        } else {
+            self.expected_block_sequence = None;
         }
         if batch.overrun_count != 0 {
             send_event(
@@ -309,7 +314,15 @@ impl Session {
             );
         }
         if !batch.blocks.is_empty() {
-            send_event(events, SourceEvent::Blocks(batch.blocks));
+            send_event(
+                events,
+                SourceEvent::Blocks {
+                    mode: batch.mode,
+                    remaining_hint: batch.remaining_hint,
+                    trigger_tick: batch.trigger_tick,
+                    blocks: batch.blocks,
+                },
+            );
         }
         self.next_block_poll = if batch.remaining_hint != 0 {
             Instant::now()

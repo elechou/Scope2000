@@ -64,6 +64,25 @@ pub enum AxisRange {
     },
 }
 
+/// Time axis coordinate mode for TimeSeries panes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum TimeAxisMode {
+    #[default]
+    System,
+    TriggerRelative,
+}
+
+impl TimeAxisMode {
+    pub const ALL: &[Self] = &[Self::System, Self::TriggerRelative];
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::System => "System time",
+            Self::TriggerRelative => "Trigger = 0",
+        }
+    }
+}
+
 /// Serde adapter for egui::Color32 — serializes as "#RRGGBB".
 mod color32_serde {
     use eframe::egui;
@@ -139,6 +158,7 @@ pub struct ViewProperties {
     pub show_grid: bool,
     pub legend_visible: bool,
     pub legend_corner: LegendCorner,
+    pub time_axis_mode: TimeAxisMode,
     pub time_axis_range: AxisRange,
     pub scalar_axis_range: AxisRange,
     /// Last known auto-fit bounds from the plot (updated every frame, not persisted).
@@ -162,6 +182,7 @@ impl Default for ViewProperties {
             show_grid: true,
             legend_visible: true,
             legend_corner: LegendCorner::default(),
+            time_axis_mode: TimeAxisMode::default(),
             time_axis_range: AxisRange::Auto,
             scalar_axis_range: AxisRange::Auto,
             last_bounds_x: (0.0, 1.0),

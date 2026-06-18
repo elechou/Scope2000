@@ -12,7 +12,6 @@ impl ScopeApp {
         self.wave.settings = workspace.acquisition.clone();
         self.wave.settings.clamp();
         self.wave.settings_snapshot = self.wave.settings.clone();
-        self.plot_data.set_max_points(self.wave.settings.max_points);
 
         if !workspace.csv_export.snapshot_dir.is_empty() {
             self.csv.snapshot_dir = workspace.csv_export.snapshot_dir.clone();

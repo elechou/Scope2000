@@ -1,12 +1,12 @@
 use eframe::egui;
 use egui::Vec2;
-use egui_plot::{Axis, Legend, Line, PlotPoints};
+use egui_plot::{Axis, Legend, Line, LineStyle, PlotPoints, VLine};
 use egui_tiles::TileId;
 
 use super::MyTilesDelegate;
 use crate::theme;
 use crate::wave::dnd::VarDragPayload;
-use crate::wave::pane::{AxisRange, LegendCorner};
+use crate::wave::pane::{AxisRange, LegendCorner, TimeAxisMode};
 use crate::wave::selection::Selection;
 
 const GRID_SPACING_MIN_PX: f64 = 8.0;
@@ -115,6 +115,12 @@ impl<'a> MyTilesDelegate<'a> {
             mem.store(ui.ctx(), plot_id);
         }
 
+        let x_origin = match pane.properties.time_axis_mode {
+            TimeAxisMode::System => 0.0,
+            TimeAxisMode::TriggerRelative => self.data.trigger_time.unwrap_or(0.0),
+        };
+        let trigger_x = self.data.trigger_time.map(|time| time - x_origin);
+
         let series_data: Vec<_> = pane
             .series
             .iter()
@@ -124,7 +130,7 @@ impl<'a> MyTilesDelegate<'a> {
                         .times
                         .iter()
                         .zip(ts.values.iter())
-                        .map(|(&t, &v)| [t, v])
+                        .map(|(&t, &v)| [t - x_origin, v])
                         .collect();
                     (s.label().to_string(), s.color, points, s.width)
                 })
@@ -248,6 +254,16 @@ impl<'a> MyTilesDelegate<'a> {
                         if let AxisRange::Manual { min, max } = &scalar_range {
                             plot_ui.set_plot_bounds_y(*min..=*max);
                         }
+                    }
+
+                    if let Some(x) = trigger_x {
+                        plot_ui.vline(
+                            VLine::new("Trigger", x)
+                                .color(theme::YELLOW)
+                                .style(LineStyle::dashed_dense())
+                                .width(1.0)
+                                .allow_hover(false),
+                        );
                     }
 
                     for (name, color, points, width) in &series_data {

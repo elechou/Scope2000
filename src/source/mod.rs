@@ -190,6 +190,7 @@ pub struct ScopeConfig {
     pub mode: ScopeMode,
     pub trigger_slot: u16,
     pub trigger_level: f32,
+    pub trigger_hysteresis: f32,
     pub trigger_edge: TriggerEdge,
     pub pre_trigger_percent: u8,
     pub prescaler: u16,
@@ -252,7 +253,12 @@ pub enum SourceEvent {
     ScopeConfigured {
         mode: ScopeMode,
     },
-    Blocks(Vec<ScopeBlock>),
+    Blocks {
+        mode: ScopeMode,
+        remaining_hint: u16,
+        trigger_tick: Option<u32>,
+        blocks: Vec<ScopeBlock>,
+    },
     StreamGap {
         expected: u16,
         received: u16,

@@ -15,7 +15,7 @@ use crate::variable::InspectorState;
 use crate::wave::csv::CsvState;
 use crate::wave::data::PlotData;
 use crate::wave::viewer_panel::ViewportPanelState;
-use crate::wave::{WaveState, pane::PaneKind};
+use crate::wave::{PLOT_MAX_POINTS, WaveState, pane::PaneKind};
 
 use self::state::{AppConfig, HardwareState, UiState, ViewportState};
 
@@ -65,7 +65,7 @@ impl ScopeApp {
                 settings_snapshot: config.workspace.acquisition.clone(),
                 ..WaveState::default()
             },
-            plot_data: PlotData::new(config.workspace.acquisition.max_points),
+            plot_data: PlotData::new(PLOT_MAX_POINTS),
             csv: CsvState {
                 snapshot_dir: config.workspace.csv_export.snapshot_dir.clone(),
                 filename_template: config.workspace.csv_export.filename_template.clone(),
@@ -325,6 +325,7 @@ impl eframe::App for ScopeApp {
                     ui,
                     &mut self.wave,
                     self.hardware.connected,
+                    self.hardware.info.as_ref().map(|info| info.tick_hz),
                     &self.viewport.tree.tiles,
                 ) {
                     use crate::wave::panel::WaveAction;

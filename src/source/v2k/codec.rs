@@ -4,7 +4,7 @@ use crate::source::{
     DeviceInfo, DeviceStatus, ScopeBlock, ScopeMode, VarDescriptor, VarRef, VarType,
 };
 
-pub const WIRE_VERSION: u8 = 2;
+pub const WIRE_VERSION: u8 = 4;
 pub const VERSION_MAGIC: u8 = 0x50 | WIRE_VERSION;
 pub const MAX_PAYLOAD: usize = 1024;
 
@@ -204,7 +204,9 @@ impl FrameDecoder {
 
 pub fn parse_hello(payload: &[u8]) -> Result<DeviceInfo, CodecError> {
     if payload.len() < 28 {
-        return Err(CodecError::MalformedPayload("HELLO is shorter than v2"));
+        return Err(CodecError::MalformedPayload(
+            "HELLO is shorter than current layout",
+        ));
     }
     let name_bytes = &payload[12..28];
     let name_len = name_bytes
@@ -233,7 +235,9 @@ pub fn parse_hello(payload: &[u8]) -> Result<DeviceInfo, CodecError> {
 
 pub fn parse_status(payload: &[u8]) -> Result<DeviceStatus, CodecError> {
     if payload.len() < 42 {
-        return Err(CodecError::MalformedPayload("STATUS is shorter than v2"));
+        return Err(CodecError::MalformedPayload(
+            "STATUS is shorter than current layout",
+        ));
     }
     Ok(DeviceStatus {
         system_state: read_u16(payload, 0)?,
@@ -312,15 +316,18 @@ pub struct BlockBatch {
     pub mode: ScopeMode,
     pub overrun_count: u16,
     pub remaining_hint: u16,
+    pub trigger_tick: Option<u32>,
     pub blocks: Vec<ScopeBlock>,
 }
 
 pub fn parse_block_batch(payload: &[u8]) -> Result<BlockBatch, CodecError> {
-    if payload.len() < 8 {
+    if payload.len() < 12 {
         return Err(CodecError::MalformedPayload("BLOCK_DATA header"));
     }
     let count = usize::from(payload[0]);
-    let mut offset = 8;
+    let mode = ScopeMode::from_wire(payload[1]);
+    let trigger_tick = read_u32(payload, 8)?;
+    let mut offset = 12;
     let mut blocks = Vec::with_capacity(count);
     for _ in 0..count {
         if payload.len() < offset + 16 {
@@ -350,9 +357,10 @@ pub fn parse_block_batch(payload: &[u8]) -> Result<BlockBatch, CodecError> {
         return Err(CodecError::MalformedPayload("trailing block data"));
     }
     Ok(BlockBatch {
-        mode: ScopeMode::from_wire(payload[1]),
+        mode,
         overrun_count: read_u16(payload, 4)?,
         remaining_hint: read_u16(payload, 6)?,
+        trigger_tick: (mode == ScopeMode::CaptureFrozen).then_some(trigger_tick),
         blocks,
     })
 }
@@ -407,10 +415,11 @@ pub fn daq_bind_request(channels: &[VarRef]) -> Vec<u8> {
 }
 
 pub fn daq_control_request(config: &crate::source::ScopeConfig) -> Vec<u8> {
-    let mut payload = Vec::with_capacity(16);
+    let mut payload = Vec::with_capacity(20);
     put_u16(&mut payload, u16::from(config.mode.wire_value()));
     put_u16(&mut payload, config.trigger_slot);
     put_u32(&mut payload, config.trigger_level.to_bits());
+    put_u32(&mut payload, config.trigger_hysteresis.to_bits());
     put_u16(
         &mut payload,
         match config.trigger_edge {
@@ -526,7 +535,7 @@ mod tests {
                 );
             }
         }
-        assert_eq!(count, 24);
+        assert_eq!(count, 25);
     }
 
     #[test]
@@ -552,5 +561,49 @@ mod tests {
         let frames = decoder.push(&garbage);
         assert_eq!(frames.len(), 1);
         assert_eq!(frames[0].as_ref().expect("resynchronized").sequence, 7);
+    }
+
+    #[test]
+    fn block_batch_parses_capture_trigger_tick() {
+        let mut payload = vec![1, ScopeMode::CaptureFrozen.wire_value(), 0, 0];
+        payload.extend_from_slice(&0_u16.to_le_bytes());
+        payload.extend_from_slice(&0_u16.to_le_bytes());
+        payload.extend_from_slice(&1234_u32.to_le_bytes());
+        payload.extend_from_slice(&1200_u32.to_le_bytes());
+        payload.extend_from_slice(&9_u16.to_le_bytes());
+        payload.extend_from_slice(&0_u16.to_le_bytes());
+        payload.extend_from_slice(&1_u16.to_le_bytes());
+        payload.extend_from_slice(&1_u16.to_le_bytes());
+        payload.extend_from_slice(&2_u16.to_le_bytes());
+        payload.extend_from_slice(&4_u16.to_le_bytes());
+        payload.extend_from_slice(&0.5_f32.to_le_bytes());
+
+        let batch = parse_block_batch(&payload).expect("parse block batch");
+
+        assert_eq!(batch.mode, ScopeMode::CaptureFrozen);
+        assert_eq!(batch.trigger_tick, Some(1234));
+        assert_eq!(batch.blocks.len(), 1);
+        assert_eq!(batch.blocks[0].start_tick, 1200);
+    }
+
+    #[test]
+    fn daq_control_encodes_fixed_hysteresis_field() {
+        let payload = daq_control_request(&crate::source::ScopeConfig {
+            mode: ScopeMode::CaptureArmed,
+            trigger_slot: 1,
+            trigger_level: 2.5,
+            trigger_hysteresis: 0.05,
+            trigger_edge: crate::source::TriggerEdge::Rise,
+            pre_trigger_percent: 30,
+            prescaler: 1,
+            block_ticks: 10,
+        });
+
+        assert_eq!(payload.len(), 20);
+        assert_eq!(
+            read_u32(&payload, 8).expect("hysteresis bits"),
+            0.05_f32.to_bits()
+        );
+        assert_eq!(read_u16(&payload, 18).expect("block ticks"), 10);
     }
 }

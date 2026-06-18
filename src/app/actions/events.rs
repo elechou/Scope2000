@@ -1,8 +1,8 @@
-use std::time::Instant;
+use std::{cmp::Ordering, time::Instant};
 
 use crate::app::ScopeApp;
 use crate::console::LogLevel;
-use crate::source::{ScopeMode, SourceEvent};
+use crate::source::{ScopeBlock, ScopeMode, SourceEvent, VarDescriptor};
 use crate::variable::InspectorState;
 use crate::wave::{WaveState, data::PlotData};
 
@@ -93,31 +93,74 @@ impl ScopeApp {
                         self.start_acquisition(restart_mode);
                     }
                 }
-                SourceEvent::Blocks(blocks) => {
+                SourceEvent::Blocks {
+                    mode,
+                    remaining_hint,
+                    trigger_tick,
+                    blocks,
+                } => {
                     let tick_hz = self.hardware.info.as_ref().map_or(1, |info| info.tick_hz);
-                    for block in blocks {
-                        if !block_matches_binding(self.wave.bind_sequence, block.bind_seq) {
-                            self.log.push(
-                                LogLevel::Warn,
-                                format!(
-                                    "Discarded block {} with stale bind sequence {}",
-                                    block.block_seq, block.bind_seq
-                                ),
-                            );
-                            continue;
+                    self.wave.mode = mode;
+                    match mode {
+                        ScopeMode::Stream => {
+                            for block in blocks {
+                                if !block_matches_binding(self.wave.bind_sequence, block.bind_seq) {
+                                    self.log.push(
+                                        LogLevel::Warn,
+                                        format!(
+                                            "Discarded block {} with stale bind sequence {}",
+                                            block.block_seq, block.bind_seq
+                                        ),
+                                    );
+                                    continue;
+                                }
+                                if let Err(error) = self.plot_data.append_block(
+                                    &block,
+                                    &self.wave.binding,
+                                    tick_hz,
+                                    self.wave.settings_snapshot.prescaler,
+                                ) {
+                                    self.log.push(LogLevel::Warn, error);
+                                }
+                            }
                         }
-                        if let Err(error) = self.plot_data.append_block(
-                            &block,
-                            &self.wave.binding,
-                            tick_hz,
-                            self.wave.settings_snapshot.prescaler,
-                        ) {
-                            self.log.push(LogLevel::Warn, error);
+                        ScopeMode::CaptureFrozen => {
+                            for block in blocks {
+                                if !block_matches_binding(self.wave.bind_sequence, block.bind_seq) {
+                                    self.log.push(
+                                        LogLevel::Warn,
+                                        format!(
+                                            "Discarded block {} with stale bind sequence {}",
+                                            block.block_seq, block.bind_seq
+                                        ),
+                                    );
+                                    continue;
+                                }
+                                self.wave.capture_frame_blocks.push(block);
+                            }
+                            if remaining_hint == 0 {
+                                let mut frame_blocks =
+                                    std::mem::take(&mut self.wave.capture_frame_blocks);
+                                redraw_capture_frame(
+                                    &mut self.plot_data,
+                                    &mut frame_blocks,
+                                    &self.wave.binding,
+                                    tick_hz,
+                                    self.wave.settings_snapshot.prescaler,
+                                    trigger_tick,
+                                    &mut self.log,
+                                );
+                                self.rearm_capture();
+                            }
                         }
+                        ScopeMode::CaptureArmed | ScopeMode::CapturePost => {}
+                        ScopeMode::Off | ScopeMode::Unknown(_) => {}
                     }
                 }
                 SourceEvent::StreamGap { expected, received } => {
-                    self.plot_data.append_gap(&self.wave.binding);
+                    if self.wave.mode == ScopeMode::Stream {
+                        self.plot_data.append_gap(&self.wave.binding);
+                    }
                     self.log.push(
                         LogLevel::Warn,
                         format!("Scope block gap: expected {expected}, received {received}"),
@@ -149,6 +192,40 @@ impl ScopeApp {
 
 fn block_matches_binding(bind_sequence: Option<u16>, block_bind_sequence: u16) -> bool {
     bind_sequence == Some(block_bind_sequence)
+}
+
+fn redraw_capture_frame(
+    plot_data: &mut PlotData,
+    blocks: &mut [ScopeBlock],
+    binding: &[VarDescriptor],
+    tick_hz: u32,
+    prescaler: u16,
+    trigger_tick: Option<u32>,
+    log: &mut crate::console::LogBuffer,
+) {
+    sort_blocks_by_start_tick(blocks);
+    plot_data.clear();
+    if let Some(trigger_tick) = trigger_tick {
+        plot_data.set_trigger_tick(trigger_tick, tick_hz);
+    }
+    plot_data.ensure_series(binding);
+    for block in blocks.iter() {
+        if let Err(error) = plot_data.append_block(block, binding, tick_hz, prescaler) {
+            log.push(LogLevel::Warn, error);
+        }
+    }
+    log.push(
+        LogLevel::Info,
+        format!("Capture frame complete: {} block(s)", blocks.len()),
+    );
+}
+
+fn sort_blocks_by_start_tick(blocks: &mut [ScopeBlock]) {
+    blocks.sort_by(|left, right| compare_wrapped_tick(left.start_tick, right.start_tick));
+}
+
+fn compare_wrapped_tick(left: u32, right: u32) -> Ordering {
+    (left.wrapping_sub(right) as i32).cmp(&0)
 }
 
 fn clear_device_session_state(
@@ -189,11 +266,74 @@ mod tests {
         }
     }
 
+    fn f32_block(start_tick: u32, block_seq: u16, bind_seq: u16, value: f32) -> ScopeBlock {
+        ScopeBlock {
+            start_tick,
+            block_seq,
+            flags: 0,
+            sample_count: 1,
+            channel_count: 1,
+            bind_seq,
+            stride_octets: 4,
+            samples: value.to_le_bytes().to_vec(),
+        }
+    }
+
     #[test]
     fn stale_bind_sequence_is_discarded() {
         assert!(block_matches_binding(Some(7), 7));
         assert!(!block_matches_binding(Some(7), 6));
         assert!(!block_matches_binding(None, 7));
+    }
+
+    #[test]
+    fn capture_blocks_sort_by_wrapped_tick() {
+        let mut blocks = vec![
+            f32_block(10, 2, 1, 2.0),
+            f32_block(u32::MAX - 5, 1, 1, 1.0),
+            f32_block(20, 3, 1, 3.0),
+        ];
+
+        sort_blocks_by_start_tick(&mut blocks);
+
+        assert_eq!(
+            blocks
+                .iter()
+                .map(|block| block.start_tick)
+                .collect::<Vec<_>>(),
+            vec![u32::MAX - 5, 10, 20]
+        );
+    }
+
+    #[test]
+    fn capture_frame_redraw_replaces_existing_plot_data() {
+        let descriptor = descriptor("signal");
+        let binding = vec![descriptor.clone()];
+        let mut plot_data = PlotData::new(100);
+        plot_data.push(&descriptor.name, 99.0, 9.0);
+        let mut blocks = vec![f32_block(20, 2, 3, 2.0), f32_block(10, 1, 3, 1.0)];
+        let mut log = crate::console::LogBuffer::default();
+
+        redraw_capture_frame(
+            &mut plot_data,
+            &mut blocks,
+            &binding,
+            10,
+            1,
+            Some(15),
+            &mut log,
+        );
+
+        let series = &plot_data.series["signal"];
+        assert_eq!(plot_data.trigger_time, Some(1.5));
+        assert_eq!(
+            series.times.iter().copied().collect::<Vec<_>>(),
+            vec![1.0, 2.0]
+        );
+        assert_eq!(
+            series.values.iter().copied().collect::<Vec<_>>(),
+            vec![1.0, 2.0]
+        );
     }
 
     #[test]
@@ -204,10 +344,12 @@ mod tests {
             binding: vec![descriptor.clone()],
             pending_binding: vec![descriptor.clone()],
             bind_sequence: Some(3),
+            capture_frame_blocks: vec![f32_block(1, 1, 3, 1.0)],
             ..WaveState::default()
         };
         let mut plot_data = PlotData::new(100);
         plot_data.push(&descriptor.name, 1.0, 2.0);
+        plot_data.set_trigger_tick(10, 10);
         let mut inspector = InspectorState::default();
         inspector.set_descriptors(vec![descriptor]);
         inspector.pinned.push(0);
@@ -218,7 +360,9 @@ mod tests {
         assert!(wave.binding.is_empty());
         assert!(wave.pending_binding.is_empty());
         assert_eq!(wave.bind_sequence, None);
+        assert!(wave.capture_frame_blocks.is_empty());
         assert!(plot_data.series.is_empty());
+        assert_eq!(plot_data.trigger_time, None);
         assert!(inspector.descriptors.is_empty());
         assert!(inspector.pinned.is_empty());
     }

@@ -9,41 +9,70 @@ pub mod viewer_panel;
 
 use serde::{Deserialize, Serialize};
 
-use crate::source::{ScopeMode, TriggerEdge, VarDescriptor};
+use crate::source::{ScopeBlock, ScopeMode, TriggerEdge, VarDescriptor};
+
+pub const DEFAULT_TICK_HZ: u32 = 20_000;
+pub const MIN_PRESCALER: u16 = 1;
+pub const MAX_PRESCALER: u16 = 10_000;
+pub const PLOT_MAX_POINTS: usize = 50_000;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AcquisitionSettings {
     pub prescaler: u16,
-    pub block_ticks: u16,
     pub trigger_source: Option<String>,
     pub trigger_level: f32,
+    pub trigger_hysteresis: f32,
     pub pre_trigger_percent: u8,
     pub trigger_edge: TriggerEdge,
-    pub max_points: usize,
 }
 
 impl Default for AcquisitionSettings {
     fn default() -> Self {
         Self {
-            prescaler: 1,
-            block_ticks: 10,
+            prescaler: MIN_PRESCALER,
             trigger_source: None,
             trigger_level: 0.0,
+            trigger_hysteresis: 0.0,
             pre_trigger_percent: 50,
             trigger_edge: TriggerEdge::Rise,
-            max_points: 50_000,
         }
     }
 }
 
 impl AcquisitionSettings {
     pub fn clamp(&mut self) {
-        self.prescaler = self.prescaler.clamp(1, 10_000);
-        self.block_ticks = self.block_ticks.clamp(1, 100);
+        self.prescaler = self.prescaler.clamp(MIN_PRESCALER, MAX_PRESCALER);
+        if !self.trigger_hysteresis.is_finite() || self.trigger_hysteresis < 0.0 {
+            self.trigger_hysteresis = 0.0;
+        }
         self.pre_trigger_percent = self.pre_trigger_percent.min(100);
-        self.max_points = self.max_points.clamp(1_000, 2_000_000);
     }
+
+    pub fn sample_rate_hz(&self, tick_hz: u32) -> f64 {
+        f64::from(effective_tick_hz(tick_hz)) / f64::from(self.prescaler.max(1))
+    }
+
+    pub fn sample_interval_us(&self, tick_hz: u32) -> f64 {
+        f64::from(self.prescaler.max(1)) * 1_000_000.0 / f64::from(effective_tick_hz(tick_hz))
+    }
+
+    pub fn set_sample_interval_us(&mut self, tick_hz: u32, interval_us: f64) {
+        let tick_hz = effective_tick_hz(tick_hz);
+        let min_interval_us = 1_000_000.0 / f64::from(tick_hz);
+        let max_interval_us = f64::from(MAX_PRESCALER) * min_interval_us;
+        let interval_us = if interval_us.is_finite() {
+            interval_us.clamp(min_interval_us, max_interval_us)
+        } else {
+            min_interval_us
+        };
+        self.prescaler = ((interval_us * f64::from(tick_hz) / 1_000_000.0).round() as u16)
+            .clamp(MIN_PRESCALER, MAX_PRESCALER);
+    }
+}
+
+pub fn effective_tick_hz(tick_hz: u32) -> u32 {
+    tick_hz.max(1)
 }
 
 pub struct WaveState {
@@ -55,6 +84,7 @@ pub struct WaveState {
     pub settings: AcquisitionSettings,
     pub settings_snapshot: AcquisitionSettings,
     pub pane_vars_snapshot: Vec<String>,
+    pub capture_frame_blocks: Vec<ScopeBlock>,
     pub mode: ScopeMode,
 }
 
@@ -69,6 +99,7 @@ impl Default for WaveState {
             settings: AcquisitionSettings::default(),
             settings_snapshot: AcquisitionSettings::default(),
             pane_vars_snapshot: Vec::new(),
+            capture_frame_blocks: Vec::new(),
             mode: ScopeMode::Off,
         }
     }
@@ -81,6 +112,7 @@ impl WaveState {
         self.binding.clear();
         self.pending_binding.clear();
         self.bind_sequence = None;
+        self.capture_frame_blocks.clear();
         self.mode = ScopeMode::Off;
     }
 }

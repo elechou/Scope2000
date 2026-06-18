@@ -9,8 +9,8 @@ use crate::source::{ScopeMode, TriggerEdge};
 use crate::theme;
 use crate::wave::pane::PaneKind;
 
-use super::WaveState;
 use super::csv::CsvState;
+use super::{DEFAULT_TICK_HZ, MAX_PRESCALER, WaveState, effective_tick_hz};
 
 // ---------------------------------------------------------------------------
 // Wave section
@@ -47,11 +47,13 @@ pub fn show_wave_section(
     ui: &mut egui::Ui,
     wave: &mut WaveState,
     connected: bool,
+    tick_hz: Option<u32>,
     tiles: &egui_tiles::Tiles<crate::wave::pane::ViewPane>,
 ) -> Option<WaveAction> {
     let mut action = None;
+    let tick_hz = effective_tick_hz(tick_hz.unwrap_or(DEFAULT_TICK_HZ));
 
-    theme::section_header(ui, "Acquisition");
+    theme::section_header(ui, "Wave");
     ui.add_space(4.0);
 
     ui.horizontal(|ui| {
@@ -84,7 +86,7 @@ pub fn show_wave_section(
             format!("{} channels, {}", wave.binding.len(), mode_label(wave.mode)),
         );
     } else {
-        ui.colored_label(egui::Color32::GRAY, "Acquisition stopped");
+        ui.colored_label(egui::Color32::GRAY, "Wave stopped");
     }
 
     ui.add_space(2.0);
@@ -92,34 +94,7 @@ pub fn show_wave_section(
 
     let mut any_dragging = false;
 
-    ui.horizontal(|ui| {
-        ui.label("Prescaler");
-        let r = ui.add(
-            egui::DragValue::new(&mut wave.settings.prescaler)
-                .range(1..=10_000)
-                .speed(1.0),
-        );
-        any_dragging |= r.dragged();
-    });
-
-    ui.horizontal(|ui| {
-        ui.label("Block");
-        let r = ui.add(
-            egui::DragValue::new(&mut wave.settings.block_ticks)
-                .range(1..=100)
-                .speed(1.0)
-                .suffix(" ticks"),
-        );
-        any_dragging |= r.dragged();
-        ui.label("Plot");
-        let r = ui.add(
-            egui::DragValue::new(&mut wave.settings.max_points)
-                .range(1_000..=2_000_000)
-                .speed(100.0)
-                .suffix(" pts"),
-        );
-        any_dragging |= r.dragged();
-    });
+    show_sampling_controls(ui, wave, tick_hz, &mut any_dragging);
 
     ui.add_space(2.0);
     ui.separator();
@@ -161,6 +136,13 @@ pub fn show_wave_section(
         ui.label("Level");
         let r = ui.add(egui::DragValue::new(&mut wave.settings.trigger_level).speed(0.1));
         any_dragging |= r.dragged();
+        ui.label("Hyst");
+        let r = ui.add(
+            egui::DragValue::new(&mut wave.settings.trigger_hysteresis)
+                .range(0.0..=f32::MAX)
+                .speed(0.01),
+        );
+        any_dragging |= r.dragged();
         ui.label("Pre");
         let r = ui.add(
             egui::DragValue::new(&mut wave.settings.pre_trigger_percent)
@@ -177,11 +159,61 @@ pub fn show_wave_section(
         let settings_changed = wave.settings != wave.settings_snapshot;
         let channels_changed = pane_vars != wave.pane_vars_snapshot;
         if settings_changed || channels_changed {
-            action = Some(WaveAction::Restart(wave.mode));
+            action = Some(WaveAction::Restart(restart_entry_mode(wave.mode)));
         }
     }
 
     action
+}
+
+fn restart_entry_mode(mode: ScopeMode) -> ScopeMode {
+    match mode {
+        ScopeMode::Stream => ScopeMode::Stream,
+        ScopeMode::CaptureArmed | ScopeMode::CapturePost | ScopeMode::CaptureFrozen => {
+            ScopeMode::CaptureArmed
+        }
+        ScopeMode::Off | ScopeMode::Unknown(_) => mode,
+    }
+}
+
+fn show_sampling_controls(
+    ui: &mut egui::Ui,
+    wave: &mut WaveState,
+    tick_hz: u32,
+    any_dragging: &mut bool,
+) {
+    ui.horizontal(|ui| {
+        ui.label("Sampling");
+        let min_interval_us = 1_000_000.0 / f64::from(tick_hz);
+        let max_interval_us = f64::from(MAX_PRESCALER) * min_interval_us;
+        let mut sample_interval_us = wave
+            .settings
+            .sample_interval_us(tick_hz)
+            .clamp(min_interval_us, max_interval_us);
+        let sample_interval_speed = (sample_interval_us / 100.0).max(0.001);
+        let response = ui.add(
+            egui::DragValue::new(&mut sample_interval_us)
+                .range(min_interval_us..=max_interval_us)
+                .speed(sample_interval_speed)
+                .suffix(" us"),
+        );
+        if response.changed() {
+            wave.settings
+                .set_sample_interval_us(tick_hz, sample_interval_us);
+        }
+        *any_dragging |= response.dragged();
+        ui.weak(format_rate(wave.settings.sample_rate_hz(tick_hz)));
+    });
+}
+
+fn format_rate(hz: f64) -> String {
+    if hz >= 1_000_000.0 {
+        format!("{:.3} MHz", hz / 1_000_000.0)
+    } else if hz >= 1_000.0 {
+        format!("{:.3} kHz", hz / 1_000.0)
+    } else {
+        format!("{:.3} Hz", hz)
+    }
 }
 
 fn mode_label(mode: ScopeMode) -> &'static str {

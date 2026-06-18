@@ -37,6 +37,7 @@ impl TimeSeries {
 pub struct PlotData {
     pub series: HashMap<String, TimeSeries>,
     pub time_counter: f64,
+    pub trigger_time: Option<f64>,
     max_points: usize,
 }
 
@@ -45,15 +46,8 @@ impl PlotData {
         Self {
             series: HashMap::new(),
             time_counter: 0.0,
+            trigger_time: None,
             max_points,
-        }
-    }
-
-    /// Update capacity. Existing series keep data but will shed on next push if over limit.
-    pub fn set_max_points(&mut self, new_max: usize) {
-        self.max_points = new_max.max(1);
-        for ts in self.series.values_mut() {
-            ts.max_len = self.max_points;
         }
     }
 
@@ -71,6 +65,11 @@ impl PlotData {
     pub fn clear(&mut self) {
         self.series.clear();
         self.time_counter = 0.0;
+        self.trigger_time = None;
+    }
+
+    pub fn set_trigger_tick(&mut self, trigger_tick: u32, tick_hz: u32) {
+        self.trigger_time = Some(f64::from(trigger_tick) / f64::from(tick_hz.max(1)));
     }
 
     pub fn ensure_series(&mut self, binding: &[VarDescriptor]) {
