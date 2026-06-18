@@ -6,9 +6,7 @@ use crate::source::{
     CAP_CAL, CAP_NATIVE_BLOCK, CAP_PRE_TRIGGER, CAP_SCOPE_CAPTURE, CAP_SCOPE_STREAM, ParamWrite,
     ScopeConfig, ScopeMode, SourceCommand, TriggerEdge, VarDescriptor,
 };
-use crate::wave::pane::PaneKind;
-
-const KEEP_DEVICE_BLOCK_TICKS: u16 = 0;
+use crate::wave::{max_record_points_for_binding, pane::PaneKind};
 
 impl ScopeApp {
     pub(in crate::app) fn send(&self, command: SourceCommand) {
@@ -129,6 +127,9 @@ impl ScopeApp {
             );
             return;
         }
+        self.wave
+            .settings
+            .clamp_record_points(max_record_points_for_binding(&binding));
 
         self.plot_data.clear();
         self.wave.capture_frame_blocks.clear();
@@ -144,7 +145,7 @@ impl ScopeApp {
             trigger_edge: TriggerEdge::Rise,
             pre_trigger_percent: 0,
             prescaler: self.wave.settings.prescaler,
-            block_ticks: KEEP_DEVICE_BLOCK_TICKS,
+            record_points: 0,
         }));
         self.send(SourceCommand::BindChannels {
             channels: binding.iter().map(|descriptor| descriptor.var).collect(),
@@ -171,7 +172,7 @@ impl ScopeApp {
             trigger_edge: TriggerEdge::Rise,
             pre_trigger_percent: 0,
             prescaler: self.wave.settings.prescaler,
-            block_ticks: KEEP_DEVICE_BLOCK_TICKS,
+            record_points: 0,
         }));
         self.wave.active = false;
         self.wave.restart_pending = None;
@@ -191,6 +192,8 @@ impl ScopeApp {
             return;
         }
         self.wave.capture_frame_blocks.clear();
+        let max_record_points = max_record_points_for_binding(&self.wave.binding);
+        self.wave.settings.clamp_record_points(max_record_points);
         self.wave.settings_snapshot = self.wave.settings.clone();
         self.send(SourceCommand::ConfigureScope(
             self.scope_config(ScopeMode::CaptureArmed, &self.wave.binding),
@@ -220,8 +223,18 @@ impl ScopeApp {
             trigger_edge: self.wave.settings.trigger_edge,
             pre_trigger_percent: self.wave.settings.pre_trigger_percent,
             prescaler: self.wave.settings.prescaler,
-            block_ticks: KEEP_DEVICE_BLOCK_TICKS,
+            record_points: if mode == ScopeMode::CaptureArmed {
+                self.wave.settings.record_points
+            } else {
+                0
+            },
         }
+    }
+
+    pub(in crate::app) fn current_scope_record_limit(&self) -> Option<u16> {
+        let pane_vars = self.collect_time_series_vars();
+        let binding = self.resolve_scope_binding(&pane_vars);
+        max_record_points_for_binding(&binding)
     }
 
     fn collect_time_series_vars(&self) -> Vec<String> {

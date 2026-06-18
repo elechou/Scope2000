@@ -10,7 +10,10 @@ use crate::theme;
 use crate::wave::pane::PaneKind;
 
 use super::csv::CsvState;
-use super::{DEFAULT_TICK_HZ, MAX_PRESCALER, WaveState, effective_tick_hz};
+use super::{
+    DEFAULT_TICK_HZ, MAX_PRESCALER, MAX_RECORD_POINTS_ABSOLUTE, MIN_RECORD_POINTS, WaveState,
+    effective_tick_hz, format_record_duration,
+};
 
 // ---------------------------------------------------------------------------
 // Wave section
@@ -49,6 +52,7 @@ pub fn show_wave_section(
     connected: bool,
     tick_hz: Option<u32>,
     tiles: &egui_tiles::Tiles<crate::wave::pane::ViewPane>,
+    record_max_points: Option<u16>,
 ) -> Option<WaveAction> {
     let mut action = None;
     let tick_hz = effective_tick_hz(tick_hz.unwrap_or(DEFAULT_TICK_HZ));
@@ -94,7 +98,7 @@ pub fn show_wave_section(
 
     let mut any_dragging = false;
 
-    show_sampling_controls(ui, wave, tick_hz, &mut any_dragging);
+    show_sampling_controls(ui, wave, tick_hz, record_max_points, &mut any_dragging);
 
     ui.add_space(2.0);
     ui.separator();
@@ -156,7 +160,8 @@ pub fn show_wave_section(
     wave.settings.clamp();
 
     if wave.active && action.is_none() && !any_dragging {
-        let settings_changed = wave.settings != wave.settings_snapshot;
+        let settings_changed =
+            settings_changed_for_mode(wave.mode, &wave.settings, &wave.settings_snapshot);
         let channels_changed = pane_vars != wave.pane_vars_snapshot;
         if settings_changed || channels_changed {
             action = Some(WaveAction::Restart(restart_entry_mode(wave.mode)));
@@ -164,6 +169,22 @@ pub fn show_wave_section(
     }
 
     action
+}
+
+fn settings_changed_for_mode(
+    mode: ScopeMode,
+    settings: &super::AcquisitionSettings,
+    snapshot: &super::AcquisitionSettings,
+) -> bool {
+    if mode == ScopeMode::Stream {
+        let mut settings = settings.clone();
+        let mut snapshot = snapshot.clone();
+        settings.record_points = 0;
+        snapshot.record_points = 0;
+        settings != snapshot
+    } else {
+        settings != snapshot
+    }
 }
 
 fn restart_entry_mode(mode: ScopeMode) -> ScopeMode {
@@ -180,8 +201,13 @@ fn show_sampling_controls(
     ui: &mut egui::Ui,
     wave: &mut WaveState,
     tick_hz: u32,
+    record_max_points: Option<u16>,
     any_dragging: &mut bool,
 ) {
+    let record_max_points = record_max_points
+        .unwrap_or(MAX_RECORD_POINTS_ABSOLUTE)
+        .clamp(MIN_RECORD_POINTS, MAX_RECORD_POINTS_ABSOLUTE);
+    wave.settings.clamp_record_points(Some(record_max_points));
     ui.horizontal(|ui| {
         ui.label("Sampling");
         let min_interval_us = 1_000_000.0 / f64::from(tick_hz);
@@ -203,6 +229,19 @@ fn show_sampling_controls(
         }
         *any_dragging |= response.dragged();
         ui.weak(format_rate(wave.settings.sample_rate_hz(tick_hz)));
+    });
+    ui.horizontal(|ui| {
+        ui.label("Record");
+        let response = ui.add(
+            egui::DragValue::new(&mut wave.settings.record_points)
+                .range(MIN_RECORD_POINTS..=record_max_points)
+                .speed(1.0)
+                .suffix(" pts"),
+        );
+        *any_dragging |= response.dragged();
+        ui.weak(format_record_duration(
+            wave.settings.record_duration_seconds(tick_hz),
+        ));
     });
 }
 

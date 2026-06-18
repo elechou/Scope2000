@@ -14,7 +14,7 @@ use crate::source::{
     SourceHandle, TransportEndpoint,
 };
 
-const EXPECTED_CONTRACT_VERSION: u16 = 6;
+const EXPECTED_CONTRACT_VERSION: u16 = 7;
 #[cfg(not(test))]
 const REQUEST_TIMEOUT: Duration = Duration::from_millis(150);
 #[cfg(test)]

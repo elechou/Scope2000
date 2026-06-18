@@ -4,7 +4,7 @@ use crate::source::{
     DeviceInfo, DeviceStatus, ScopeBlock, ScopeMode, VarDescriptor, VarRef, VarType,
 };
 
-pub const WIRE_VERSION: u8 = 4;
+pub const WIRE_VERSION: u8 = 5;
 pub const VERSION_MAGIC: u8 = 0x50 | WIRE_VERSION;
 pub const MAX_PAYLOAD: usize = 1024;
 
@@ -429,7 +429,7 @@ pub fn daq_control_request(config: &crate::source::ScopeConfig) -> Vec<u8> {
     );
     put_u16(&mut payload, u16::from(config.pre_trigger_percent));
     put_u16(&mut payload, config.prescaler);
-    put_u16(&mut payload, config.block_ticks);
+    put_u16(&mut payload, config.record_points);
     payload
 }
 
@@ -596,7 +596,7 @@ mod tests {
             trigger_edge: crate::source::TriggerEdge::Rise,
             pre_trigger_percent: 30,
             prescaler: 1,
-            block_ticks: 10,
+            record_points: 1_000,
         });
 
         assert_eq!(payload.len(), 20);
@@ -604,6 +604,6 @@ mod tests {
             read_u32(&payload, 8).expect("hysteresis bits"),
             0.05_f32.to_bits()
         );
-        assert_eq!(read_u16(&payload, 18).expect("block ticks"), 10);
+        assert_eq!(read_u16(&payload, 18).expect("record points"), 1_000);
     }
 }

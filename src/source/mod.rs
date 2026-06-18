@@ -194,7 +194,7 @@ pub struct ScopeConfig {
     pub trigger_edge: TriggerEdge,
     pub pre_trigger_percent: u8,
     pub prescaler: u16,
-    pub block_ticks: u16,
+    pub record_points: u16,
 }
 
 #[derive(Debug, Clone, Copy)]

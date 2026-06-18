@@ -321,12 +321,14 @@ impl eframe::App for ScopeApp {
             .show_separator_line(false)
             .frame(theme::side_panel_frame())
             .show_inside(ui, |ui| {
+                let record_limit = self.current_scope_record_limit();
                 if let Some(action) = crate::wave::panel::show_wave_section(
                     ui,
                     &mut self.wave,
                     self.hardware.connected,
                     self.hardware.info.as_ref().map(|info| info.tick_hz),
                     &self.viewport.tree.tiles,
+                    record_limit,
                 ) {
                     use crate::wave::panel::WaveAction;
                     match action {
