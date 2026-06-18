@@ -61,14 +61,14 @@ impl ScopeApp {
                     self.next_watch_read = Instant::now();
                 }
                 SourceEvent::Values {
-                    mirror_sequence,
-                    start,
+                    read_sequence,
+                    indexes,
                     values,
                 } => {
-                    self.inspector.update_values(start, values);
+                    self.inspector.update_values(&indexes, values);
                     self.log.push(
                         LogLevel::Debug,
-                        format!("Value mirror sequence {mirror_sequence}"),
+                        format!("Value read sequence {read_sequence}"),
                     );
                 }
                 SourceEvent::ChannelsBound { bind_sequence } => {

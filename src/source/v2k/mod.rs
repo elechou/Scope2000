@@ -14,7 +14,7 @@ use crate::source::{
     SourceHandle, TransportEndpoint,
 };
 
-const EXPECTED_CONTRACT_VERSION: u16 = 7;
+const EXPECTED_CONTRACT_VERSION: u16 = 8;
 #[cfg(not(test))]
 const REQUEST_TIMEOUT: Duration = Duration::from_millis(150);
 #[cfg(test)]
@@ -198,18 +198,22 @@ impl Session {
                 let ack = require_ack(&response, codec::message::CAL_COMMIT)?;
                 send_event(events, SourceEvent::ParamsCommitted { sequence: ack.data });
             }
-            SourceCommand::ReadValues { start, count } => {
+            SourceCommand::ReadValues(reads) => {
+                let vars: Vec<_> = reads.iter().map(|read| read.var).collect();
                 let response = self.request(
                     codec::message::CAL_READ,
-                    &codec::cal_read_request(start, count),
+                    &codec::cal_read_request(&vars),
                     events,
                 )?;
-                let (mirror_sequence, start, values) = codec::parse_cal_values(&response.payload)?;
+                let (read_sequence, values) = codec::parse_cal_values(&response.payload)?;
+                if values.len() != reads.len() {
+                    bail!("CAL_READ response count mismatch");
+                }
                 send_event(
                     events,
                     SourceEvent::Values {
-                        mirror_sequence,
-                        start,
+                        read_sequence,
+                        indexes: reads.iter().map(|read| read.descriptor_index).collect(),
                         values,
                     },
                 );

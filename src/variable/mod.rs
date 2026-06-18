@@ -1,6 +1,6 @@
 pub mod panel;
 
-use crate::source::{ParamWrite, VarDescriptor};
+use crate::source::{CAL_READ_MAX, ParamWrite, ValueRead, VarDescriptor};
 
 #[derive(Debug, Clone)]
 pub enum DescriptorEntry {
@@ -129,10 +129,8 @@ impl InspectorState {
             .collect()
     }
 
-    pub fn update_values(&mut self, start: u16, values: Vec<u32>) {
-        let start = usize::from(start);
-        for (offset, bits) in values.into_iter().enumerate() {
-            let index = start + offset;
+    pub fn update_values(&mut self, indexes: &[usize], values: Vec<u32>) {
+        for (&index, bits) in indexes.iter().zip(values.into_iter()) {
             let Some(descriptor) = self.descriptors.get(index) else {
                 continue;
             };
@@ -156,27 +154,29 @@ impl InspectorState {
         indexes
     }
 
-    pub fn read_ranges(&self) -> Vec<(u16, u8)> {
+    pub fn read_batches(&self) -> Vec<Vec<ValueRead>> {
         let indexes = self.watched_indexes();
         if indexes.is_empty() {
             return Vec::new();
         }
 
-        let mut ranges = Vec::new();
-        let mut start = indexes[0];
-        let mut prev = indexes[0];
-        for index in indexes.into_iter().skip(1) {
-            let count = prev - start + 1;
-            if index == prev + 1 && count < 32 {
-                prev = index;
-            } else {
-                ranges.push((start as u16, count as u8));
-                start = index;
-                prev = index;
-            }
-        }
-        ranges.push((start as u16, (prev - start + 1) as u8));
-        ranges
+        indexes
+            .chunks(CAL_READ_MAX)
+            .map(|chunk| {
+                chunk
+                    .iter()
+                    .filter_map(|&descriptor_index| {
+                        self.descriptors
+                            .get(descriptor_index)
+                            .map(|descriptor| ValueRead {
+                                descriptor_index,
+                                var: descriptor.var,
+                            })
+                    })
+                    .collect()
+            })
+            .filter(|batch: &Vec<ValueRead>| !batch.is_empty())
+            .collect()
     }
 
     pub fn param_write_for(&self, descriptor_index: usize, value: f64) -> Option<ParamWrite> {
@@ -287,7 +287,7 @@ mod tests {
     }
 
     #[test]
-    fn read_ranges_coalesce_contiguous_indexes() {
+    fn read_batches_include_watched_indexes() {
         let mut state = InspectorState::default();
         state.set_descriptors(vec![
             descriptor("a"),
@@ -296,7 +296,13 @@ mod tests {
             descriptor("d"),
         ]);
         state.pinned = vec![0, 1, 3];
-        assert_eq!(state.read_ranges(), vec![(0, 2), (3, 1)]);
+        let batches = state.read_batches();
+        assert_eq!(batches.len(), 1);
+        let indexes: Vec<_> = batches[0]
+            .iter()
+            .map(|read| read.descriptor_index)
+            .collect();
+        assert_eq!(indexes, vec![0, 1, 3]);
     }
 
     #[test]

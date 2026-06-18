@@ -40,8 +40,8 @@ impl ScopeApp {
         if Instant::now() < self.next_watch_read {
             return;
         }
-        for (start, count) in self.inspector.read_ranges() {
-            self.send(SourceCommand::ReadValues { start, count });
+        for reads in self.inspector.read_batches() {
+            self.send(SourceCommand::ReadValues(reads));
         }
         self.next_watch_read = Instant::now() + super::super::WATCH_READ_PERIOD;
     }

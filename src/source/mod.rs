@@ -114,6 +114,7 @@ pub const CAP_SCOPE_CAPTURE: u32 = 1 << 3;
 pub const CAP_PRE_TRIGGER: u32 = 1 << 4;
 pub const CAP_SYSTEM_CMD: u32 = 1 << 5;
 pub const CAP_NATIVE_BLOCK: u32 = 1 << 6;
+pub const CAL_READ_MAX: usize = 32;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ScopeMode {
@@ -272,13 +273,19 @@ pub struct ParamWrite {
     pub value_bits: u32,
 }
 
+#[derive(Debug, Clone)]
+pub struct ValueRead {
+    pub descriptor_index: usize,
+    pub var: VarRef,
+}
+
 #[derive(Debug)]
 pub enum SourceCommand {
     Connect(TransportEndpoint),
     Disconnect,
     WriteParams(Vec<ParamWrite>),
     CommitParams,
-    ReadValues { start: u16, count: u8 },
+    ReadValues(Vec<ValueRead>),
     BindChannels { channels: Vec<VarRef> },
     ConfigureScope(ScopeConfig),
     SystemCommand(SystemCommand),
@@ -295,8 +302,8 @@ pub enum SourceEvent {
         sequence: u32,
     },
     Values {
-        mirror_sequence: u32,
-        start: u16,
+        read_sequence: u32,
+        indexes: Vec<usize>,
         values: Vec<u32>,
     },
     ChannelsBound {

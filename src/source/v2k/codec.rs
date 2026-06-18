@@ -4,7 +4,7 @@ use crate::source::{
     DeviceInfo, DeviceStatus, ScopeBlock, ScopeMode, SystemState, VarDescriptor, VarRef, VarType,
 };
 
-pub const WIRE_VERSION: u8 = 5;
+pub const WIRE_VERSION: u8 = 6;
 pub const VERSION_MAGIC: u8 = 0x50 | WIRE_VERSION;
 pub const MAX_PAYLOAD: usize = 1024;
 
@@ -394,11 +394,15 @@ pub fn cal_write_request(writes: &[(VarRef, u32)]) -> Vec<u8> {
     payload
 }
 
-pub fn cal_read_request(start: u16, count: u8) -> Vec<u8> {
-    let mut payload = Vec::with_capacity(4);
-    put_u16(&mut payload, start);
-    payload.push(count);
+pub fn cal_read_request(reads: &[VarRef]) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(2 + reads.len() * 8);
+    payload.push(reads.len() as u8);
     payload.push(0);
+    for var in reads {
+        put_u32(&mut payload, var.addr);
+        put_u16(&mut payload, var.ty as u16);
+        put_u16(&mut payload, 0);
+    }
     payload
 }
 
@@ -450,11 +454,11 @@ pub fn system_command_request(command: crate::source::SystemCommand) -> Vec<u8> 
     payload
 }
 
-pub fn parse_cal_values(payload: &[u8]) -> Result<(u32, u16, Vec<u32>), CodecError> {
+pub fn parse_cal_values(payload: &[u8]) -> Result<(u32, Vec<u32>), CodecError> {
     if payload.len() < 8 {
         return Err(CodecError::MalformedPayload("CAL_READ header"));
     }
-    let count = usize::from(payload[6]);
+    let count = usize::from(payload[4]);
     if payload.len() != 8 + count * 4 {
         return Err(CodecError::MalformedPayload("CAL_READ values"));
     }
@@ -462,7 +466,7 @@ pub fn parse_cal_values(payload: &[u8]) -> Result<(u32, u16, Vec<u32>), CodecErr
     for index in 0..count {
         values.push(read_u32(payload, 8 + index * 4)?);
     }
-    Ok((read_u32(payload, 0)?, read_u16(payload, 4)?, values))
+    Ok((read_u32(payload, 0)?, values))
 }
 
 #[cfg(test)]
