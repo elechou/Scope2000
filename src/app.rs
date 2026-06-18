@@ -8,7 +8,7 @@ use eframe::egui;
 use crate::console::{LogBuffer, LogLevel};
 use crate::source::v2k::{V2kSource, transport};
 use crate::source::{
-    CAP_SYSTEM_CMD, DataSource, ScopeMode, SourceCommand, SourceHandle, SystemCommand,
+    CAP_SYSTEM_CMD, DataSource, ScopeMode, SourceCommand, SourceHandle, SystemCommand, SystemState,
 };
 use crate::theme;
 use crate::variable::InspectorState;
@@ -170,12 +170,19 @@ impl ScopeApp {
         if let Some(status) = &self.hardware.status {
             ui.separator();
             ui.monospace(format!(
-                "state={} fault={} flags=0x{:04X}",
-                status.system_state, status.fault_code, status.status_flags
+                "state={}({}) fault={} flags=0x{:04X}",
+                status.system_state,
+                status.system_state.wire_value(),
+                status.fault_code,
+                status.status_flags
             ));
             ui.monospace(format!(
-                "tick={} hb={}/{}",
-                status.tick, status.cpu1_heartbeat, status.cpu2_heartbeat
+                "tick={}",
+                status.tick
+            ));
+            ui.monospace(format!(
+                "hb={}/{}",
+                status.cpu1_heartbeat, status.cpu2_heartbeat
             ));
             ui.monospace(format!(
                 "cal seq={} result={} fail={}",
@@ -195,22 +202,37 @@ impl ScopeApp {
 
         theme::section_header(ui, "System");
         ui.add_space(4.0);
-        let enabled = self.hardware.connected && self.has_capability(CAP_SYSTEM_CMD);
+        let system_state = self
+            .hardware
+            .status
+            .as_ref()
+            .map(|status| status.system_state);
+        let can_send_system_command =
+            self.hardware.connected && self.has_capability(CAP_SYSTEM_CMD);
+        let can_start = can_send_system_command && matches!(system_state, Some(SystemState::Idle));
+        let can_stop =
+            can_send_system_command && matches!(system_state, Some(SystemState::Running));
+        let can_clear_fault =
+            can_send_system_command && matches!(system_state, Some(SystemState::Fault));
         let button_gap = ui.spacing().item_spacing.x;
         let start_w = 70.0;
         let stop_w = 70.0;
         let clear_w = (ui.available_width() - start_w - stop_w - button_gap * 2.0).max(0.0);
         ui.horizontal(|ui| {
-            if theme::action_button_w(ui, "Start", theme::GREEN, enabled, start_w) {
+            if theme::action_button_w(ui, "Start", theme::GREEN, can_start, start_w) {
                 self.send(SourceCommand::SystemCommand(SystemCommand::Start));
             }
-            if theme::action_button_w(ui, "Stop", theme::RED, enabled, stop_w) {
+            if theme::action_button_w(ui, "Stop", theme::RED, can_stop, stop_w) {
                 self.send(SourceCommand::SystemCommand(SystemCommand::Stop));
             }
-            if theme::action_button_w(ui, "Clear Fault", theme::WIDGET_BG, enabled, clear_w) {
+            if theme::action_button_w(ui, "Clear Fault", theme::GREEN, can_clear_fault, clear_w) {
                 self.send(SourceCommand::SystemCommand(SystemCommand::ClearFault));
             }
         });
+
+        let (state_label, state_color) =
+            user_system_state_label(system_state, self.hardware.connected);
+        ui.colored_label(state_color, format!("User system: {state_label}"));
     }
 
     fn render_viewport(&mut self, ui: &mut egui::Ui) {
@@ -243,6 +265,18 @@ impl ScopeApp {
                 self.log.push(LogLevel::Info, "Layout reset".to_owned());
             }
         }
+    }
+}
+
+fn user_system_state_label(state: Option<SystemState>, connected: bool) -> (String, egui::Color32) {
+    match state {
+        Some(SystemState::Idle) => ("IDLE".to_owned(), theme::TEXT_SUBDUED),
+        Some(SystemState::Running) => ("RUNNING".to_owned(), theme::GREEN),
+        Some(SystemState::Fault) => ("FAULT".to_owned(), theme::RED),
+        Some(SystemState::Init) => ("INIT".to_owned(), theme::YELLOW),
+        Some(SystemState::Unknown(value)) => (format!("STATE {value}"), theme::TEXT_SUBDUED),
+        None if connected => ("UNKNOWN".to_owned(), theme::TEXT_SUBDUED),
+        None => ("DISCONNECTED".to_owned(), theme::TEXT_SUBDUED),
     }
 }
 

@@ -44,9 +44,7 @@ impl HardwareState {
 
     pub fn state_label(&self) -> String {
         match self.status.as_ref().map(|status| status.system_state) {
-            Some(1) => "Running".to_owned(),
-            Some(0) => "Stopped".to_owned(),
-            Some(state) => format!("State {state}"),
+            Some(state) => state.label(),
             None if self.connected => "Connected".to_owned(),
             None => "Disconnected".to_owned(),
         }
@@ -55,7 +53,7 @@ impl HardwareState {
     pub fn is_running(&self) -> bool {
         self.status
             .as_ref()
-            .is_some_and(|status| status.system_state == 1)
+            .is_some_and(|status| status.system_state.is_running())
     }
 
     pub fn version_text(&self) -> Option<String> {

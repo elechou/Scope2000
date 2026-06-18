@@ -1,5 +1,6 @@
 pub mod v2k;
 
+use std::fmt;
 use std::path::PathBuf;
 use std::sync::mpsc;
 
@@ -149,9 +150,60 @@ impl ScopeMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SystemState {
+    Init,
+    Idle,
+    Running,
+    Fault,
+    Unknown(u16),
+}
+
+impl SystemState {
+    pub fn from_wire(value: u16) -> Self {
+        match value {
+            0 => Self::Init,
+            1 => Self::Idle,
+            2 => Self::Running,
+            3 => Self::Fault,
+            other => Self::Unknown(other),
+        }
+    }
+
+    pub fn wire_value(self) -> u16 {
+        match self {
+            Self::Init => 0,
+            Self::Idle => 1,
+            Self::Running => 2,
+            Self::Fault => 3,
+            Self::Unknown(value) => value,
+        }
+    }
+
+    pub fn is_running(self) -> bool {
+        self == Self::Running
+    }
+
+    pub fn label(self) -> String {
+        match self {
+            Self::Init => "Init".to_owned(),
+            Self::Idle => "Idle".to_owned(),
+            Self::Running => "Running".to_owned(),
+            Self::Fault => "Fault".to_owned(),
+            Self::Unknown(value) => format!("State {value}"),
+        }
+    }
+}
+
+impl fmt::Display for SystemState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.label())
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct DeviceStatus {
-    pub system_state: u16,
+    pub system_state: SystemState,
     pub fault_code: u16,
     pub status_flags: u16,
     pub tick: u32,

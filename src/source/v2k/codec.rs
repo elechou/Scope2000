@@ -1,7 +1,7 @@
 use thiserror::Error;
 
 use crate::source::{
-    DeviceInfo, DeviceStatus, ScopeBlock, ScopeMode, VarDescriptor, VarRef, VarType,
+    DeviceInfo, DeviceStatus, ScopeBlock, ScopeMode, SystemState, VarDescriptor, VarRef, VarType,
 };
 
 pub const WIRE_VERSION: u8 = 5;
@@ -240,7 +240,7 @@ pub fn parse_status(payload: &[u8]) -> Result<DeviceStatus, CodecError> {
         ));
     }
     Ok(DeviceStatus {
-        system_state: read_u16(payload, 0)?,
+        system_state: SystemState::from_wire(read_u16(payload, 0)?),
         fault_code: read_u16(payload, 2)?,
         status_flags: read_u16(payload, 4)?,
         tick: read_u32(payload, 6)?,
@@ -584,6 +584,23 @@ mod tests {
         assert_eq!(batch.trigger_tick, Some(1234));
         assert_eq!(batch.blocks.len(), 1);
         assert_eq!(batch.blocks[0].start_tick, 1200);
+    }
+
+    #[test]
+    fn status_parses_viewer2000_system_state() {
+        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/vectors/status_resp.txt");
+        let text = fs::read_to_string(root).expect("read status vector");
+        let raw = text
+            .lines()
+            .find_map(|line| line.strip_prefix("raw: "))
+            .map(decode_hex)
+            .expect("raw line");
+        let frame = decode_raw(&raw).expect("valid status frame");
+
+        let status = parse_status(&frame.payload).expect("parse status");
+
+        assert_eq!(status.system_state, SystemState::Running);
+        assert!(status.system_state.is_running());
     }
 
     #[test]
