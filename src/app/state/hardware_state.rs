@@ -54,9 +54,30 @@ impl HardwareState {
 
     pub fn version_text(&self) -> Option<String> {
         self.info.as_ref().map(|info| {
+            if !info.project_name.is_empty() || info.build_time_utc != 0 {
+                format!(
+                    "{}·{}",
+                    info.project_display_name(),
+                    info.build_time_display_text()
+                )
+            } else {
+                format!(
+                    "{}  build=0x{:08X}  tick={}Hz",
+                    info.firmware_name, info.build_hash, info.tick_hz
+                )
+            }
+        })
+    }
+
+    pub fn version_hover_text(&self) -> Option<String> {
+        self.info.as_ref().map(|info| {
             format!(
-                "{}  build=0x{:08X}  tick={}Hz",
-                info.firmware_name, info.build_hash, info.tick_hz
+                "Device Infomation\nproject {}\n{}\nfirmware {}\nbuild=0x{:08X}\ntick={}Hz",
+                info.project_display_name(),
+                info.build_time_display_text(),
+                info.firmware_name,
+                info.build_hash,
+                info.tick_hz
             )
         })
     }
@@ -105,6 +126,8 @@ mod tests {
                 firmware_name: "viewer2000".to_owned(),
                 tick_hz: 20_000,
                 capabilities: 0,
+                project_name: String::new(),
+                build_time_utc: 0,
             }),
             ..HardwareState::default()
         };
@@ -112,6 +135,29 @@ mod tests {
         assert_eq!(
             hardware.version_text().as_deref(),
             Some("viewer2000  build=0x3C313C66  tick=20000Hz")
+        );
+    }
+
+    #[test]
+    fn version_text_prefers_project_name_when_reported() {
+        let hardware = HardwareState {
+            info: Some(DeviceInfo {
+                protocol_version: 1,
+                contract_version: 11,
+                build_hash: 0x3C31_3C66,
+                descriptor_count: 0,
+                firmware_name: "viewer2000".to_owned(),
+                tick_hz: 20_000,
+                capabilities: 0,
+                project_name: "untitled".to_owned(),
+                build_time_utc: 0,
+            }),
+            ..HardwareState::default()
+        };
+
+        assert_eq!(
+            hardware.version_text().as_deref(),
+            Some("untitled·Built Time unknown")
         );
     }
 }

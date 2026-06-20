@@ -127,7 +127,10 @@ pub fn show(
                         if device_info.clicked() {
                             ui_state.show_device_info_window = !ui_state.show_device_info_window;
                         }
-                        device_info.on_hover_text("Device Info");
+                        let hover = hardware
+                            .version_hover_text()
+                            .unwrap_or_else(|| "Device Infomation".to_owned());
+                        device_info.on_hover_text(hover);
                         ui.separator();
                     }
                 });

@@ -103,11 +103,37 @@ pub struct DeviceInfo {
     pub firmware_name: String,
     pub tick_hz: u32,
     pub capabilities: u32,
+    pub project_name: String,
+    pub build_time_utc: u32,
 }
 
 impl DeviceInfo {
     pub fn has(&self, capability: u32) -> bool {
         self.capabilities & capability != 0
+    }
+
+    pub fn project_display_name(&self) -> &str {
+        if self.project_name.is_empty() {
+            &self.firmware_name
+        } else {
+            &self.project_name
+        }
+    }
+
+    pub fn build_time_local_text(&self) -> Option<String> {
+        if self.build_time_utc == 0 {
+            return None;
+        }
+        chrono::DateTime::from_timestamp(i64::from(self.build_time_utc), 0)
+            .map(|time| time.with_timezone(&chrono::Local))
+            .map(|time| time.format("%Y-%m-%d %H:%M").to_string())
+    }
+
+    pub fn build_time_display_text(&self) -> String {
+        let built = self
+            .build_time_local_text()
+            .unwrap_or_else(|| "unknown".to_owned());
+        format!("Built Time {built}")
     }
 }
 

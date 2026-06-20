@@ -208,12 +208,20 @@ pub fn parse_hello(payload: &[u8]) -> Result<DeviceInfo, CodecError> {
             "HELLO is shorter than current layout",
         ));
     }
-    let name_bytes = &payload[12..28];
-    let name_len = name_bytes
-        .iter()
-        .position(|&value| value == 0)
-        .unwrap_or(name_bytes.len());
-    let firmware_name = String::from_utf8_lossy(&name_bytes[..name_len]).into_owned();
+    fn fixed_string(bytes: &[u8]) -> String {
+        let name_len = bytes
+            .iter()
+            .position(|&value| value == 0)
+            .unwrap_or(bytes.len());
+        String::from_utf8_lossy(&bytes[..name_len]).into_owned()
+    }
+
+    let firmware_name = fixed_string(&payload[12..28]);
+    let project_name = if payload.len() >= 68 {
+        fixed_string(&payload[36..68])
+    } else {
+        String::new()
+    };
     Ok(DeviceInfo {
         protocol_version: read_u16(payload, 0)?,
         contract_version: read_u16(payload, 2)?,
@@ -227,6 +235,12 @@ pub fn parse_hello(payload: &[u8]) -> Result<DeviceInfo, CodecError> {
         },
         capabilities: if payload.len() >= 36 {
             read_u32(payload, 32)?
+        } else {
+            0
+        },
+        project_name,
+        build_time_utc: if payload.len() >= 72 {
+            read_u32(payload, 68)?
         } else {
             0
         },
@@ -638,6 +652,29 @@ mod tests {
         );
         assert_eq!(info.firmware_name, "viewer2000");
         assert_eq!(info.tick_hz, 20_000);
+        assert_eq!(info.project_name, "phase4-demo");
+        assert_eq!(info.build_time_utc, 1_781_913_600);
+    }
+
+    #[test]
+    fn hello_parser_accepts_missing_project_tail() {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&u16::from(WIRE_VERSION).to_le_bytes());
+        payload.extend_from_slice(&11_u16.to_le_bytes());
+        payload.extend_from_slice(&0x1234_5678_u32.to_le_bytes());
+        payload.extend_from_slice(&2_u16.to_le_bytes());
+        payload.extend_from_slice(&0_u16.to_le_bytes());
+        let mut firmware = [0_u8; 16];
+        firmware[..10].copy_from_slice(b"viewer2000");
+        payload.extend_from_slice(&firmware);
+        payload.extend_from_slice(&20_000_u32.to_le_bytes());
+        payload.extend_from_slice(&0x7F_u32.to_le_bytes());
+
+        let info = parse_hello(&payload).expect("parse short HELLO");
+
+        assert_eq!(info.firmware_name, "viewer2000");
+        assert_eq!(info.project_name, "");
+        assert_eq!(info.build_time_utc, 0);
     }
 
     #[test]

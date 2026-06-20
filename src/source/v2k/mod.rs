@@ -14,7 +14,7 @@ use crate::source::{
     SourceEvent, SourceHandle, TransportEndpoint,
 };
 
-const EXPECTED_CONTRACT_VERSION: u16 = 10;
+const EXPECTED_CONTRACT_VERSION: u16 = 11;
 const ENUM_PAGE_SIZE: u8 = 8;
 #[cfg(not(test))]
 const REQUEST_TIMEOUT: Duration = Duration::from_millis(150);
@@ -70,6 +70,8 @@ impl Session {
                 firmware_name: String::new(),
                 tick_hz: 0,
                 capabilities: 0,
+                project_name: String::new(),
+                build_time_utc: 0,
             },
             scope_active: false,
             expected_block_sequence: None,
@@ -552,6 +554,8 @@ mod tests {
             firmware_name: "viewer2000".to_owned(),
             tick_hz: 20_000,
             capabilities,
+            project_name: "phase4-demo".to_owned(),
+            build_time_utc: 1_781_913_600,
         }
     }
 
@@ -598,10 +602,16 @@ mod tests {
         payload.extend_from_slice(&info.descriptor_count.to_le_bytes());
         payload.extend_from_slice(&0_u16.to_le_bytes());
         let mut name = [0_u8; 16];
-        name[..info.firmware_name.len()].copy_from_slice(info.firmware_name.as_bytes());
+        let name_len = info.firmware_name.len().min(name.len());
+        name[..name_len].copy_from_slice(&info.firmware_name.as_bytes()[..name_len]);
         payload.extend_from_slice(&name);
         payload.extend_from_slice(&info.tick_hz.to_le_bytes());
         payload.extend_from_slice(&info.capabilities.to_le_bytes());
+        let mut project = [0_u8; 32];
+        let project_len = info.project_name.len().min(project.len());
+        project[..project_len].copy_from_slice(&info.project_name.as_bytes()[..project_len]);
+        payload.extend_from_slice(&project);
+        payload.extend_from_slice(&info.build_time_utc.to_le_bytes());
         payload
     }
 

@@ -137,7 +137,7 @@ pub fn show_device_info_window(
         content_rect.bottom() - WINDOW_MARGIN,
     );
 
-    egui::Window::new("Device Info")
+    egui::Window::new("Device Infomation")
         .id(egui::Id::new("device_info_window"))
         .open(&mut ui_state.show_device_info_window)
         .pivot(egui::Align2::RIGHT_BOTTOM)
@@ -148,6 +148,8 @@ pub fn show_device_info_window(
         .show(ui.ctx(), |ui| {
             ui.set_min_width(380.0);
             if let Some(info) = &hardware.info {
+                ui.monospace(format!("project {}", info.project_display_name()));
+                ui.monospace(info.build_time_display_text());
                 ui.monospace(format!("firmware {}", info.firmware_name));
                 ui.monospace(format!(
                     "wire {} contract {}",

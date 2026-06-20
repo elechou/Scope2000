@@ -17,7 +17,10 @@ impl ScopeApp {
                     self.log.push(
                         LogLevel::Info,
                         format!(
-                            "HELLO: {} wire={} contract={} tick={}Hz caps=0x{:08X}",
+                            "HELLO: project={} built={} firmware={} wire={} contract={} tick={}Hz caps=0x{:08X}",
+                            info.project_display_name(),
+                            info.build_time_local_text()
+                                .unwrap_or_else(|| "not reported".to_owned()),
                             info.firmware_name,
                             info.protocol_version,
                             info.contract_version,
