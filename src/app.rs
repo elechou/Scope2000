@@ -175,6 +175,110 @@ impl ScopeApp {
         let (state_label, state_color) =
             user_system_state_label(system_state, self.hardware.connected);
         ui.colored_label(state_color, format!("User system: {state_label}"));
+        self.performance_panel(ui);
+    }
+
+    fn performance_panel(&self, ui: &mut egui::Ui) {
+        ui.add_space(8.0);
+        ui.label(egui::RichText::new("Control Cycle Budget").strong());
+        ui.add_space(2.0);
+
+        let sample = self.hardware.performance.sample();
+        let width = ui.available_width();
+        let (rect, response) =
+            ui.allocate_exact_size(egui::vec2(width, 16.0), egui::Sense::hover());
+        let painter = ui.painter();
+
+        if let Some(sample) = sample {
+            paint_load_track(painter, rect, sample.has_violation());
+            let fill_rect = load_fill_rect(rect);
+            let budget = sample.cycle_budget as f32;
+            let mut used = 0.0_f32;
+            paint_load_segment(
+                painter,
+                fill_rect,
+                &mut used,
+                sample.adc_at_peak() as f32,
+                budget,
+                theme::RED,
+            );
+            paint_load_segment(
+                painter,
+                fill_rect,
+                &mut used,
+                sample.control_at_peak as f32,
+                budget,
+                theme::SELECT_BG,
+            );
+            paint_load_segment(
+                painter,
+                fill_rect,
+                &mut used,
+                sample.scope_at_peak as f32,
+                budget,
+                theme::YELLOW,
+            );
+            paint_load_segment(
+                painter,
+                fill_rect,
+                &mut used,
+                sample.runtime_at_peak() as f32,
+                budget,
+                theme::GREEN,
+            );
+            paint_load_track_stroke(painter, rect, sample.has_violation());
+
+            response.on_hover_ui(|ui| {
+                ui.label(egui::RichText::new("Last completed 1 s ISR window").small());
+                ui.colored_label(
+                    theme::RED,
+                    format!("ADC/EOC: {} cycles", sample.adc_at_peak()),
+                );
+                ui.colored_label(
+                    theme::SELECT_BG,
+                    format!("Control: {} cycles", sample.control_at_peak),
+                );
+                ui.colored_label(
+                    theme::YELLOW,
+                    format!("Scope: {} cycles", sample.scope_at_peak),
+                );
+                ui.colored_label(
+                    theme::GREEN,
+                    format!("Runtime: {} cycles", sample.runtime_at_peak()),
+                );
+                ui.colored_label(
+                    theme::TEXT_SUBDUED,
+                    format!("Headroom: {} cycles", sample.headroom_at_peak()),
+                );
+                ui.label(format!("Budget: {} cycles", sample.cycle_budget));
+                ui.label(format!("ISR overflows: {}", sample.overflows));
+            });
+
+            let text = format!(
+                "Peak {:.0}% · Avg {:.0}% · Violations {}",
+                sample.peak_percent(),
+                sample.average_percent(),
+                sample.violations
+            );
+            ui.label(
+                egui::RichText::new(text)
+                    .small()
+                    .color(if sample.has_violation() {
+                        theme::RED
+                    } else {
+                        theme::TEXT_SUBDUED
+                    }),
+            );
+        } else {
+            paint_load_track(painter, rect, false);
+            paint_load_track_stroke(painter, rect, false);
+            let text = if self.hardware.connected && self.hardware.performance.is_available() {
+                "Collecting performance data…"
+            } else {
+                "Performance data unavailable"
+            };
+            ui.label(egui::RichText::new(text).small().color(theme::TEXT_SUBDUED));
+        }
     }
 
     fn render_viewport(&mut self, ui: &mut egui::Ui) {
@@ -219,6 +323,81 @@ impl ScopeApp {
                 self.log.push(LogLevel::Info, "Layout reset".to_owned());
             }
         }
+    }
+}
+
+fn paint_load_track(painter: &egui::Painter, rect: egui::Rect, warning: bool) {
+    let radius = egui::CornerRadius::same(8);
+    painter.rect_filled(rect, radius, theme::WIDGET_BG);
+    let fill_rect = load_fill_rect(rect);
+    painter.rect_filled(fill_rect, egui::CornerRadius::same(6), theme::WIDGET_ACTIVE);
+    let sheen = egui::Rect::from_min_max(
+        fill_rect.min,
+        egui::pos2(
+            fill_rect.right(),
+            fill_rect.top() + fill_rect.height() * 0.42,
+        ),
+    );
+    painter.rect_filled(
+        sheen,
+        egui::CornerRadius {
+            nw: 6,
+            ne: 6,
+            sw: 0,
+            se: 0,
+        },
+        egui::Color32::from_white_alpha(if warning { 18 } else { 10 }),
+    );
+}
+
+fn paint_load_track_stroke(painter: &egui::Painter, rect: egui::Rect, warning: bool) {
+    painter.rect_stroke(
+        rect,
+        egui::CornerRadius::same(8),
+        egui::Stroke::new(
+            1.0,
+            if warning {
+                theme::RED
+            } else {
+                theme::SEPARATOR
+            },
+        ),
+        egui::StrokeKind::Inside,
+    );
+}
+
+fn load_fill_rect(rect: egui::Rect) -> egui::Rect {
+    rect.shrink2(egui::vec2(2.0, 2.0))
+}
+
+fn paint_load_segment(
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    used: &mut f32,
+    cycles: f32,
+    budget: f32,
+    color: egui::Color32,
+) {
+    let start = (*used / budget).clamp(0.0, 1.0);
+    *used += cycles;
+    let end = (*used / budget).clamp(0.0, 1.0);
+    if end <= start {
+        return;
+    }
+    let segment = egui::Rect::from_min_max(
+        egui::pos2(rect.left() + rect.width() * start, rect.top()),
+        egui::pos2(rect.left() + rect.width() * end, rect.bottom()),
+    );
+    painter.rect_filled(segment, segment_rounding(start, end, rect.height()), color);
+}
+
+fn segment_rounding(start: f32, end: f32, height: f32) -> egui::CornerRadius {
+    let radius = ((height * 0.5).round() as u8).max(1);
+    egui::CornerRadius {
+        nw: if start <= 0.0 { radius } else { 0 },
+        sw: if start <= 0.0 { radius } else { 0 },
+        ne: if end >= 1.0 { radius } else { 0 },
+        se: if end >= 1.0 { radius } else { 0 },
     }
 }
 

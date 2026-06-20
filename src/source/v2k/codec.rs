@@ -1,7 +1,8 @@
 use thiserror::Error;
 
 use crate::source::{
-    DeviceInfo, DeviceStatus, ScopeBlock, ScopeMode, SystemState, VarDescriptor, VarRef, VarType,
+    DeviceInfo, DeviceStatus, PerformanceSample, ScopeBlock, ScopeMode, SystemState, VarDescriptor,
+    VarRef, VarType,
 };
 
 pub const WIRE_VERSION: u8 = 6;
@@ -248,11 +249,12 @@ pub fn parse_hello(payload: &[u8]) -> Result<DeviceInfo, CodecError> {
 }
 
 pub fn parse_status(payload: &[u8]) -> Result<DeviceStatus, CodecError> {
-    if payload.len() < 42 {
+    if payload.len() < 84 {
         return Err(CodecError::MalformedPayload(
             "STATUS is shorter than current layout",
         ));
     }
+    let performance = parse_status_performance(payload)?;
     Ok(DeviceStatus {
         system_state: SystemState::from_wire(read_u16(payload, 0)?),
         fault_code: read_u16(payload, 2)?,
@@ -266,13 +268,43 @@ pub fn parse_status(payload: &[u8]) -> Result<DeviceStatus, CodecError> {
         build_hash: read_u32(payload, 26)?,
         scope_mode: ScopeMode::from_wire(payload[30]),
         scope_flags: payload[31],
-        command_ack_seq: (payload.len() >= 42)
-            .then(|| read_u32(payload, 34))
-            .transpose()?,
-        command_result: (payload.len() >= 42)
-            .then(|| read_u16(payload, 38))
-            .transpose()?,
+        // Always present: parse_status already requires the full current layout
+        // (>= 84), and a shorter STATUS never reaches here because HELLO rejects a
+        // mismatched contract_ver. The Option stays for cross-source uniformity
+        // (e.g. a future non-native bridge that lacks these fields).
+        command_ack_seq: Some(read_u32(payload, 34)?),
+        command_result: Some(read_u16(payload, 38)?),
+        performance,
     })
+}
+
+fn parse_status_performance(payload: &[u8]) -> Result<Option<PerformanceSample>, CodecError> {
+    let sequence = read_u32(payload, 42)?;
+    let sequence_end = read_u32(payload, 80)?;
+    if sequence == 0 || sequence != sequence_end {
+        return Ok(None);
+    }
+    let sample = PerformanceSample {
+        sequence,
+        cycle_budget: read_u32(payload, 46)?,
+        load_average: read_u32(payload, 50)?,
+        load_peak: read_u32(payload, 54)?,
+        control_at_peak: read_u32(payload, 58)?,
+        scope_at_peak: read_u32(payload, 62)?,
+        latency_at_peak: read_u16(payload, 66)?,
+        peak_tick: read_u32(payload, 68)?,
+        violations: read_u32(payload, 72)?,
+        overflows: read_u32(payload, 76)?,
+    };
+    if sample.cycle_budget == 0
+        || sample.load_average > sample.load_peak
+        || sample.adc_at_peak() > sample.load_peak
+        || sample.control_at_peak > sample.load_peak - sample.adc_at_peak()
+        || sample.scope_at_peak > sample.load_peak - sample.adc_at_peak() - sample.control_at_peak
+    {
+        return Ok(None);
+    }
+    Ok(Some(sample))
 }
 
 pub fn parse_descriptors(payload: &[u8]) -> Result<(u16, u16, Vec<VarDescriptor>), CodecError> {
@@ -637,6 +669,14 @@ mod tests {
 
         assert_eq!(status.system_state, SystemState::Running);
         assert!(status.system_state.is_running());
+        let performance = status.performance.expect("performance sample");
+        assert_eq!(performance.sequence, 3);
+        assert_eq!(performance.cycle_budget, 10_000);
+        assert_eq!(performance.load_peak, 7_300);
+        assert_eq!(performance.control_at_peak, 1_600);
+        assert_eq!(performance.scope_at_peak, 900);
+        assert_eq!(performance.latency_at_peak, 40);
+        assert_eq!(performance.runtime_at_peak(), 4_760);
     }
 
     #[test]
@@ -660,7 +700,7 @@ mod tests {
     fn hello_parser_accepts_missing_project_tail() {
         let mut payload = Vec::new();
         payload.extend_from_slice(&u16::from(WIRE_VERSION).to_le_bytes());
-        payload.extend_from_slice(&11_u16.to_le_bytes());
+        payload.extend_from_slice(&12_u16.to_le_bytes());
         payload.extend_from_slice(&0x1234_5678_u32.to_le_bytes());
         payload.extend_from_slice(&2_u16.to_le_bytes());
         payload.extend_from_slice(&0_u16.to_le_bytes());

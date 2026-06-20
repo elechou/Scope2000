@@ -232,6 +232,49 @@ impl fmt::Display for SystemState {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PerformanceSample {
+    pub sequence: u32,
+    pub cycle_budget: u32,
+    pub load_average: u32,
+    pub load_peak: u32,
+    pub control_at_peak: u32,
+    pub scope_at_peak: u32,
+    pub latency_at_peak: u16,
+    pub peak_tick: u32,
+    pub violations: u32,
+    pub overflows: u32,
+}
+
+impl PerformanceSample {
+    pub fn adc_at_peak(&self) -> u32 {
+        u32::from(self.latency_at_peak)
+    }
+
+    pub fn runtime_at_peak(&self) -> u32 {
+        self.load_peak
+            .saturating_sub(self.adc_at_peak())
+            .saturating_sub(self.control_at_peak)
+            .saturating_sub(self.scope_at_peak)
+    }
+
+    pub fn headroom_at_peak(&self) -> u32 {
+        self.cycle_budget.saturating_sub(self.load_peak)
+    }
+
+    pub fn peak_percent(&self) -> f64 {
+        f64::from(self.load_peak) * 100.0 / f64::from(self.cycle_budget)
+    }
+
+    pub fn average_percent(&self) -> f64 {
+        f64::from(self.load_average) * 100.0 / f64::from(self.cycle_budget)
+    }
+
+    pub fn has_violation(&self) -> bool {
+        self.violations != 0 || self.overflows != 0 || self.load_peak >= self.cycle_budget
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct DeviceStatus {
     pub system_state: SystemState,
@@ -248,6 +291,7 @@ pub struct DeviceStatus {
     pub scope_flags: u8,
     pub command_ack_seq: Option<u32>,
     pub command_result: Option<u16>,
+    pub performance: Option<PerformanceSample>,
 }
 
 #[derive(Debug, Clone)]

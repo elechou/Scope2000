@@ -32,6 +32,7 @@ impl ScopeApp {
                     );
                     self.hardware.info = Some(info);
                     self.hardware.version = self.hardware.version_text();
+                    self.hardware.performance.set_available(true);
                     self.handle_firmware_project();
                 }
                 SourceEvent::Disconnected => {
@@ -39,6 +40,7 @@ impl ScopeApp {
                     self.hardware.connecting = false;
                     self.hardware.info = None;
                     self.hardware.status = None;
+                    self.hardware.performance.clear();
                     self.wave.active = false;
                     self.wave.restart_pending = None;
                     self.descriptor_catalog_ready = false;
@@ -66,13 +68,16 @@ impl ScopeApp {
                     self.next_watch_read = Instant::now();
                 }
                 SourceEvent::Status(status) => {
+                    let previous_state = self
+                        .hardware
+                        .status
+                        .as_ref()
+                        .map(|previous| previous.system_state);
                     let entered_running = status.system_state.is_running()
-                        && !self
-                            .hardware
-                            .status
-                            .as_ref()
-                            .is_some_and(|previous| previous.system_state.is_running());
+                        && !previous_state.is_some_and(|previous| previous.is_running());
+                    let performance = status.performance;
                     self.hardware.status = Some(status);
+                    self.hardware.performance.ingest_status(performance);
                     if entered_running {
                         self.next_watch_read = Instant::now();
                         self.log.push(
@@ -208,6 +213,7 @@ impl ScopeApp {
                     );
                     self.hardware.info = Some(info);
                     self.hardware.status = None;
+                    self.hardware.performance.clear();
                     self.hardware.version = self.hardware.version_text();
                     self.workspace_watch_restored = false;
                     self.descriptor_catalog_ready = false;

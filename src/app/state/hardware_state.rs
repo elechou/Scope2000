@@ -1,4 +1,39 @@
-use crate::source::{DeviceInfo, DeviceStatus, ScopeMode, TransportEndpoint};
+use crate::source::{DeviceInfo, DeviceStatus, PerformanceSample, ScopeMode, TransportEndpoint};
+
+#[derive(Default)]
+pub struct PerformanceState {
+    available: bool,
+    sample: Option<PerformanceSample>,
+}
+
+impl PerformanceState {
+    pub fn set_available(&mut self, available: bool) {
+        self.available = available;
+        if !available {
+            self.sample = None;
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.available = false;
+        self.sample = None;
+    }
+
+    pub fn is_available(&self) -> bool {
+        self.available
+    }
+
+    pub fn sample(&self) -> Option<PerformanceSample> {
+        self.sample
+    }
+
+    pub fn ingest_status(&mut self, sample: Option<PerformanceSample>) {
+        self.available = true;
+        if let Some(sample) = sample {
+            self.sample = Some(sample);
+        }
+    }
+}
 
 pub(crate) struct HardwareState {
     pub port: String,
@@ -9,6 +44,7 @@ pub(crate) struct HardwareState {
     pub info: Option<DeviceInfo>,
     pub status: Option<DeviceStatus>,
     pub version: Option<String>,
+    pub performance: PerformanceState,
 }
 
 impl Default for HardwareState {
@@ -22,6 +58,7 @@ impl Default for HardwareState {
             info: None,
             status: None,
             version: None,
+            performance: PerformanceState::default(),
         }
     }
 }
@@ -97,7 +134,7 @@ fn tick_rate_text(tick_hz: u32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::source::DeviceInfo;
+    use crate::source::{DeviceInfo, PerformanceSample};
 
     #[test]
     fn connection_settings_are_locked_while_connecting_or_connected() {
@@ -140,7 +177,7 @@ mod tests {
         let hardware = HardwareState {
             info: Some(DeviceInfo {
                 protocol_version: 1,
-                contract_version: 11,
+                contract_version: 12,
                 build_hash: 0x3C31_3C66,
                 descriptor_count: 0,
                 firmware_name: "viewer2000".to_owned(),
@@ -156,5 +193,64 @@ mod tests {
             hardware.version_text().as_deref(),
             Some("Viewer2000 · 20kHz")
         );
+    }
+
+    #[test]
+    fn performance_state_tracks_status_availability() {
+        let mut performance = PerformanceState::default();
+        assert!(!performance.is_available());
+        assert_eq!(performance.sample(), None);
+
+        performance.set_available(true);
+        assert!(performance.is_available());
+        assert_eq!(performance.sample(), None);
+
+        performance.clear();
+        assert!(!performance.is_available());
+    }
+
+    #[test]
+    fn performance_state_keeps_last_valid_status_sample() {
+        let mut performance = PerformanceState::default();
+        let sample = PerformanceSample {
+            sequence: 7,
+            cycle_budget: 2_000,
+            load_average: 824,
+            load_peak: 1_224,
+            control_at_peak: 700,
+            scope_at_peak: 300,
+            latency_at_peak: 24,
+            peak_tick: 99,
+            violations: 0,
+            overflows: 0,
+        };
+        performance.ingest_status(Some(sample));
+
+        assert_eq!(sample.runtime_at_peak(), 200);
+        assert_eq!(sample.headroom_at_peak(), 776);
+        assert_eq!(sample.peak_percent(), 61.2);
+        assert_eq!(sample.average_percent(), 41.2);
+        assert_eq!(performance.sample(), Some(sample));
+
+        performance.ingest_status(None);
+        assert_eq!(performance.sample(), Some(sample));
+
+        let overloaded = PerformanceSample {
+            sequence: 8,
+            cycle_budget: 1_000,
+            load_average: 930,
+            load_peak: 1_530,
+            control_at_peak: 800,
+            scope_at_peak: 400,
+            latency_at_peak: 30,
+            peak_tick: 100,
+            violations: 0,
+            overflows: 0,
+        };
+        performance.ingest_status(Some(overloaded));
+        let overloaded = performance.sample().expect("overloaded sample");
+        assert_eq!(overloaded.peak_percent(), 153.0);
+        assert_eq!(overloaded.headroom_at_peak(), 0);
+        assert!(overloaded.has_violation());
     }
 }

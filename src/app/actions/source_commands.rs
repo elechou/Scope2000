@@ -35,6 +35,7 @@ impl ScopeApp {
         self.descriptor_catalog_ready = false;
         self.hardware.info = None;
         self.hardware.status = None;
+        self.hardware.performance.clear();
         self.send(SourceCommand::Connect(endpoint));
     }
 
@@ -50,13 +51,13 @@ impl ScopeApp {
         if !self.hardware.connected || !self.has_capability(CAP_CAL) {
             return;
         }
-        if Instant::now() < self.next_watch_read {
-            return;
+        let now = Instant::now();
+        if now >= self.next_watch_read {
+            for reads in self.inspector.read_batches() {
+                self.send_catalog(CatalogCommand::ReadValues(reads));
+            }
+            self.next_watch_read = now + super::super::WATCH_READ_PERIOD;
         }
-        for reads in self.inspector.read_batches() {
-            self.send_catalog(CatalogCommand::ReadValues(reads));
-        }
-        self.next_watch_read = Instant::now() + super::super::WATCH_READ_PERIOD;
     }
 
     pub(in crate::app) fn write_variables(&mut self, writes: Vec<(usize, f64)>) {

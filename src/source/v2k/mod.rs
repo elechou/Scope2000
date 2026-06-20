@@ -14,7 +14,7 @@ use crate::source::{
     SourceEvent, SourceHandle, TransportEndpoint,
 };
 
-const EXPECTED_CONTRACT_VERSION: u16 = 11;
+const EXPECTED_CONTRACT_VERSION: u16 = 12;
 const ENUM_PAGE_SIZE: u8 = 8;
 #[cfg(not(test))]
 const REQUEST_TIMEOUT: Duration = Duration::from_millis(150);
@@ -666,7 +666,7 @@ mod tests {
     }
 
     fn status_payload(build_hash: u32) -> Vec<u8> {
-        let mut payload = vec![0_u8; 42];
+        let mut payload = vec![0_u8; 84];
         payload[..2].copy_from_slice(&1_u16.to_le_bytes());
         payload[26..30].copy_from_slice(&build_hash.to_le_bytes());
         payload
