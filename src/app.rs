@@ -24,6 +24,9 @@ use self::state::{
 };
 
 const WATCH_READ_PERIOD: Duration = Duration::from_secs(1);
+/// How often the bound CCS project is re-scanned for a fresh build so a
+/// recompile is noticed live, without blocking the UI on a directory walk.
+pub(in crate::app) const LOCAL_METADATA_REFRESH_PERIOD: Duration = Duration::from_secs(2);
 
 pub struct ScopeApp {
     hardware: HardwareState,
@@ -39,12 +42,14 @@ pub struct ScopeApp {
     workspace: WorkspaceState,
     project: ProjectContext,
     project_scan: Option<mpsc::Receiver<Vec<ProjectCandidate>>>,
-    project_metadata_scan: Option<mpsc::Receiver<Result<state::LocalProject, String>>>,
+    project_metadata_scan: Option<mpsc::Receiver<Result<state::LocalBuildScan, String>>>,
+    local_report_path: Option<std::path::PathBuf>,
     project_candidates: Vec<ProjectCandidate>,
     project_index_target: Option<String>,
     pending_rebind: Option<state::LocalProject>,
     pending_delete_project: Option<String>,
     next_watch_read: Instant,
+    next_metadata_refresh: Instant,
     workspace_watch_restored: bool,
     descriptor_catalog_ready: bool,
     workspace_autosave: WorkspaceAutosaveState,
@@ -104,11 +109,13 @@ impl ScopeApp {
             project,
             project_scan: None,
             project_metadata_scan: None,
+            local_report_path: None,
             project_candidates: Vec::new(),
             project_index_target: None,
             pending_rebind: None,
             pending_delete_project: None,
             next_watch_read: Instant::now(),
+            next_metadata_refresh: Instant::now(),
             workspace_watch_restored: false,
             descriptor_catalog_ready: false,
             workspace_autosave: WorkspaceAutosaveState::new(),
@@ -398,8 +405,14 @@ impl eframe::App for ScopeApp {
         crate::ui::modals::show_about_window(ui, &mut self.ui);
         self.poll_project_scan();
         self.poll_local_project_metadata();
+        self.maybe_refresh_local_project_metadata();
         if self.project_metadata_scan.is_some() {
             ui.ctx().request_repaint_after(Duration::from_millis(100));
+        } else if self.project.local.is_some() {
+            // Keep the timer ticking while idle so a CCS recompile is detected
+            // even when no firmware is driving 16 ms repaints.
+            ui.ctx()
+                .request_repaint_after(LOCAL_METADATA_REFRESH_PERIOD);
         }
         self.show_project_modals(ui);
 

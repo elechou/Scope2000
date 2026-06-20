@@ -1,11 +1,12 @@
 use std::sync::mpsc;
+use std::time::Instant;
 
 use eframe::egui;
 
-use crate::app::ScopeApp;
+use crate::app::{LOCAL_METADATA_REFRESH_PERIOD, ScopeApp};
 use crate::app::state::{
     LocalProject, MutationPolicy, ProjectBinding, ProjectStatus, UNTITLED_PROJECT, UnresolvedRefs,
-    WorkspaceStore, load_local_project_with_metadata, scan_project_directory,
+    WorkspaceStore, refresh_local_build, scan_project_directory,
 };
 use crate::console::LogLevel;
 use crate::source::{SourceCommand, SystemCommand};
@@ -106,6 +107,7 @@ impl ScopeApp {
         self.save_workspace();
         self.project.active_name = name.clone();
         self.project.local = local;
+        self.local_report_path = None;
         self.project.unresolved = UnresolvedRefs::default();
         self.workspace = name
             .as_deref()
@@ -208,22 +210,39 @@ impl ScopeApp {
         }
     }
 
+    /// Re-scans the bound CCS project on an interval so a recompile that
+    /// produces a fresh build report is picked up while the app is running.
+    pub(in crate::app) fn maybe_refresh_local_project_metadata(&mut self) {
+        if self.project.local.is_none()
+            || self.project_metadata_scan.is_some()
+            || Instant::now() < self.next_metadata_refresh
+        {
+            return;
+        }
+        self.begin_local_project_metadata_refresh();
+    }
+
     pub(in crate::app) fn begin_local_project_metadata_refresh(&mut self) {
         if self.project_metadata_scan.is_some() {
             return;
         }
-        let Some(project_file) = self
-            .project
-            .local
-            .as_ref()
-            .map(|project| project.project_file.clone())
-        else {
+        let Some(local) = self.project.local.as_ref() else {
             return;
         };
+        let project_file = local.project_file.clone();
+        let name = local.name.clone();
+        // Only reuse the cached report if it lives under this project's own
+        // directory, so a stale path from a same-named project is never trusted.
+        let cached_report = self.local_report_path.clone().filter(|report| {
+            project_file
+                .parent()
+                .is_some_and(|dir| report.starts_with(dir))
+        });
+        self.next_metadata_refresh = Instant::now() + LOCAL_METADATA_REFRESH_PERIOD;
         let (tx, rx) = mpsc::channel();
         std::thread::spawn(move || {
             let result =
-                load_local_project_with_metadata(project_file).map_err(|error| error.to_string());
+                refresh_local_build(project_file, name, cached_report).map_err(|e| e.to_string());
             let _ = tx.send(result);
         });
         self.project_metadata_scan = Some(rx);
@@ -234,13 +253,27 @@ impl ScopeApp {
             return;
         };
         match rx.try_recv() {
-            Ok(Ok(project)) => {
+            Ok(Ok(scan)) => {
                 self.project_metadata_scan = None;
+                let project = scan.project;
                 let still_active = self.project.local.as_ref().is_some_and(|current| {
                     current.name == project.name && current.project_file == project.project_file
                 });
                 if !still_active {
                     self.begin_local_project_metadata_refresh();
+                    return;
+                }
+                // Remember which report fed this build so the next tick re-reads
+                // just that file instead of walking the project tree again.
+                self.local_report_path = scan.report_path;
+                // The periodic re-scan re-reads identical metadata most of the
+                // time; only mutate and persist when the build actually moved
+                // so we do not rewrite projects.toml on every tick.
+                let unchanged = self.project.local.as_ref().is_some_and(|current| {
+                    current.build_time_utc == project.build_time_utc
+                        && current.build_hash == project.build_hash
+                });
+                if unchanged {
                     return;
                 }
                 if let Some(binding) = self.project.registry.projects.get_mut(&project.name)
@@ -368,13 +401,21 @@ impl ScopeApp {
 
     pub(in crate::app) fn project_panel(&mut self, ui: &mut egui::Ui) {
         let status = self.project.status(self.hardware.info.as_ref());
-        let fill = match status {
-            ProjectStatus::Matched => theme::SELECT_BG,
-            ProjectStatus::FirmwareOnly | ProjectStatus::UntitledDemo => theme::YELLOW,
-            ProjectStatus::Conflict => theme::RED.gamma_multiply(0.78),
-            ProjectStatus::NoProject
-            | ProjectStatus::LocalUnverified
-            | ProjectStatus::CachedDisconnected => theme::TAB_BAR,
+        let build_mismatch = self.project.build_mismatch(self.hardware.info.as_ref());
+        let fill = if build_mismatch {
+            // Same project, stale build: flag the name red as an alarm. This is
+            // purely advisory — the mutation policy stays Matched so the user
+            // can keep viewing and operating.
+            theme::RED.gamma_multiply(0.78)
+        } else {
+            match status {
+                ProjectStatus::Matched => theme::SELECT_BG,
+                ProjectStatus::FirmwareOnly | ProjectStatus::UntitledDemo => theme::YELLOW,
+                ProjectStatus::Conflict => theme::RED.gamma_multiply(0.78),
+                ProjectStatus::NoProject
+                | ProjectStatus::LocalUnverified
+                | ProjectStatus::CachedDisconnected => theme::TAB_BAR,
+            }
         };
         theme::section_header_colored(ui, &self.project.title(self.hardware.info.as_ref()), fill);
         ui.add_space(4.0);
@@ -428,8 +469,11 @@ impl ScopeApp {
             ui.colored_label(theme::RED, "Project mismatch — device mutations blocked");
         } else if status == ProjectStatus::UntitledDemo {
             ui.colored_label(theme::YELLOW, "Workspace will not be saved");
-        } else if self.project.build_mismatch(self.hardware.info.as_ref()) {
-            ui.colored_label(theme::YELLOW, "CCS build differs from connected firmware");
+        } else if build_mismatch {
+            ui.colored_label(
+                theme::RED,
+                "CCS build differs from connected firmware — repo artifact is not what's running",
+            );
         }
         let unresolved = self.project.unresolved.count();
         if unresolved > 0

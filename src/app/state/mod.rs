@@ -12,9 +12,9 @@ mod workspace_state;
 pub(crate) use self::{
     hardware_state::HardwareState,
     project_state::{
-        LocalProject, MutationPolicy, ProjectBinding, ProjectCandidate, ProjectContext,
-        ProjectStatus, UNTITLED_PROJECT, UnresolvedRefs, WorkspaceStore,
-        load_local_project_with_metadata, scan_project_directory,
+        LocalBuildScan, LocalProject, MutationPolicy, ProjectBinding, ProjectCandidate,
+        ProjectContext, ProjectStatus, UNTITLED_PROJECT, UnresolvedRefs, WorkspaceStore,
+        refresh_local_build, scan_project_directory,
     },
     ui_state::{UiState, VARMAP_SPLIT_DEFAULT},
     viewport_state::ViewportState,

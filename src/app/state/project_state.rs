@@ -66,7 +66,19 @@ struct BakerProjectInfo {
     build_time_utc: u32,
 }
 
-fn discover_local_build(project_dir: &Path, project_name: &str) -> Option<(u32, Option<u32>)> {
+/// Reads a single baker report, returning its build identity when it still
+/// belongs to `project_name`. Cheap enough to call on every refresh tick.
+fn read_build_report(report_path: &Path, project_name: &str) -> Option<(u32, Option<u32>)> {
+    let text = std::fs::read_to_string(report_path).ok()?;
+    let report = serde_json::from_str::<BakerReport>(&text).ok()?;
+    (report.project_info.project_name == project_name && report.project_info.build_time_utc != 0)
+        .then_some((report.project_info.build_time_utc, report.build_hash))
+}
+
+fn discover_local_build(
+    project_dir: &Path,
+    project_name: &str,
+) -> Option<(PathBuf, u32, Option<u32>)> {
     walkdir::WalkDir::new(project_dir)
         .max_depth(4)
         .follow_links(false)
@@ -75,12 +87,12 @@ fn discover_local_build(project_dir: &Path, project_name: &str) -> Option<(u32, 
         .filter(|entry| {
             entry.file_type().is_file() && entry.file_name() == "v2k_user_desc_report.json"
         })
-        .filter_map(|entry| std::fs::read_to_string(entry.path()).ok())
-        .filter_map(|text| serde_json::from_str::<BakerReport>(&text).ok())
-        .filter(|report| report.project_info.project_name == project_name)
-        .filter(|report| report.project_info.build_time_utc != 0)
-        .max_by_key(|report| report.project_info.build_time_utc)
-        .map(|report| (report.project_info.build_time_utc, report.build_hash))
+        .filter_map(|entry| {
+            let report = read_build_report(entry.path(), project_name)?;
+            Some((entry.into_path(), report))
+        })
+        .max_by_key(|(_, (build_time_utc, _))| *build_time_utc)
+        .map(|(path, (build_time_utc, build_hash))| (path, build_time_utc, build_hash))
 }
 
 /// Loads the fast CCS identity first, then discovers baker metadata. Call this
@@ -89,7 +101,7 @@ pub(crate) fn load_local_project_with_metadata(
     path: impl AsRef<Path>,
 ) -> anyhow::Result<LocalProject> {
     let mut project = LocalProject::load(path)?;
-    if let Some((build_time_utc, build_hash)) = discover_local_build(
+    if let Some((_, build_time_utc, build_hash)) = discover_local_build(
         project
             .project_file
             .parent()
@@ -100,6 +112,55 @@ pub(crate) fn load_local_project_with_metadata(
         project.build_hash = build_hash;
     }
     Ok(project)
+}
+
+/// A refreshed project plus the report file the build identity came from, so
+/// the next refresh can re-read just that file instead of walking the tree.
+#[derive(Debug, Clone)]
+pub(crate) struct LocalBuildScan {
+    pub project: LocalProject,
+    pub report_path: Option<PathBuf>,
+}
+
+/// Periodic build refresh for the bound project. When the previously used
+/// report is still readable it is re-read directly (a rebuild rewrites it in
+/// place); otherwise the tree is walked to find the newest matching report.
+pub(crate) fn refresh_local_build(
+    project_file: PathBuf,
+    expected_name: String,
+    cached_report: Option<PathBuf>,
+) -> anyhow::Result<LocalBuildScan> {
+    if let Some(report_path) = cached_report
+        && let Some((build_time_utc, build_hash)) = read_build_report(&report_path, &expected_name)
+    {
+        return Ok(LocalBuildScan {
+            project: LocalProject {
+                name: expected_name,
+                project_file,
+                build_time_utc: Some(build_time_utc),
+                build_hash,
+            },
+            report_path: Some(report_path),
+        });
+    }
+
+    let mut project = LocalProject::load(&project_file)?;
+    let report_path = discover_local_build(
+        project
+            .project_file
+            .parent()
+            .unwrap_or(&project.project_file),
+        &project.name,
+    )
+    .map(|(report_path, build_time_utc, build_hash)| {
+        project.build_time_utc = Some(build_time_utc);
+        project.build_hash = build_hash;
+        report_path
+    });
+    Ok(LocalBuildScan {
+        project,
+        report_path,
+    })
 }
 
 pub(crate) fn display_build_time(build_time_utc: Option<u32>) -> String {
@@ -531,12 +592,24 @@ impl ProjectContext {
     }
 
     pub fn build_mismatch(&self, info: Option<&DeviceInfo>) -> bool {
-        self.status(info) == ProjectStatus::Matched
-            && self.local.as_ref().is_some_and(|local| {
-                local.build_hash.is_some_and(|local_hash| {
-                    info.is_some_and(|device| device.build_hash != local_hash)
-                })
-            })
+        if self.status(info) != ProjectStatus::Matched {
+            return false;
+        }
+        let (Some(local), Some(device)) = (self.local.as_ref(), info) else {
+            return false;
+        };
+        // The contract hash catches descriptor-layout drift, but it is unchanged
+        // by a plain recompile. A zero hash means the firmware did not report one.
+        let hash_differs = local
+            .build_hash
+            .is_some_and(|local_hash| device.build_hash != 0 && device.build_hash != local_hash);
+        // The build time is the field the panel shows, so a recompile that keeps
+        // the same contract must still alarm — otherwise the two displayed
+        // "Built Time" values disagree with nothing flagged.
+        let time_differs = local.build_time_utc.is_some_and(|local_time| {
+            local_time != 0 && device.build_time_utc != 0 && local_time != device.build_time_utc
+        });
+        hash_differs || time_differs
     }
 }
 
@@ -671,6 +744,43 @@ mod tests {
     }
 
     #[test]
+    fn unreported_firmware_hash_does_not_alarm() {
+        let mut context = context(Some("A"), Some("A"));
+        context.local.as_mut().unwrap().build_hash = Some(2);
+        let mut device = device("A");
+        device.build_hash = 0;
+
+        assert_eq!(context.status(Some(&device)), ProjectStatus::Matched);
+        assert!(!context.build_mismatch(Some(&device)));
+    }
+
+    #[test]
+    fn recompile_with_same_contract_still_alarms_on_build_time() {
+        let mut context = context(Some("A"), Some("A"));
+        let local = context.local.as_mut().unwrap();
+        local.build_hash = Some(1);
+        local.build_time_utc = Some(200);
+        let mut device = device("A");
+        device.build_hash = 1; // identical descriptor contract
+        device.build_time_utc = 100; // firmware predates the local rebuild
+
+        assert!(context.build_mismatch(Some(&device)));
+    }
+
+    #[test]
+    fn matching_hash_and_build_time_does_not_alarm() {
+        let mut context = context(Some("A"), Some("A"));
+        let local = context.local.as_mut().unwrap();
+        local.build_hash = Some(1);
+        local.build_time_utc = Some(100);
+        let mut device = device("A");
+        device.build_hash = 1;
+        device.build_time_utc = 100;
+
+        assert!(!context.build_mismatch(Some(&device)));
+    }
+
+    #[test]
     fn untitled_demo_allows_demo_start_but_not_calibration() {
         let policy = MutationPolicy::for_status(ProjectStatus::UntitledDemo);
         assert!(policy.system_start);
@@ -796,6 +906,63 @@ mod tests {
 
         assert_eq!(project.build_time_utc, Some(200));
         assert_eq!(project.build_hash, Some(20));
+    }
+
+    #[test]
+    fn refresh_local_build_walks_and_reports_the_chosen_report_path() {
+        let root = TempDir::new();
+        write_project(&root.0, "demo");
+        write_build_report(&root.0.join("FLASH"), "demo", 200, 20);
+        let project_file = root.0.join(".project").canonicalize().unwrap();
+
+        let scan = refresh_local_build(project_file, "demo".to_owned(), None).unwrap();
+
+        assert_eq!(scan.project.build_time_utc, Some(200));
+        assert_eq!(scan.project.build_hash, Some(20));
+        assert!(
+            scan.report_path
+                .as_ref()
+                .unwrap()
+                .ends_with("FLASH/v2k_user_desc_report.json")
+        );
+    }
+
+    #[test]
+    fn refresh_local_build_fast_path_rereads_cached_report() {
+        let root = TempDir::new();
+        write_project(&root.0, "demo");
+        let report_dir = root.0.join("FLASH");
+        write_build_report(&report_dir, "demo", 200, 20);
+        let report_path = report_dir.join("v2k_user_desc_report.json");
+        let project_file = root.0.join(".project").canonicalize().unwrap();
+
+        // A rebuild rewrites the same report in place; the cached path must pick
+        // the new build up directly.
+        write_build_report(&report_dir, "demo", 300, 30);
+        let scan =
+            refresh_local_build(project_file, "demo".to_owned(), Some(report_path.clone())).unwrap();
+
+        assert_eq!(scan.project.build_time_utc, Some(300));
+        assert_eq!(scan.project.build_hash, Some(30));
+        assert_eq!(scan.report_path, Some(report_path));
+    }
+
+    #[test]
+    fn refresh_local_build_rejects_cached_report_from_another_project() {
+        let root = TempDir::new();
+        write_project(&root.0, "demo");
+        write_build_report(&root.0.join("FLASH"), "demo", 200, 20);
+        let project_file = root.0.join(".project").canonicalize().unwrap();
+
+        let other = TempDir::new();
+        write_build_report(&other.0, "other", 999, 99);
+        let stale = other.0.join("v2k_user_desc_report.json");
+
+        let scan = refresh_local_build(project_file, "demo".to_owned(), Some(stale)).unwrap();
+
+        // The stale report belongs to "other", so the walk finds demo's instead.
+        assert_eq!(scan.project.build_time_utc, Some(200));
+        assert_eq!(scan.project.build_hash, Some(20));
     }
 
     #[test]
