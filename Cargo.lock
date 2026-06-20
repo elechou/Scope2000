@@ -3186,6 +3186,7 @@ dependencies = [
  "egui_extras",
  "egui_plot",
  "egui_tiles",
+ "image",
  "rfd",
  "roxmltree",
  "serde",
