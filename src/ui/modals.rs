@@ -137,7 +137,7 @@ pub fn show_device_info_window(
         content_rect.bottom() - WINDOW_MARGIN,
     );
 
-    egui::Window::new("Device Infomation")
+    egui::Window::new("Device Information")
         .id(egui::Id::new("device_info_window"))
         .open(&mut ui_state.show_device_info_window)
         .pivot(egui::Align2::RIGHT_BOTTOM)

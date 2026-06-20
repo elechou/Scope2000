@@ -27,6 +27,12 @@ pub enum WaveAction {
     Restart(ScopeMode),
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct WavePermissions {
+    pub can_start: bool,
+    pub can_edit_variable_refs: bool,
+}
+
 /// Collect variable names from TimeSeries panes in the tile tree.
 fn collect_pane_vars(tiles: &egui_tiles::Tiles<crate::wave::pane::ViewPane>) -> Vec<String> {
     let mut vars = Vec::new();
@@ -53,23 +59,34 @@ pub fn show_wave_section(
     tick_hz: Option<u32>,
     tiles: &egui_tiles::Tiles<crate::wave::pane::ViewPane>,
     record_max_points: Option<u16>,
+    permissions: WavePermissions,
 ) -> Option<WaveAction> {
     let mut action = None;
     let tick_hz = effective_tick_hz(tick_hz.unwrap_or(DEFAULT_TICK_HZ));
+    let WavePermissions {
+        can_start,
+        can_edit_variable_refs,
+    } = permissions;
 
     theme::section_header(ui, "Wave");
     ui.add_space(4.0);
 
     ui.horizontal(|ui| {
         let w = (ui.available_width() - ui.spacing().item_spacing.x * 2.0) / 3.0;
-        if theme::action_button_w(ui, "Stream", theme::GREEN, connected && !wave.active, w) {
+        if theme::action_button_w(
+            ui,
+            "Stream",
+            theme::GREEN,
+            connected && can_start && !wave.active,
+            w,
+        ) {
             action = Some(WaveAction::StartStream);
         }
         if theme::action_button_w(
             ui,
             "Capture",
             theme::SELECT_BG,
-            connected && !wave.active,
+            connected && can_start && !wave.active,
             w,
         ) {
             action = Some(WaveAction::ArmCapture);
@@ -105,35 +122,37 @@ pub fn show_wave_section(
 
     let pane_vars = collect_pane_vars(tiles);
 
-    ui.horizontal(|ui| {
-        ui.label("Trigger");
-        let ch_label = match &wave.settings.trigger_source {
-            None => "Auto".to_string(),
-            Some(name) => name.clone(),
-        };
-        egui::ComboBox::from_id_salt("trg_ch")
-            .width(90.0)
-            .selected_text(ch_label)
-            .show_ui(ui, |ui| {
-                ui.selectable_value(&mut wave.settings.trigger_source, None, "Auto");
-                for (i, name) in pane_vars.iter().enumerate() {
-                    if i > 15 {
-                        break;
+    ui.add_enabled_ui(can_edit_variable_refs, |ui| {
+        ui.horizontal(|ui| {
+            ui.label("Trigger");
+            let ch_label = match &wave.settings.trigger_source {
+                None => "Auto".to_string(),
+                Some(name) => name.clone(),
+            };
+            egui::ComboBox::from_id_salt("trg_ch")
+                .width(90.0)
+                .selected_text(ch_label)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut wave.settings.trigger_source, None, "Auto");
+                    for (i, name) in pane_vars.iter().enumerate() {
+                        if i > 15 {
+                            break;
+                        }
+                        ui.selectable_value(
+                            &mut wave.settings.trigger_source,
+                            Some(name.clone()),
+                            name.as_str(),
+                        );
                     }
-                    ui.selectable_value(
-                        &mut wave.settings.trigger_source,
-                        Some(name.clone()),
-                        name.as_str(),
-                    );
-                }
-            });
-        egui::ComboBox::from_id_salt("trg_edge")
-            .width(45.0)
-            .selected_text(trigger_edge_label(wave.settings.trigger_edge))
-            .show_ui(ui, |ui| {
-                ui.selectable_value(&mut wave.settings.trigger_edge, TriggerEdge::Rise, "Rise");
-                ui.selectable_value(&mut wave.settings.trigger_edge, TriggerEdge::Fall, "Fall");
-            });
+                });
+            egui::ComboBox::from_id_salt("trg_edge")
+                .width(45.0)
+                .selected_text(trigger_edge_label(wave.settings.trigger_edge))
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut wave.settings.trigger_edge, TriggerEdge::Rise, "Rise");
+                    ui.selectable_value(&mut wave.settings.trigger_edge, TriggerEdge::Fall, "Fall");
+                });
+        })
     });
 
     ui.horizontal(|ui| {
@@ -159,7 +178,7 @@ pub fn show_wave_section(
 
     wave.settings.clamp();
 
-    if wave.active && action.is_none() && !any_dragging {
+    if can_start && wave.active && action.is_none() && !any_dragging {
         let settings_changed =
             settings_changed_for_mode(wave.mode, &wave.settings, &wave.settings_snapshot);
         let channels_changed = pane_vars != wave.pane_vars_snapshot;

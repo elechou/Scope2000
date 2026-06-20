@@ -333,6 +333,7 @@ pub enum SourceCommand {
 pub enum SourceEvent {
     Connected(DeviceInfo),
     Disconnected,
+    /// A complete catalog replacement for the current firmware build.
     Descriptors(Vec<VarDescriptor>),
     Status(DeviceStatus),
     ParamsStaged,

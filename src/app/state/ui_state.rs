@@ -1,6 +1,7 @@
 pub(crate) struct UiState {
     pub source_filter: String,
     pub stop_warning_action: Option<&'static str>,
+    pub show_project_switch_warning: bool,
     pub show_system_panel: bool,
     pub show_console_panel: bool,
     pub show_selection_panel: bool,
@@ -21,6 +22,7 @@ impl Default for UiState {
         Self {
             source_filter: String::new(),
             stop_warning_action: None,
+            show_project_switch_warning: false,
             show_system_panel: true,
             show_console_panel: false,
             show_selection_panel: true,

@@ -3187,6 +3187,7 @@ dependencies = [
  "egui_plot",
  "egui_tiles",
  "rfd",
+ "roxmltree",
  "serde",
  "serde_json",
  "serialport",
@@ -3194,6 +3195,7 @@ dependencies = [
  "toml 0.8.23",
  "tracing",
  "tracing-subscriber",
+ "walkdir",
  "winresource",
 ]
 

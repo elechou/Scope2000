@@ -61,6 +61,25 @@ selection, console, and waveform panels with persistent workspace layout. Its
 runtime catalog, parameter traffic, system commands, bindings, and scope blocks
 come exclusively from the native Viewer2000 service model through `V2kSource`.
 
+The Viewer2000 `project_name` reported by HELLO is Scope2000's project identity.
+Each named project has an independent workspace containing its Variable Map
+pins and watches, Wave Layout, acquisition settings, and panel geometry. Global
+connection settings, verified CCS `.project` bindings, and per-project
+workspaces live under the platform Scope2000 configuration directory. A
+`build_hash` change re-enumerates the firmware catalog but never changes the
+active project workspace when `project_name` is unchanged.
+
+`project_name` is a workspace lineage key, not proof of source provenance.
+Scope2000 cannot infer whether a copied directory is another checkout of the
+same project or a new fork. A matching local baker report makes build
+differences visible, but intentionally does not reset or block a same-name
+workspace because ordinary firmware iteration also changes `build_hash`.
+
+The File menu keeps an MRU list of up to 100 project caches. The first 10 are
+available directly from `Open Recent Project...`; `More Projects...` opens the
+project manager for rebinding CCS indexes, removing bindings, or deleting a
+complete Scope2000 project cache without modifying the CCS source directory.
+
 Legacy hardware protocols, connection clients, and firmware file workflows do
 not belong in this process. They must be translated by a separate bridge and
 must not change Viewer2000 protocol semantics, native sample widths, polling

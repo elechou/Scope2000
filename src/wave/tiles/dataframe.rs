@@ -59,13 +59,15 @@ impl<'a> MyTilesDelegate<'a> {
                 });
             });
 
-        if inner_resp.response.contains_pointer()
+        if self.can_edit_variable_refs
+            && inner_resp.response.contains_pointer()
             && egui::DragAndDrop::has_payload_of_type::<VarDragPayload>(ui.ctx())
         {
             self.drop_hover_tile = Some(tile_id);
         }
 
-        if let Some(dropped) = payload
+        if self.can_edit_variable_refs
+            && let Some(dropped) = payload
             && let Some(fb) = self.apply_drop(ui.ctx(), tile_id, pane, &dropped)
         {
             self.drop_feedback = Some(fb);

@@ -53,29 +53,18 @@ impl HardwareState {
     }
 
     pub fn version_text(&self) -> Option<String> {
-        self.info.as_ref().map(|info| {
-            if !info.project_name.is_empty() || info.build_time_utc != 0 {
-                format!(
-                    "{}·{}",
-                    info.project_display_name(),
-                    info.build_time_display_text()
-                )
-            } else {
-                format!(
-                    "{}  build=0x{:08X}  tick={}Hz",
-                    info.firmware_name, info.build_hash, info.tick_hz
-                )
-            }
-        })
+        self.info
+            .as_ref()
+            .map(|info| format!("Viewer2000 · {}", tick_rate_text(info.tick_hz)))
     }
 
     pub fn version_hover_text(&self) -> Option<String> {
         self.info.as_ref().map(|info| {
             format!(
-                "Device Infomation\nproject {}\n{}\nfirmware {}\nbuild=0x{:08X}\ntick={}Hz",
-                info.project_display_name(),
-                info.build_time_display_text(),
+                "Viewer2000 Device\nfirmware {}\nwire={} contract={}\nbuild=0x{:08X}\ntick={}Hz",
                 info.firmware_name,
+                info.protocol_version,
+                info.contract_version,
                 info.build_hash,
                 info.tick_hz
             )
@@ -94,6 +83,14 @@ impl HardwareState {
             ScopeMode::CaptureFrozen => "capture frozen",
             ScopeMode::Unknown(_) => "unknown",
         }
+    }
+}
+
+fn tick_rate_text(tick_hz: u32) -> String {
+    if tick_hz != 0 && tick_hz.is_multiple_of(1_000) {
+        format!("{}kHz", tick_hz / 1_000)
+    } else {
+        format!("{tick_hz}Hz")
     }
 }
 
@@ -116,7 +113,7 @@ mod tests {
     }
 
     #[test]
-    fn version_text_preserves_viewer2000_summary_format() {
+    fn version_text_is_a_compact_viewer2000_rate_summary() {
         let hardware = HardwareState {
             info: Some(DeviceInfo {
                 protocol_version: 1,
@@ -134,12 +131,12 @@ mod tests {
 
         assert_eq!(
             hardware.version_text().as_deref(),
-            Some("viewer2000  build=0x3C313C66  tick=20000Hz")
+            Some("Viewer2000 · 20kHz")
         );
     }
 
     #[test]
-    fn version_text_prefers_project_name_when_reported() {
+    fn version_text_does_not_repeat_project_identity() {
         let hardware = HardwareState {
             info: Some(DeviceInfo {
                 protocol_version: 1,
@@ -157,7 +154,7 @@ mod tests {
 
         assert_eq!(
             hardware.version_text().as_deref(),
-            Some("untitled·Built Time unknown")
+            Some("Viewer2000 · 20kHz")
         );
     }
 }

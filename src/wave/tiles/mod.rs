@@ -40,6 +40,7 @@ pub struct MyTilesDelegate<'a> {
     pub pending_cross_pane_move: Option<(TileId, usize, TileId, String)>,
     /// Output: feedback from the last drop action this frame.
     pub drop_feedback: Option<super::dnd::DropFeedback>,
+    pub can_edit_variable_refs: bool,
 }
 
 impl<'a> egui_tiles::Behavior<ViewPane> for MyTilesDelegate<'a> {
@@ -305,6 +306,9 @@ impl<'a> MyTilesDelegate<'a> {
         pane: &mut ViewPane,
         payload: &VarDragPayload,
     ) -> Option<super::dnd::DropFeedback> {
+        if !self.can_edit_variable_refs {
+            return None;
+        }
         use super::dnd::{DragMode, DropFeedback};
 
         let mode = super::dnd::effective_drag_mode(ctx, &payload.source);

@@ -18,6 +18,7 @@ pub fn show_viewport(
     vp: &mut ViewportPanelState<'_>,
     plot_data: &PlotData,
     inspector: &InspectorState,
+    can_edit_variable_refs: bool,
 ) -> Option<dnd::DropFeedback> {
     let mut viewport_drop_feedback: Option<dnd::DropFeedback> = None;
     let var_names = inspector.var_names();
@@ -35,6 +36,7 @@ pub fn show_viewport(
             hovered_plot_var: None,
             pending_cross_pane_move: None,
             drop_feedback: None,
+            can_edit_variable_refs,
         };
         vp.tree.ui(&mut delegate, ui);
         *vp.hovered_plot_var = delegate.hovered_plot_var;

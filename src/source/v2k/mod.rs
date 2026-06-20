@@ -508,6 +508,25 @@ fn validate_device_info(info: &DeviceInfo) -> Result<()> {
             info.contract_version
         );
     }
+    if info.project_name.is_empty() {
+        bail!(
+            "HELLO project_name is empty; rebuild with the current Viewer2000 baker (use \"untitled\" for an unnamed demo)"
+        );
+    }
+    if info.project_name.trim() != info.project_name {
+        bail!("HELLO project_name contains leading or trailing whitespace");
+    }
+    if info.project_name.len() > 32 {
+        bail!("HELLO project_name exceeds the 32-byte contract limit");
+    }
+    if !info
+        .project_name
+        .as_bytes()
+        .iter()
+        .all(|value| (0x20..=0x7e).contains(value))
+    {
+        bail!("HELLO project_name must contain printable ASCII only");
+    }
     Ok(())
 }
 
@@ -557,6 +576,37 @@ mod tests {
             project_name: "phase4-demo".to_owned(),
             build_time_utc: 1_781_913_600,
         }
+    }
+
+    #[test]
+    fn current_contract_requires_a_valid_project_identity() {
+        let mut info = device_info(1, 0, 0);
+        info.project_name.clear();
+        assert!(
+            validate_device_info(&info)
+                .unwrap_err()
+                .to_string()
+                .contains("use \"untitled\"")
+        );
+
+        info.project_name = "untitled".to_owned();
+        assert!(validate_device_info(&info).is_ok());
+
+        info.project_name = "电机".to_owned();
+        assert!(
+            validate_device_info(&info)
+                .unwrap_err()
+                .to_string()
+                .contains("printable ASCII")
+        );
+
+        info.project_name = " demo ".to_owned();
+        assert!(
+            validate_device_info(&info)
+                .unwrap_err()
+                .to_string()
+                .contains("whitespace")
+        );
     }
 
     fn session(reads: Vec<Vec<u8>>, info: DeviceInfo) -> Session {

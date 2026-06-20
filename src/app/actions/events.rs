@@ -14,6 +14,8 @@ impl ScopeApp {
                 SourceEvent::Connected(info) => {
                     self.hardware.connected = true;
                     self.hardware.connecting = false;
+                    self.descriptor_catalog_ready = false;
+                    self.workspace_watch_restored = false;
                     self.log.push(
                         LogLevel::Info,
                         format!(
@@ -30,6 +32,7 @@ impl ScopeApp {
                     );
                     self.hardware.info = Some(info);
                     self.hardware.version = self.hardware.version_text();
+                    self.handle_firmware_project();
                 }
                 SourceEvent::Disconnected => {
                     self.hardware.connected = false;
@@ -38,6 +41,11 @@ impl ScopeApp {
                     self.hardware.status = None;
                     self.wave.active = false;
                     self.wave.restart_pending = None;
+                    self.descriptor_catalog_ready = false;
+                    // Keep the last catalog and restored refs available for
+                    // offline inspection/layout edits. Connected always resets
+                    // both reconciliation gates before installing a new catalog.
+                    self.handle_firmware_disconnect();
                     self.log.push(LogLevel::Info, "Disconnected".to_owned());
                 }
                 SourceEvent::Descriptors(descriptors) => {
@@ -45,7 +53,15 @@ impl ScopeApp {
                         LogLevel::Info,
                         format!("Enumerated {} descriptor(s)", descriptors.len()),
                     );
+                    // Descriptors is a complete catalog replacement. Snapshot
+                    // the currently reconciled name refs before replacing it so
+                    // a repeated catalog cannot silently drop variables.
+                    if self.descriptor_catalog_ready {
+                        self.workspace = self.snapshot_workspace();
+                    }
+                    self.workspace_watch_restored = false;
                     self.inspector.set_descriptors(descriptors);
+                    self.descriptor_catalog_ready = true;
                     self.restore_workspace_watch_once();
                     self.next_watch_read = Instant::now();
                 }
@@ -184,6 +200,7 @@ impl ScopeApp {
                 }
                 SourceEvent::DeviceChanged { old_hash, info } => {
                     let new_hash = info.build_hash;
+                    self.workspace = self.snapshot_workspace();
                     clear_device_session_state(
                         &mut self.wave,
                         &mut self.plot_data,
@@ -193,6 +210,8 @@ impl ScopeApp {
                     self.hardware.status = None;
                     self.hardware.version = self.hardware.version_text();
                     self.workspace_watch_restored = false;
+                    self.descriptor_catalog_ready = false;
+                    self.handle_firmware_project();
                     self.log.push(
                         LogLevel::Warn,
                         format!(

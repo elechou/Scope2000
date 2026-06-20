@@ -30,6 +30,9 @@ impl ScopeApp {
             return;
         };
         self.hardware.connecting = true;
+        self.workspace = self.snapshot_workspace();
+        self.workspace_watch_restored = false;
+        self.descriptor_catalog_ready = false;
         self.hardware.info = None;
         self.hardware.status = None;
         self.send(SourceCommand::Connect(endpoint));
@@ -57,6 +60,13 @@ impl ScopeApp {
     }
 
     pub(in crate::app) fn write_variables(&mut self, writes: Vec<(usize, f64)>) {
+        if !self.project_policy().calibration_write {
+            self.log.push(
+                LogLevel::Warn,
+                "Variable write blocked by project safety state".to_owned(),
+            );
+            return;
+        }
         if !self.hardware.connected || !self.has_capability(CAP_CAL) {
             self.log
                 .push(LogLevel::Warn, "CAL capability is not available".to_owned());
@@ -84,6 +94,13 @@ impl ScopeApp {
     }
 
     pub(in crate::app) fn start_acquisition(&mut self, mode: ScopeMode) {
+        if !self.project_policy().wave_start {
+            self.log.push(
+                LogLevel::Warn,
+                "Wave start blocked by project safety state".to_owned(),
+            );
+            return;
+        }
         if !self.hardware.connected {
             self.log.push(LogLevel::Warn, "Not connected".to_owned());
             return;
@@ -189,12 +206,20 @@ impl ScopeApp {
     }
 
     pub(in crate::app) fn restart_acquisition(&mut self, mode: ScopeMode) {
+        if !self.project_policy().wave_start {
+            self.log.push(
+                LogLevel::Warn,
+                "Wave restart blocked by project safety state".to_owned(),
+            );
+            return;
+        }
         self.stop_acquisition();
         self.wave.restart_pending = Some(mode);
     }
 
     pub(in crate::app) fn rearm_capture(&mut self) {
-        if !self.hardware.connected
+        if !self.project_policy().wave_start
+            || !self.hardware.connected
             || !self.wave.active
             || self.wave.restart_pending.is_some()
             || self.wave.binding.is_empty()

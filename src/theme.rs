@@ -306,6 +306,10 @@ pub fn pretick_panel_animation(ctx: &egui::Context, panel_id: &str, is_expanded:
 /// Full-width section header bar with dark background.
 /// Paints edge-to-edge by bleeding across the side-panel frame margins.
 pub fn section_header(ui: &mut egui::Ui, title: &str) -> egui::Response {
+    section_header_colored(ui, title, TAB_BAR)
+}
+
+pub fn section_header_colored(ui: &mut egui::Ui, title: &str, fill: Color32) -> egui::Response {
     let desired = Vec2::new(ui.max_rect().width(), 24.0);
     let (rect, response) = ui.allocate_exact_size(desired, egui::Sense::hover());
 
@@ -314,14 +318,22 @@ pub fn section_header(ui: &mut egui::Ui, title: &str) -> egui::Response {
             .expand2(vec2(f32::from(SIDE_PANEL_INNER_MARGIN_X), 0.0));
         let mut painter = ui.painter().clone();
         painter.set_clip_rect(paint_rect);
-        painter.rect_filled(paint_rect, 0.0, TAB_BAR);
+        painter.rect_filled(paint_rect, 0.0, fill);
         let font_id = egui::TextStyle::Body.resolve(ui.style());
+        let luminance =
+            (u32::from(fill.r()) * 299 + u32::from(fill.g()) * 587 + u32::from(fill.b()) * 114)
+                / 1000;
+        let text_color = if luminance >= 160 {
+            Color32::BLACK
+        } else {
+            TEXT_STRONG
+        };
         painter.text(
             paint_rect.left_center() + vec2(8.0, 0.0),
             egui::Align2::LEFT_CENTER,
             title,
             font_id,
-            TEXT_STRONG,
+            text_color,
         );
     }
 

@@ -388,12 +388,15 @@ pub fn show_variables(
     ui: &mut egui::Ui,
     inspector: &mut InspectorState,
     drop_hover_panel: &mut bool,
+    can_write: bool,
+    can_edit_variable_refs: bool,
 ) -> VariablesPanelOutput {
     theme::section_header(ui, "Variable Controller");
     ui.add_space(4.0);
 
     let mut watch_changed = false;
-    let has_var_payload = egui::DragAndDrop::has_payload_of_type::<VarDragPayload>(ui.ctx());
+    let has_var_payload = can_edit_variable_refs
+        && egui::DragAndDrop::has_payload_of_type::<VarDragPayload>(ui.ctx());
     let dragged_row_idx = egui::DragAndDrop::payload::<VarDragPayload>(ui.ctx()).and_then(|p| {
         p.names.first().and_then(|name| {
             inspector
@@ -491,7 +494,12 @@ pub fn show_variables(
                 row.col(|ui| {
                     let height = ui.spacing().interact_size.y;
                     let desired = egui::vec2(ui.available_width(), height);
-                    let (rect, resp) = ui.allocate_exact_size(desired, egui::Sense::click());
+                    let sense = if can_write {
+                        egui::Sense::click()
+                    } else {
+                        egui::Sense::hover()
+                    };
+                    let (rect, resp) = ui.allocate_exact_size(desired, sense);
                     if ui.is_rect_visible(rect) {
                         if resp.hovered() {
                             ui.painter().rect_filled(rect, 3.0, theme::WIDGET_HOVER);
@@ -508,7 +516,8 @@ pub fn show_variables(
                             },
                         );
                     }
-                    if resp.clicked()
+                    if can_write
+                        && resp.clicked()
                         && let Ok(value) = watch.write_buf.parse::<f64>()
                     {
                         to_write.push((watch.descriptor_index, value));
@@ -516,7 +525,8 @@ pub fn show_variables(
                 });
                 let write_resp = row
                     .col(|ui| {
-                        ui.add(
+                        ui.add_enabled(
+                            can_write,
                             egui::TextEdit::singleline(&mut watch.write_buf)
                                 .desired_width(ui.available_width())
                                 .hint_text("value"),
@@ -524,7 +534,7 @@ pub fn show_variables(
                     })
                     .1;
 
-                if name_resp.drag_started() {
+                if can_edit_variable_refs && name_resp.drag_started() {
                     egui::DragAndDrop::set_payload(
                         &name_resp.ctx,
                         VarDragPayload {
@@ -535,14 +545,17 @@ pub fn show_variables(
                 }
 
                 let row_resp = row.response();
-                let hover_payload = row_resp.dnd_hover_payload::<VarDragPayload>().filter(|p| {
-                    let is_self = p.names.len() == 1
-                        && inspector
-                            .watch_vars
-                            .get(i)
-                            .is_some_and(|watch| watch.var_name == p.names[0]);
-                    !is_self
-                });
+                let hover_payload = can_edit_variable_refs
+                    .then_some(())
+                    .and_then(|_| row_resp.dnd_hover_payload::<VarDragPayload>())
+                    .filter(|p| {
+                        let is_self = p.names.len() == 1
+                            && inspector
+                                .watch_vars
+                                .get(i)
+                                .is_some_and(|watch| watch.var_name == p.names[0]);
+                        !is_self
+                    });
                 if hover_payload.is_some() {
                     drop_hover = true;
                     let rect = row_resp.rect;
@@ -587,7 +600,10 @@ pub fn show_variables(
                 }
 
                 let remove_menu = |ui: &mut egui::Ui| {
-                    if ui.button("Remove").clicked() {
+                    if ui
+                        .add_enabled(can_edit_variable_refs, egui::Button::new("Remove"))
+                        .clicked()
+                    {
                         to_remove.set(Some(i));
                         ui.close();
                     }
@@ -619,7 +635,8 @@ pub fn show_variables(
         }
     }
 
-    if let Some((from, to)) = reorder
+    if can_edit_variable_refs
+        && let Some((from, to)) = reorder
         && from < inspector.watch_vars.len()
         && from != to
     {
@@ -629,7 +646,7 @@ pub fn show_variables(
         watch_changed = true;
     }
 
-    if let Some((idx, names)) = insert_at {
+    if can_edit_variable_refs && let Some((idx, names)) = insert_at {
         let mut pos = idx.min(inspector.watch_vars.len());
         for name in names {
             if let Some(descriptor_index) = inspector.index_by_name(&name)
@@ -657,7 +674,7 @@ pub fn show_variables(
         ui,
         "Write All",
         theme::SELECT_BG,
-        true,
+        can_write,
         ui.available_width(),
     ) {
         for watch in &inspector.watch_vars {
@@ -666,7 +683,7 @@ pub fn show_variables(
             }
         }
     }
-    if let Some(i) = to_remove.get() {
+    if can_edit_variable_refs && let Some(i) = to_remove.get() {
         inspector.watch_vars.remove(i);
         watch_changed = true;
     }

@@ -1,6 +1,7 @@
 mod actions;
 pub(crate) mod state;
 
+use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use eframe::egui;
@@ -17,7 +18,10 @@ use crate::wave::data::PlotData;
 use crate::wave::viewer_panel::ViewportPanelState;
 use crate::wave::{PLOT_MAX_POINTS, WaveState, pane::PaneKind};
 
-use self::state::{AppConfig, HardwareState, UiState, ViewportState};
+use self::state::{
+    AppConfig, HardwareState, ProjectCandidate, ProjectContext, UiState, ViewportState,
+    WorkspaceAutosaveState, WorkspaceState, WorkspaceStore,
+};
 
 const WATCH_READ_PERIOD: Duration = Duration::from_secs(1);
 
@@ -32,8 +36,18 @@ pub struct ScopeApp {
     log: LogBuffer,
     ui: UiState,
     config: AppConfig,
+    workspace: WorkspaceState,
+    project: ProjectContext,
+    project_scan: Option<mpsc::Receiver<Vec<ProjectCandidate>>>,
+    project_metadata_scan: Option<mpsc::Receiver<Result<state::LocalProject, String>>>,
+    project_candidates: Vec<ProjectCandidate>,
+    project_index_target: Option<String>,
+    pending_rebind: Option<state::LocalProject>,
+    pending_delete_project: Option<String>,
     next_watch_read: Instant,
     workspace_watch_restored: bool,
+    descriptor_catalog_ready: bool,
+    workspace_autosave: WorkspaceAutosaveState,
 }
 
 impl ScopeApp {
@@ -42,8 +56,18 @@ impl ScopeApp {
         theme::apply_theme(&cc.egui_ctx);
         let csv_gpu_mask_ready = crate::wave::panel::init_csv_button_renderer(cc);
 
-        let mut config = AppConfig::load();
-        config.workspace.acquisition.clamp();
+        let config = AppConfig::load();
+        let legacy_backup_error = config
+            .legacy_workspace
+            .as_ref()
+            .and_then(|legacy| WorkspaceStore::save_legacy(legacy).err());
+        let project = ProjectContext::load(&config);
+        let mut workspace = project
+            .active_name
+            .as_deref()
+            .map(WorkspaceStore::load)
+            .unwrap_or_default();
+        workspace.acquisition.clamp();
 
         let mut hardware = HardwareState {
             port: config.port.clone(),
@@ -61,25 +85,43 @@ impl ScopeApp {
             inspector: InspectorState::default(),
             viewport: ViewportState::new(),
             wave: WaveState {
-                settings: config.workspace.acquisition.clone(),
-                settings_snapshot: config.workspace.acquisition.clone(),
+                settings: workspace.acquisition.clone(),
+                settings_snapshot: workspace.acquisition.clone(),
                 ..WaveState::default()
             },
             plot_data: PlotData::new(PLOT_MAX_POINTS),
             csv: CsvState {
-                snapshot_dir: config.workspace.csv_export.snapshot_dir.clone(),
-                filename_template: config.workspace.csv_export.filename_template.clone(),
-                ultra_fast: config.workspace.csv_export.ultra_fast,
+                snapshot_dir: workspace.csv_export.snapshot_dir.clone(),
+                filename_template: workspace.csv_export.filename_template.clone(),
+                ultra_fast: workspace.csv_export.ultra_fast,
                 gpu_mask_ready: csv_gpu_mask_ready,
                 ..CsvState::default()
             },
             log: LogBuffer::default(),
             ui: UiState::default(),
             config,
+            workspace,
+            project,
+            project_scan: None,
+            project_metadata_scan: None,
+            project_candidates: Vec::new(),
+            project_index_target: None,
+            pending_rebind: None,
+            pending_delete_project: None,
             next_watch_read: Instant::now(),
             workspace_watch_restored: false,
+            descriptor_catalog_ready: false,
+            workspace_autosave: WorkspaceAutosaveState::new(),
         };
         app.restore_workspace_layout();
+        app.reset_workspace_autosave_baseline();
+        app.begin_local_project_metadata_refresh();
+        if let Some(error) = legacy_backup_error {
+            app.log.push(
+                LogLevel::Warn,
+                format!("Failed to back up the legacy workspace: {error}"),
+            );
+        }
         app
     }
 
@@ -100,7 +142,9 @@ impl ScopeApp {
             .map(|status| status.system_state);
         let can_send_system_command =
             self.hardware.connected && self.has_capability(CAP_SYSTEM_CMD);
-        let can_start = can_send_system_command && matches!(system_state, Some(SystemState::Idle));
+        let can_start = can_send_system_command
+            && self.project_policy().system_start
+            && matches!(system_state, Some(SystemState::Idle));
         let can_stop =
             can_send_system_command && matches!(system_state, Some(SystemState::Running));
 
@@ -120,7 +164,7 @@ impl ScopeApp {
             let button_w = ((ui.available_width() - button_gap) / 2.0).max(0.0);
             ui.horizontal(|ui| {
                 if theme::action_button_w(ui, "Start", theme::GREEN, can_start, button_w) {
-                    self.send(SourceCommand::SystemCommand(SystemCommand::Start));
+                    self.start_system();
                 }
                 if theme::action_button_w(ui, "Stop", theme::RED, can_stop, button_w) {
                     self.send(SourceCommand::SystemCommand(SystemCommand::Stop));
@@ -139,6 +183,7 @@ impl ScopeApp {
             return;
         }
 
+        let can_edit_variable_refs = self.project_policy().edit_variable_refs;
         let mut vp = ViewportPanelState {
             tree: &mut self.viewport.tree,
             blueprint_order: &mut self.viewport.blueprint_order,
@@ -148,15 +193,26 @@ impl ScopeApp {
             hovered_plot_var: &mut self.viewport.hovered_plot_var,
             drop_hover_panel: &mut self.viewport.drop_hover_panel,
         };
-        if let Some(feedback) =
-            crate::wave::viewer_panel::show_viewport(ui, &mut vp, &self.plot_data, &self.inspector)
-        {
+        if let Some(feedback) = crate::wave::viewer_panel::show_viewport(
+            ui,
+            &mut vp,
+            &self.plot_data,
+            &self.inspector,
+            can_edit_variable_refs,
+        ) {
             self.log.push(LogLevel::Warn, feedback.message());
         }
     }
 
     fn handle_menu_action(&mut self, action: crate::ui::menu_bar::MenuAction) {
         match action {
+            crate::ui::menu_bar::MenuAction::OpenProject => self.begin_project_index(),
+            crate::ui::menu_bar::MenuAction::OpenRecentProject(name) => {
+                self.open_recent_project(&name)
+            }
+            crate::ui::menu_bar::MenuAction::ManageProjects => {
+                self.project.show_project_manager = true;
+            }
             crate::ui::menu_bar::MenuAction::SaveWorkspace => self.save_workspace_with_log(),
             crate::ui::menu_bar::MenuAction::ResetLayout => {
                 self.viewport.reset_layout();
@@ -203,10 +259,25 @@ impl eframe::App for ScopeApp {
             self.connect();
         }
         crate::ui::modals::show_about_window(ui, &mut self.ui);
+        self.poll_project_scan();
+        self.poll_local_project_metadata();
+        if self.project_metadata_scan.is_some() {
+            ui.ctx().request_repaint_after(Duration::from_millis(100));
+        }
+        self.show_project_modals(ui);
 
-        if let Some(action) =
-            crate::ui::menu_bar::show(ui, &mut self.ui, self.hardware.can_configure_connection())
-        {
+        let recent_projects: Vec<String> = self
+            .project
+            .registry
+            .recent_names()
+            .map(str::to_owned)
+            .collect();
+        if let Some(action) = crate::ui::menu_bar::show(
+            ui,
+            &mut self.ui,
+            self.hardware.can_configure_connection(),
+            &recent_projects,
+        ) {
             self.handle_menu_action(action);
         }
         if let Some(action) =
@@ -244,14 +315,21 @@ impl eframe::App for ScopeApp {
             .show_separator_line(true)
             .frame(theme::side_panel_frame())
             .show_animated_inside(ui, self.ui.show_system_panel, |ui| {
+                self.project_panel(ui);
+                ui.separator();
                 self.system_panel(ui);
                 ui.separator();
-                let pinned_changed = crate::variable::panel::show_variable_map(
-                    ui,
-                    &mut self.inspector,
-                    &mut self.ui.source_filter,
-                    &mut self.ui.varmap_split,
-                );
+                let can_edit_refs = self.project_policy().edit_variable_refs;
+                let pinned_changed = ui
+                    .add_enabled_ui(can_edit_refs, |ui| {
+                        crate::variable::panel::show_variable_map(
+                            ui,
+                            &mut self.inspector,
+                            &mut self.ui.source_filter,
+                            &mut self.ui.varmap_split,
+                        )
+                    })
+                    .inner;
                 if pinned_changed {
                     self.next_watch_read = Instant::now();
                 }
@@ -264,6 +342,7 @@ impl eframe::App for ScopeApp {
             .show_separator_line(false)
             .frame(theme::side_panel_frame())
             .show_inside(ui, |ui| {
+                let project_policy = self.project_policy();
                 let record_limit = self.current_scope_record_limit();
                 if let Some(action) = crate::wave::panel::show_wave_section(
                     ui,
@@ -272,6 +351,10 @@ impl eframe::App for ScopeApp {
                     self.hardware.info.as_ref().map(|info| info.tick_hz),
                     &self.viewport.tree.tiles,
                     record_limit,
+                    crate::wave::panel::WavePermissions {
+                        can_start: project_policy.wave_start,
+                        can_edit_variable_refs: project_policy.edit_variable_refs,
+                    },
                 ) {
                     use crate::wave::panel::WaveAction;
                     match action {
@@ -316,6 +399,8 @@ impl eframe::App for ScopeApp {
                     ui,
                     &mut self.inspector,
                     &mut self.viewport.drop_hover_panel,
+                    project_policy.calibration_write,
+                    project_policy.edit_variable_refs,
                 );
                 if !var_out.to_write.is_empty() {
                     self.write_variables(var_out.to_write);
@@ -334,7 +419,11 @@ impl eframe::App for ScopeApp {
                         hovered_plot_var: &mut self.viewport.hovered_plot_var,
                         drop_hover_panel: &mut self.viewport.drop_hover_panel,
                     };
-                    crate::wave::viewer_panel::show_blueprint(ui, &mut vp)
+                    crate::wave::viewer_panel::show_blueprint(
+                        ui,
+                        &mut vp,
+                        project_policy.edit_variable_refs,
+                    )
                 };
                 if let Some(feedback) = feedback {
                     self.log.push(LogLevel::Warn, feedback.message());
@@ -352,6 +441,7 @@ impl eframe::App for ScopeApp {
             .show_separator_line(false)
             .frame(theme::side_panel_frame())
             .show_animated_inside(ui, self.ui.show_selection_panel, |ui| {
+                let can_edit_variable_refs = self.project_policy().edit_variable_refs;
                 let mut vp = ViewportPanelState {
                     tree: &mut self.viewport.tree,
                     blueprint_order: &mut self.viewport.blueprint_order,
@@ -361,7 +451,11 @@ impl eframe::App for ScopeApp {
                     hovered_plot_var: &mut self.viewport.hovered_plot_var,
                     drop_hover_panel: &mut self.viewport.drop_hover_panel,
                 };
-                crate::wave::viewer_panel::show_selection_panel(ui, &mut vp);
+                crate::wave::viewer_panel::show_selection_panel(
+                    ui,
+                    &mut vp,
+                    can_edit_variable_refs,
+                );
             });
 
         egui::CentralPanel::default()
@@ -369,6 +463,7 @@ impl eframe::App for ScopeApp {
             .show_inside(ui, |ui| self.render_viewport(ui));
 
         self.record_panel_sizes(ui.ctx());
+        self.poll_workspace_autosave(ui.ctx());
     }
 }
 

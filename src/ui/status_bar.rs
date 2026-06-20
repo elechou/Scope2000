@@ -129,7 +129,7 @@ pub fn show(
                         }
                         let hover = hardware
                             .version_hover_text()
-                            .unwrap_or_else(|| "Device Infomation".to_owned());
+                            .unwrap_or_else(|| "Device Information".to_owned());
                         device_info.on_hover_text(hover);
                         ui.separator();
                     }

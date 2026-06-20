@@ -4,6 +4,8 @@ pub(crate) mod csv_export;
 mod events;
 #[path = "panes.rs"]
 mod panes;
+#[path = "project.rs"]
+mod project;
 #[path = "source_commands.rs"]
 mod source_commands;
 #[path = "workspace.rs"]

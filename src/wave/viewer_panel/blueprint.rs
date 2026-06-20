@@ -95,6 +95,7 @@ fn collect_views(
 pub fn show_blueprint(
     ui: &mut egui::Ui,
     vp: &mut ViewportPanelState<'_>,
+    can_edit_variable_refs: bool,
 ) -> (Option<PaneKind>, Option<dnd::DropFeedback>) {
     let mut wants_add_pane: Option<PaneKind> = None;
     let mut blueprint_feedback: Option<dnd::DropFeedback> = None;
@@ -602,6 +603,9 @@ pub fn show_blueprint(
             }
             BlueprintAction::HoverPane(id) => *vp.hovered_tile = Some(id),
             BlueprintAction::AddVarsToPane(id, names) => {
+                if !can_edit_variable_refs {
+                    continue;
+                }
                 if let Some(egui_tiles::Tile::Pane(p)) = vp.tree.tiles.get_mut(id) {
                     for name in &names {
                         if p.series.iter().any(|s| &s.var_name == name) {
@@ -617,6 +621,9 @@ pub fn show_blueprint(
                 }
             }
             BlueprintAction::InsertVarsInPane(id, insert_at, names) => {
+                if !can_edit_variable_refs {
+                    continue;
+                }
                 if let Some(egui_tiles::Tile::Pane(p)) = vp.tree.tiles.get_mut(id) {
                     let mut cursor = insert_at.min(p.series.len());
                     for name in &names {
@@ -640,6 +647,9 @@ pub fn show_blueprint(
                 }
             }
             BlueprintAction::RemoveSeries(tile_id, idx) => {
+                if !can_edit_variable_refs {
+                    continue;
+                }
                 if let Some(egui_tiles::Tile::Pane(p)) = vp.tree.tiles.get_mut(tile_id)
                     && idx < p.series.len()
                 {

@@ -4,6 +4,9 @@ use crate::app::state::UiState;
 use crate::theme;
 
 pub enum MenuAction {
+    OpenProject,
+    OpenRecentProject(String),
+    ManageProjects,
     SaveWorkspace,
     ResetLayout,
 }
@@ -13,6 +16,7 @@ pub fn show(
     ui: &mut egui::Ui,
     ui_state: &mut UiState,
     can_configure_connection: bool,
+    recent_projects: &[String],
 ) -> Option<MenuAction> {
     let mut action = None;
     let mut quit_clicked = false;
@@ -23,6 +27,29 @@ pub fn show(
         .show_inside(ui, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
                 ui.menu_button("File", |ui| {
+                    ui.add_enabled(false, egui::Button::new("New Project..."));
+                    if ui.button("Open Project...").clicked() {
+                        action = Some(MenuAction::OpenProject);
+                        ui.close_kind(egui::UiKind::Menu);
+                    }
+                    ui.menu_button("Open Recent Project...", |ui| {
+                        if recent_projects.is_empty() {
+                            ui.add_enabled(false, egui::Button::new("No Recent Projects"));
+                        } else {
+                            for name in recent_projects.iter().take(10) {
+                                if ui.button(name).clicked() {
+                                    action = Some(MenuAction::OpenRecentProject(name.clone()));
+                                    ui.close_kind(egui::UiKind::Menu);
+                                }
+                            }
+                        }
+                        ui.separator();
+                        if ui.button("More Projects...").clicked() {
+                            action = Some(MenuAction::ManageProjects);
+                            ui.close_kind(egui::UiKind::Menu);
+                        }
+                    });
+                    ui.separator();
                     if ui.button("Save Workspace").clicked() {
                         action = Some(MenuAction::SaveWorkspace);
                         ui.close_kind(egui::UiKind::Menu);

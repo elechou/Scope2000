@@ -37,7 +37,11 @@ fn section_heading(ui: &mut egui::Ui, title: &str) {
     );
 }
 
-pub fn show_selection_panel(ui: &mut egui::Ui, vp: &mut ViewportPanelState<'_>) {
+pub fn show_selection_panel(
+    ui: &mut egui::Ui,
+    vp: &mut ViewportPanelState<'_>,
+    can_edit_variable_refs: bool,
+) {
     theme::section_header(ui, "Selection");
     ui.add_space(4.0);
 
@@ -47,7 +51,7 @@ pub fn show_selection_panel(ui: &mut egui::Ui, vp: &mut ViewportPanelState<'_>) 
         }
         Selection::Pane(tile_id) => {
             let tile_id = *tile_id;
-            show_pane_selection(ui, vp, tile_id);
+            show_pane_selection(ui, vp, tile_id, can_edit_variable_refs);
         }
         Selection::Series(tile_id, idx) => {
             let tile_id = *tile_id;
@@ -61,6 +65,7 @@ fn show_pane_selection(
     ui: &mut egui::Ui,
     vp: &mut ViewportPanelState<'_>,
     tile_id: egui_tiles::TileId,
+    can_edit_variable_refs: bool,
 ) {
     let info = vp.tree.tiles.get(tile_id).and_then(|t| {
         if let egui_tiles::Tile::Pane(p) = t {
@@ -227,7 +232,7 @@ fn show_pane_selection(
                 if resp.clicked() && !over_swatch && !over_minus && !over_eye {
                     select = Some(i);
                 }
-                if over_minus && resp.clicked() {
+                if can_edit_variable_refs && over_minus && resp.clicked() {
                     remove = Some(i);
                 }
                 if over_eye && resp.clicked() {
@@ -271,7 +276,7 @@ fn show_pane_selection(
                     if resp.hovered() {
                         let btn_font = egui::TextStyle::Body.resolve(ui.style());
 
-                        let minus_bg = if over_minus {
+                        let minus_bg = if can_edit_variable_refs && over_minus {
                             theme::WIDGET_HOVER
                         } else {
                             egui::Color32::TRANSPARENT
@@ -282,7 +287,7 @@ fn show_pane_selection(
                             egui::Align2::CENTER_CENTER,
                             theme::GLYPH_MINUS,
                             btn_font.clone(),
-                            if over_minus {
+                            if can_edit_variable_refs && over_minus {
                                 theme::TEXT_STRONG
                             } else {
                                 theme::TEXT_SUBDUED
