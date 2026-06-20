@@ -47,7 +47,20 @@ impl ScopeApp {
                     self.next_watch_read = Instant::now();
                 }
                 SourceEvent::Status(status) => {
+                    let entered_running = status.system_state.is_running()
+                        && !self
+                            .hardware
+                            .status
+                            .as_ref()
+                            .is_some_and(|previous| previous.system_state.is_running());
                     self.hardware.status = Some(status);
+                    if entered_running {
+                        self.next_watch_read = Instant::now();
+                        self.log.push(
+                            LogLevel::Debug,
+                            "User variables reset on START; refreshing watched values".to_owned(),
+                        );
+                    }
                 }
                 SourceEvent::ParamsStaged => {
                     self.log
@@ -166,12 +179,16 @@ impl ScopeApp {
                         format!("Scope block gap: expected {expected}, received {received}"),
                     );
                 }
-                SourceEvent::DeviceChanged { old_hash, new_hash } => {
+                SourceEvent::DeviceChanged { old_hash, info } => {
+                    let new_hash = info.build_hash;
                     clear_device_session_state(
                         &mut self.wave,
                         &mut self.plot_data,
                         &mut self.inspector,
                     );
+                    self.hardware.info = Some(info);
+                    self.hardware.status = None;
+                    self.hardware.version = self.hardware.version_text();
                     self.workspace_watch_restored = false;
                     self.log.push(
                         LogLevel::Warn,

@@ -50,6 +50,7 @@ pub struct WatchEntry {
 #[derive(Default)]
 pub struct InspectorState {
     pub entries: Vec<DescriptorEntry>,
+    pub system_entries: Vec<DescriptorEntry>,
     pub descriptors: Vec<VarDescriptor>,
     pub pinned: Vec<usize>,
     pub watch_vars: Vec<WatchEntry>,
@@ -69,7 +70,9 @@ impl InspectorState {
             .map(|watch| (watch.var_name.clone(), watch.write_buf.clone()))
             .collect();
 
-        self.entries = build_descriptor_tree(&descriptors);
+        self.entries = build_descriptor_tree_filtered(&descriptors, VarDescriptor::is_user);
+        self.system_entries =
+            build_descriptor_tree_filtered(&descriptors, |descriptor| !descriptor.is_user());
         self.values = vec![None; descriptors.len()];
         self.descriptors = descriptors;
 
@@ -92,6 +95,7 @@ impl InspectorState {
 
     pub fn clear(&mut self) {
         self.entries.clear();
+        self.system_entries.clear();
         self.descriptors.clear();
         self.pinned.clear();
         self.watch_vars.clear();
@@ -191,16 +195,32 @@ impl InspectorState {
     }
 }
 
+#[cfg(test)]
 pub fn build_descriptor_tree(descriptors: &[VarDescriptor]) -> Vec<DescriptorEntry> {
+    build_descriptor_tree_filtered(descriptors, |_| true)
+}
+
+fn build_descriptor_tree_filtered(
+    descriptors: &[VarDescriptor],
+    include: impl Fn(&VarDescriptor) -> bool,
+) -> Vec<DescriptorEntry> {
     let mut root = Vec::<DescriptorEntry>::new();
     for (index, descriptor) in descriptors.iter().enumerate() {
-        insert_descriptor(&mut root, &descriptor.name, index);
+        if include(descriptor) {
+            insert_descriptor(&mut root, &descriptor.name, index);
+        }
     }
     root
 }
 
+#[derive(Debug)]
+struct PathPart<'a> {
+    label: &'a str,
+    full_name: String,
+}
+
 fn insert_descriptor(entries: &mut Vec<DescriptorEntry>, name: &str, index: usize) {
-    let parts: Vec<&str> = name.split('.').filter(|part| !part.is_empty()).collect();
+    let parts = descriptor_path(name);
     if parts.is_empty() {
         entries.push(DescriptorEntry::Var {
             label: name.to_owned(),
@@ -209,16 +229,53 @@ fn insert_descriptor(entries: &mut Vec<DescriptorEntry>, name: &str, index: usiz
         });
         return;
     }
-    insert_parts(entries, &parts, String::new(), index);
+    insert_parts(entries, &parts, index);
 }
 
-fn insert_parts(entries: &mut Vec<DescriptorEntry>, parts: &[&str], prefix: String, index: usize) {
-    let label = parts[0].to_owned();
-    let full_name = if prefix.is_empty() {
-        label.clone()
-    } else {
-        format!("{prefix}.{label}")
-    };
+fn descriptor_path(name: &str) -> Vec<PathPart<'_>> {
+    let bytes = name.as_bytes();
+    let mut parts = Vec::new();
+    let mut prefix = String::new();
+    let mut offset = 0;
+    while offset < bytes.len() {
+        if bytes[offset] == b'.' {
+            offset += 1;
+            continue;
+        }
+        let start = offset;
+        let is_index = bytes[offset] == b'[';
+        if is_index {
+            offset += 1;
+            while offset < bytes.len() && bytes[offset] != b']' {
+                offset += 1;
+            }
+            if offset < bytes.len() {
+                offset += 1;
+            }
+        } else {
+            while offset < bytes.len() && bytes[offset] != b'.' && bytes[offset] != b'[' {
+                offset += 1;
+            }
+        }
+        let label = &name[start..offset];
+        if label.is_empty() {
+            continue;
+        }
+        if !prefix.is_empty() && !is_index {
+            prefix.push('.');
+        }
+        prefix.push_str(label);
+        parts.push(PathPart {
+            label,
+            full_name: prefix.clone(),
+        });
+    }
+    parts
+}
+
+fn insert_parts(entries: &mut Vec<DescriptorEntry>, parts: &[PathPart<'_>], index: usize) {
+    let label = parts[0].label.to_owned();
+    let full_name = parts[0].full_name.clone();
 
     if parts.len() == 1 {
         entries.push(DescriptorEntry::Var {
@@ -251,7 +308,7 @@ fn insert_parts(entries: &mut Vec<DescriptorEntry>, parts: &[&str], prefix: Stri
     };
 
     if let DescriptorEntry::Group { members, .. } = &mut entries[group_index] {
-        insert_parts(members, &parts[1..], full_name, index);
+        insert_parts(members, &parts[1..], index);
     }
 }
 
@@ -261,13 +318,17 @@ mod tests {
     use crate::source::{VarRef, VarType};
 
     fn descriptor(name: &str) -> VarDescriptor {
+        descriptor_with_kind(name, 0)
+    }
+
+    fn descriptor_with_kind(name: &str, kind: u16) -> VarDescriptor {
         VarDescriptor {
             name: name.to_owned(),
             var: VarRef {
                 addr: 0,
                 ty: VarType::F32,
             },
-            kind: 0,
+            kind,
             prescaler: 1,
         }
     }
@@ -284,6 +345,74 @@ mod tests {
             panic!("first entry should be a group");
         };
         assert_eq!(members.len(), 2);
+    }
+
+    #[test]
+    fn descriptor_tree_groups_array_indexes() {
+        let tree = build_descriptor_tree(&[
+            descriptor("offset[0]"),
+            descriptor("offset[1]"),
+            descriptor("offset[2]"),
+            descriptor("trace.err[0]"),
+            descriptor("trace.err[1]"),
+        ]);
+
+        let DescriptorEntry::Group {
+            label,
+            full_name,
+            members,
+        } = &tree[0]
+        else {
+            panic!("offset should be a group");
+        };
+        assert_eq!(label, "offset");
+        assert_eq!(full_name, "offset");
+        assert_eq!(members.len(), 3);
+        assert!(matches!(
+            &members[0],
+            DescriptorEntry::Var {
+                label,
+                full_name,
+                ..
+            } if label == "[0]" && full_name == "offset[0]"
+        ));
+
+        let DescriptorEntry::Group { members, .. } = &tree[1] else {
+            panic!("trace should be a group");
+        };
+        let DescriptorEntry::Group {
+            label,
+            full_name,
+            members,
+        } = &members[0]
+        else {
+            panic!("trace.err should be a group");
+        };
+        assert_eq!(label, "err");
+        assert_eq!(full_name, "trace.err");
+        assert_eq!(members.len(), 2);
+    }
+
+    #[test]
+    fn inspector_separates_user_and_system_trees() {
+        let mut state = InspectorState::default();
+        state.set_descriptors(vec![
+            descriptor_with_kind("sys_state", 0x0002),
+            descriptor_with_kind("offset[0]", 0x0007),
+            descriptor_with_kind("offset[1]", 0x0007),
+        ]);
+
+        let mut user_names = Vec::new();
+        for entry in &state.entries {
+            entry.flatten_names(&mut user_names);
+        }
+        let mut system_names = Vec::new();
+        for entry in &state.system_entries {
+            entry.flatten_names(&mut system_names);
+        }
+
+        assert_eq!(user_names, ["offset[0]", "offset[1]"]);
+        assert_eq!(system_names, ["sys_state"]);
     }
 
     #[test]

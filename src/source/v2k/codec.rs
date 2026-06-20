@@ -487,6 +487,31 @@ mod tests {
             .collect()
     }
 
+    fn load_vector_frame(name: &str) -> Frame {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/vectors")
+            .join(name);
+        let text = fs::read_to_string(path).expect("read vector");
+        let raw = text
+            .lines()
+            .find_map(|line| line.strip_prefix("raw: "))
+            .map(decode_hex)
+            .expect("raw line");
+        decode_raw(&raw).expect("valid vector")
+    }
+
+    fn descriptor_entry(name: &str, ty: VarType, kind: u16, addr: u32) -> Vec<u8> {
+        assert!(name.len() < 16);
+        let mut entry = vec![0_u8; 16];
+        entry[..name.len()].copy_from_slice(name.as_bytes());
+        put_u16(&mut entry, ty as u16);
+        put_u16(&mut entry, kind);
+        put_u32(&mut entry, addr);
+        put_u16(&mut entry, 1);
+        put_u16(&mut entry, 0);
+        entry
+    }
+
     #[test]
     fn golden_vectors_conform() {
         let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/vectors");
@@ -592,19 +617,67 @@ mod tests {
 
     #[test]
     fn status_parses_viewer2000_system_state() {
-        let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/vectors/status_resp.txt");
-        let text = fs::read_to_string(root).expect("read status vector");
-        let raw = text
-            .lines()
-            .find_map(|line| line.strip_prefix("raw: "))
-            .map(decode_hex)
-            .expect("raw line");
-        let frame = decode_raw(&raw).expect("valid status frame");
+        let frame = load_vector_frame("status_resp.txt");
 
         let status = parse_status(&frame.payload).expect("parse status");
 
         assert_eq!(status.system_state, SystemState::Running);
         assert!(status.system_state.is_running());
+    }
+
+    #[test]
+    fn hello_vector_matches_supported_contract() {
+        let frame = load_vector_frame("hello_resp.txt");
+
+        let info = parse_hello(&frame.payload).expect("parse HELLO");
+
+        assert_eq!(info.protocol_version, u16::from(WIRE_VERSION));
+        assert_eq!(
+            info.contract_version,
+            super::super::EXPECTED_CONTRACT_VERSION
+        );
+        assert_eq!(info.firmware_name, "viewer2000");
+        assert_eq!(info.tick_hz, 20_000);
+    }
+
+    #[test]
+    fn descriptors_parse_baked_paths_and_kind_flags() {
+        let mut payload = Vec::new();
+        put_u16(&mut payload, 2);
+        put_u16(&mut payload, 0);
+        payload.extend_from_slice(&[2, 0]);
+        payload.extend(descriptor_entry("pi.Kp", VarType::F32, 0x0007, 0xB002));
+        payload.extend(descriptor_entry(
+            "trace.err[0]",
+            VarType::F32,
+            0x0002,
+            0xB02A,
+        ));
+
+        let (total, start, descriptors) = parse_descriptors(&payload).expect("parse descriptors");
+
+        assert_eq!((total, start), (2, 0));
+        assert_eq!(descriptors[0].name, "pi.Kp");
+        assert!(descriptors[0].is_parameter());
+        assert!(descriptors[0].is_scope());
+        assert!(descriptors[0].is_user());
+        assert_eq!(descriptors[1].name, "trace.err[0]");
+        assert!(!descriptors[1].is_parameter());
+        assert!(descriptors[1].is_scope());
+        assert!(!descriptors[1].is_user());
+    }
+
+    #[test]
+    fn enum_vector_distinguishes_user_and_system_descriptors() {
+        let frame = load_vector_frame("enum_resp_2entries.txt");
+
+        let (_, _, descriptors) = parse_descriptors(&frame.payload).expect("parse ENUM");
+
+        assert!(descriptors[0].is_user());
+        assert!(descriptors[0].is_parameter());
+        assert!(descriptors[0].is_scope());
+        assert!(!descriptors[1].is_user());
+        assert!(descriptors[1].is_scope());
     }
 
     #[test]

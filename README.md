@@ -11,7 +11,7 @@ flasher, device-specific motor-control wizard, or compatibility shell around
 older protocols. Its first job is to exercise the Viewer2000 shared-interface
 model through a real transport:
 
-- enumerate firmware-published descriptors at runtime;
+- enumerate firmware-published platform and user-variable descriptors at runtime;
 - stage and commit parameter transactions atomically;
 - send system commands and report command results;
 - stream native `ScopeBlock` data for Live monitoring;
@@ -43,7 +43,16 @@ The firmware repository owns the protocol definition:
 Scope2000 mirrors the golden vectors under `tests/vectors/` and treats them as
 conformance tests. When Viewer2000 changes the wire specification, update the
 Viewer2000 spec and vectors first, then run `tools/sync-vectors.sh` here and
-update the Rust codec.
+update the Rust codec and its exact contract-version check.
+
+Viewer2000 discovers plain-C user variables from DWARF during the firmware
+build and bakes their names, addresses, types, and access flags into the device.
+Scope2000 receives those variables through the normal `ENUM` service. It does
+not load a firmware `.out` file or parse DWARF at runtime; platform and baked
+user descriptors follow the same native CAL/DAQ paths. The descriptor USER bit
+keeps platform/system diagnostics in a separate collapsible section instead of
+mixing them into the main `All Variables` tree. Struct members and array indexes
+are both rendered hierarchically, for example `trace.err[0]` and `offset[0]`.
 
 ## UI Architecture
 

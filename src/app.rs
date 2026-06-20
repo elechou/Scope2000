@@ -176,10 +176,7 @@ impl ScopeApp {
                 status.fault_code,
                 status.status_flags
             ));
-            ui.monospace(format!(
-                "tick={}",
-                status.tick
-            ));
+            ui.monospace(format!("tick={}", status.tick));
             ui.monospace(format!(
                 "hb={}/{}",
                 status.cpu1_heartbeat, status.cpu2_heartbeat

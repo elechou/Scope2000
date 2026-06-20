@@ -128,7 +128,7 @@ pub fn show_variable_map(
 ) -> bool {
     theme::section_header(ui, "Variable Map");
 
-    if inspector.entries.is_empty() {
+    if inspector.descriptors.is_empty() {
         ui.add_space(4.0);
         ui.weak("  No descriptors enumerated");
         return false;
@@ -208,10 +208,6 @@ pub fn show_variable_map(
 
     ui.horizontal(|ui| {
         ui.add_space(4.0);
-        ui.strong("All Variables:");
-    });
-    ui.horizontal(|ui| {
-        ui.add_space(4.0);
         ui.label("Filter:");
         ui.add(
             egui::TextEdit::singleline(filter_text)
@@ -222,14 +218,35 @@ pub fn show_variable_map(
 
     let filter = filter_text.to_lowercase();
     let entries = inspector.entries.clone();
+    let system_entries = inspector.system_entries.clone();
     let mut pin_toggles = Vec::new();
 
     egui::ScrollArea::vertical()
         .id_salt("sources_scroll")
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            for entry in &entries {
-                show_map_entry(ui, entry, &filter, inspector, &mut pin_toggles);
+            if !system_entries.is_empty() {
+                egui::CollapsingHeader::new("System Variables")
+                    .default_open(false)
+                    .show(ui, |ui| {
+                        for entry in &system_entries {
+                            show_map_entry(ui, entry, &filter, inspector, &mut pin_toggles);
+                        }
+                    });
+                ui.add_space(4.0);
+                ui.separator();
+            }
+
+            ui.horizontal(|ui| {
+                ui.add_space(4.0);
+                ui.strong("All Variables:");
+            });
+            if entries.is_empty() {
+                ui.weak("No user variables enumerated");
+            } else {
+                for entry in &entries {
+                    show_map_entry(ui, entry, &filter, inspector, &mut pin_toggles);
+                }
             }
         });
 

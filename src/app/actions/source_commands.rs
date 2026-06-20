@@ -3,14 +3,24 @@ use std::time::Instant;
 use crate::app::ScopeApp;
 use crate::console::LogLevel;
 use crate::source::{
-    CAP_CAL, CAP_NATIVE_BLOCK, CAP_PRE_TRIGGER, CAP_SCOPE_CAPTURE, CAP_SCOPE_STREAM, ParamWrite,
-    ScopeConfig, ScopeMode, SourceCommand, TriggerEdge, VarDescriptor,
+    CAP_CAL, CAP_NATIVE_BLOCK, CAP_PRE_TRIGGER, CAP_SCOPE_CAPTURE, CAP_SCOPE_STREAM,
+    CatalogCommand, ParamWrite, ScopeConfig, ScopeMode, SourceCommand, TriggerEdge, VarDescriptor,
 };
 use crate::wave::{max_record_points_for_binding, pane::PaneKind};
 
 impl ScopeApp {
     pub(in crate::app) fn send(&self, command: SourceCommand) {
         let _ = self.source.commands.send(command);
+    }
+
+    fn send_catalog(&self, command: CatalogCommand) {
+        let Some(info) = &self.hardware.info else {
+            return;
+        };
+        self.send(SourceCommand::Catalog {
+            build_hash: info.build_hash,
+            command,
+        });
     }
 
     pub(in crate::app) fn connect(&mut self) {
@@ -41,7 +51,7 @@ impl ScopeApp {
             return;
         }
         for reads in self.inspector.read_batches() {
-            self.send(SourceCommand::ReadValues(reads));
+            self.send_catalog(CatalogCommand::ReadValues(reads));
         }
         self.next_watch_read = Instant::now() + super::super::WATCH_READ_PERIOD;
     }
@@ -69,8 +79,8 @@ impl ScopeApp {
             );
             return;
         }
-        self.send(SourceCommand::WriteParams(param_writes));
-        self.send(SourceCommand::CommitParams);
+        self.send_catalog(CatalogCommand::WriteParams(param_writes));
+        self.send_catalog(CatalogCommand::CommitParams);
     }
 
     pub(in crate::app) fn start_acquisition(&mut self, mode: ScopeMode) {
@@ -137,7 +147,7 @@ impl ScopeApp {
         self.wave.settings_snapshot = self.wave.settings.clone();
         self.wave.pane_vars_snapshot = pane_vars;
 
-        self.send(SourceCommand::ConfigureScope(ScopeConfig {
+        self.send_catalog(CatalogCommand::ConfigureScope(ScopeConfig {
             mode: ScopeMode::Off,
             trigger_slot: 0,
             trigger_level: 0.0,
@@ -147,10 +157,10 @@ impl ScopeApp {
             prescaler: self.wave.settings.prescaler,
             record_points: 0,
         }));
-        self.send(SourceCommand::BindChannels {
+        self.send_catalog(CatalogCommand::BindChannels {
             channels: binding.iter().map(|descriptor| descriptor.var).collect(),
         });
-        self.send(SourceCommand::ConfigureScope(
+        self.send_catalog(CatalogCommand::ConfigureScope(
             self.scope_config(mode, &binding),
         ));
         self.log.push(
@@ -164,7 +174,7 @@ impl ScopeApp {
     }
 
     pub(in crate::app) fn stop_acquisition(&mut self) {
-        self.send(SourceCommand::ConfigureScope(ScopeConfig {
+        self.send_catalog(CatalogCommand::ConfigureScope(ScopeConfig {
             mode: ScopeMode::Off,
             trigger_slot: 0,
             trigger_level: 0.0,
@@ -195,7 +205,7 @@ impl ScopeApp {
         let max_record_points = max_record_points_for_binding(&self.wave.binding);
         self.wave.settings.clamp_record_points(max_record_points);
         self.wave.settings_snapshot = self.wave.settings.clone();
-        self.send(SourceCommand::ConfigureScope(
+        self.send_catalog(CatalogCommand::ConfigureScope(
             self.scope_config(ScopeMode::CaptureArmed, &self.wave.binding),
         ));
         self.log

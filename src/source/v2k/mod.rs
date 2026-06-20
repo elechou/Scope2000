@@ -10,11 +10,12 @@ use anyhow::{Context, Result, bail};
 use self::codec::{Frame, FrameDecoder};
 use self::transport::ByteTransport;
 use crate::source::{
-    CAP_ENUM, DataSource, DeviceInfo, ParamWrite, ScopeMode, SourceCommand, SourceEvent,
-    SourceHandle, TransportEndpoint,
+    CAP_ENUM, CatalogCommand, DataSource, DeviceInfo, ParamWrite, ScopeMode, SourceCommand,
+    SourceEvent, SourceHandle, TransportEndpoint,
 };
 
-const EXPECTED_CONTRACT_VERSION: u16 = 8;
+const EXPECTED_CONTRACT_VERSION: u16 = 10;
+const ENUM_PAGE_SIZE: u8 = 8;
 #[cfg(not(test))]
 const REQUEST_TIMEOUT: Duration = Duration::from_millis(150);
 #[cfg(test)]
@@ -147,24 +148,60 @@ impl Session {
     }
 
     fn enumerate(&mut self, events: &mpsc::Sender<SourceEvent>) -> Result<()> {
+        let expected_total = self.info.descriptor_count;
         let mut start = 0_u16;
         let mut all = Vec::new();
         loop {
             let response = self.request(
                 codec::message::ENUMERATE,
-                &codec::enum_request(start, 8),
+                &codec::enum_request(start, ENUM_PAGE_SIZE),
                 events,
             )?;
             let (total, returned_start, page) = codec::parse_descriptors(&response.payload)?;
+            if total != expected_total {
+                bail!(
+                    "descriptor total changed during enumeration: HELLO={expected_total}, ENUM={total}"
+                );
+            }
             if returned_start != start {
-                bail!("descriptor page index mismatch");
+                bail!(
+                    "descriptor page index mismatch: requested={start}, returned={returned_start}"
+                );
             }
             let count = page.len();
+            if count > usize::from(ENUM_PAGE_SIZE) {
+                bail!("descriptor page exceeds requested size");
+            }
+            if count == 0 && start < expected_total {
+                bail!("descriptor enumeration ended before the advertised total");
+            }
+            let next = start
+                .checked_add(u16::try_from(count).context("descriptor page too large")?)
+                .context("descriptor index overflow")?;
+            if next > expected_total {
+                bail!("descriptor page extends beyond the advertised total");
+            }
             all.extend(page);
-            start = start.saturating_add(count as u16);
-            if count == 0 || start >= total {
+            start = next;
+            if start == expected_total {
                 break;
             }
+        }
+        if all.len() != usize::from(expected_total) {
+            bail!("descriptor enumeration count mismatch");
+        }
+        let hello = self.request(codec::message::HELLO, &codec::hello_request(), events)?;
+        let confirmed = codec::parse_hello(&hello.payload)?;
+        validate_device_info(&confirmed)?;
+        if confirmed.build_hash != self.info.build_hash
+            || confirmed.descriptor_count != expected_total
+        {
+            bail!(
+                "firmware changed during descriptor enumeration: before=0x{:08X}/{expected_total}, after=0x{:08X}/{}",
+                self.info.build_hash,
+                confirmed.build_hash,
+                confirmed.descriptor_count
+            );
         }
         send_event(events, SourceEvent::Descriptors(all));
         Ok(())
@@ -180,7 +217,41 @@ impl Session {
                 send_event(events, SourceEvent::Error("already connected".to_owned()));
             }
             SourceCommand::Disconnect => return Ok(false),
-            SourceCommand::WriteParams(writes) => {
+            SourceCommand::Catalog {
+                build_hash,
+                command,
+            } => {
+                if build_hash != self.info.build_hash {
+                    send_event(
+                        events,
+                        SourceEvent::Log(format!(
+                            "discarded stale catalog command for build 0x{build_hash:08X}; current build is 0x{:08X}",
+                            self.info.build_hash
+                        )),
+                    );
+                } else {
+                    self.handle_catalog_command(command, events)?;
+                }
+            }
+            SourceCommand::SystemCommand(command) => {
+                let response = self.request(
+                    codec::message::SYSTEM_COMMAND,
+                    &codec::system_command_request(command),
+                    events,
+                )?;
+                require_ack(&response, codec::message::SYSTEM_COMMAND)?;
+            }
+        }
+        Ok(true)
+    }
+
+    fn handle_catalog_command(
+        &mut self,
+        command: CatalogCommand,
+        events: &mpsc::Sender<SourceEvent>,
+    ) -> Result<()> {
+        match command {
+            CatalogCommand::WriteParams(writes) => {
                 let values: Vec<_> = writes
                     .iter()
                     .map(|ParamWrite { var, value_bits }| (*var, *value_bits))
@@ -193,12 +264,12 @@ impl Session {
                 require_ack(&response, codec::message::CAL_WRITE)?;
                 send_event(events, SourceEvent::ParamsStaged);
             }
-            SourceCommand::CommitParams => {
+            CatalogCommand::CommitParams => {
                 let response = self.request(codec::message::CAL_COMMIT, &[], events)?;
                 let ack = require_ack(&response, codec::message::CAL_COMMIT)?;
                 send_event(events, SourceEvent::ParamsCommitted { sequence: ack.data });
             }
-            SourceCommand::ReadValues(reads) => {
+            CatalogCommand::ReadValues(reads) => {
                 let vars: Vec<_> = reads.iter().map(|read| read.var).collect();
                 let response = self.request(
                     codec::message::CAL_READ,
@@ -218,7 +289,7 @@ impl Session {
                     },
                 );
             }
-            SourceCommand::BindChannels { channels } => {
+            CatalogCommand::BindChannels { channels } => {
                 let response = self.request(
                     codec::message::DAQ_BIND,
                     &codec::daq_bind_request(&channels),
@@ -233,7 +304,7 @@ impl Session {
                     },
                 );
             }
-            SourceCommand::ConfigureScope(config) => {
+            CatalogCommand::ConfigureScope(config) => {
                 let response = self.request(
                     codec::message::DAQ_CONTROL,
                     &codec::daq_control_request(&config),
@@ -244,16 +315,8 @@ impl Session {
                 self.scope_active = config.mode != ScopeMode::Off;
                 send_event(events, SourceEvent::ScopeConfigured { mode: config.mode });
             }
-            SourceCommand::SystemCommand(command) => {
-                let response = self.request(
-                    codec::message::SYSTEM_COMMAND,
-                    &codec::system_command_request(command),
-                    events,
-                )?;
-                require_ack(&response, codec::message::SYSTEM_COMMAND)?;
-            }
         }
-        Ok(true)
+        Ok(())
     }
 
     fn poll_status(&mut self, events: &mpsc::Sender<SourceEvent>) -> Result<()> {
@@ -261,14 +324,20 @@ impl Session {
         let status = codec::parse_status(&response.payload)?;
         if status.build_hash != self.info.build_hash {
             let old_hash = self.info.build_hash;
-            self.info.build_hash = status.build_hash;
-            send_event(
-                events,
-                SourceEvent::DeviceChanged {
-                    old_hash,
-                    new_hash: status.build_hash,
-                },
-            );
+            self.scope_active = false;
+            self.expected_block_sequence = None;
+            let hello = self.request(codec::message::HELLO, &codec::hello_request(), events)?;
+            let info = codec::parse_hello(&hello.payload)?;
+            validate_device_info(&info)?;
+            if info.build_hash != status.build_hash {
+                bail!(
+                    "firmware changed while refreshing device information: STATUS=0x{:08X}, HELLO=0x{:08X}",
+                    status.build_hash,
+                    info.build_hash
+                );
+            }
+            self.info = info.clone();
+            send_event(events, SourceEvent::DeviceChanged { old_hash, info });
             if self.info.has(CAP_ENUM) {
                 self.enumerate(events)?;
             }
@@ -447,6 +516,7 @@ fn send_event(events: &mpsc::Sender<SourceEvent>, event: SourceEvent) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::source::{ValueRead, VarRef, VarType};
 
     struct ScriptedTransport {
         reads: Vec<Vec<u8>>,
@@ -473,33 +543,81 @@ mod tests {
         }
     }
 
+    fn device_info(build_hash: u32, descriptor_count: u16, capabilities: u32) -> DeviceInfo {
+        DeviceInfo {
+            protocol_version: u16::from(codec::WIRE_VERSION),
+            contract_version: EXPECTED_CONTRACT_VERSION,
+            build_hash,
+            descriptor_count,
+            firmware_name: "viewer2000".to_owned(),
+            tick_hz: 20_000,
+            capabilities,
+        }
+    }
+
+    fn session(reads: Vec<Vec<u8>>, info: DeviceInfo) -> Session {
+        let now = Instant::now();
+        Session {
+            transport: Box::new(ScriptedTransport {
+                reads,
+                writes: Vec::new(),
+            }),
+            decoder: FrameDecoder::default(),
+            next_sequence: 1,
+            info,
+            scope_active: false,
+            expected_block_sequence: None,
+            next_status: now,
+            next_block_poll: now,
+        }
+    }
+
+    fn enum_payload(total: u16, start: u16, count: u8) -> Vec<u8> {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&total.to_le_bytes());
+        payload.extend_from_slice(&start.to_le_bytes());
+        payload.extend_from_slice(&[count, 0]);
+        for index in start..start + u16::from(count) {
+            let name = format!("var{index:03}");
+            let mut entry = [0_u8; 28];
+            entry[..name.len()].copy_from_slice(name.as_bytes());
+            entry[16..18].copy_from_slice(&(VarType::F32 as u16).to_le_bytes());
+            entry[18..20].copy_from_slice(&0x0003_u16.to_le_bytes());
+            entry[20..24].copy_from_slice(&(0xB000_u32 + u32::from(index) * 2).to_le_bytes());
+            entry[24..26].copy_from_slice(&1_u16.to_le_bytes());
+            payload.extend_from_slice(&entry);
+        }
+        payload
+    }
+
+    fn hello_payload(info: &DeviceInfo) -> Vec<u8> {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&info.protocol_version.to_le_bytes());
+        payload.extend_from_slice(&info.contract_version.to_le_bytes());
+        payload.extend_from_slice(&info.build_hash.to_le_bytes());
+        payload.extend_from_slice(&info.descriptor_count.to_le_bytes());
+        payload.extend_from_slice(&0_u16.to_le_bytes());
+        let mut name = [0_u8; 16];
+        name[..info.firmware_name.len()].copy_from_slice(info.firmware_name.as_bytes());
+        payload.extend_from_slice(&name);
+        payload.extend_from_slice(&info.tick_hz.to_le_bytes());
+        payload.extend_from_slice(&info.capabilities.to_le_bytes());
+        payload
+    }
+
+    fn status_payload(build_hash: u32) -> Vec<u8> {
+        let mut payload = vec![0_u8; 42];
+        payload[..2].copy_from_slice(&1_u16.to_le_bytes());
+        payload[26..30].copy_from_slice(&build_hash.to_le_bytes());
+        payload
+    }
+
     #[test]
     fn request_discards_wrong_sequence_before_match() {
         let wrong = codec::encode_frame(codec::message::HELLO | 0x80, 99, &[]);
         let expected = codec::encode_frame(codec::message::HELLO | 0x80, 1, &[]);
         let (event_tx, _event_rx) = mpsc::channel();
-        let now = Instant::now();
-        let mut session = Session {
-            transport: Box::new(ScriptedTransport {
-                reads: vec![wrong, expected],
-                writes: Vec::new(),
-            }),
-            decoder: FrameDecoder::default(),
-            next_sequence: 1,
-            info: DeviceInfo {
-                protocol_version: 2,
-                contract_version: EXPECTED_CONTRACT_VERSION,
-                build_hash: 0,
-                descriptor_count: 0,
-                firmware_name: String::new(),
-                tick_hz: 0,
-                capabilities: 0,
-            },
-            scope_active: false,
-            expected_block_sequence: None,
-            next_status: now,
-            next_block_poll: now,
-        };
+        let mut session = session(vec![wrong, expected], device_info(0, 0, 0));
         let frame = session
             .request(codec::message::HELLO, &[], &event_tx)
             .expect("matching response");
@@ -509,38 +627,158 @@ mod tests {
     #[test]
     fn incompatible_contract_is_rejected() {
         let mut payload = Vec::new();
-        payload.extend_from_slice(&2_u16.to_le_bytes());
-        payload.extend_from_slice(&2_u16.to_le_bytes());
+        payload.extend_from_slice(&u16::from(codec::WIRE_VERSION).to_le_bytes());
+        payload.extend_from_slice(&9_u16.to_le_bytes());
         payload.resize(36, 0);
         let info = codec::parse_hello(&payload).expect("parse old contract");
         assert!(validate_device_info(&info).is_err());
     }
 
     #[test]
+    fn enumerates_full_128_entry_catalog() {
+        let info = device_info(0x1234_5678, 128, CAP_ENUM);
+        let mut reads: Vec<_> = (0_u16..128)
+            .step_by(usize::from(ENUM_PAGE_SIZE))
+            .enumerate()
+            .map(|(page, start)| {
+                codec::encode_frame(
+                    codec::message::ENUMERATE | 0x80,
+                    page as u16 + 1,
+                    &enum_payload(128, start, ENUM_PAGE_SIZE),
+                )
+            })
+            .collect();
+        reads.push(codec::encode_frame(
+            codec::message::HELLO | 0x80,
+            17,
+            &hello_payload(&info),
+        ));
+        let (event_tx, event_rx) = mpsc::channel();
+        let mut session = session(reads, info);
+
+        session.enumerate(&event_tx).expect("enumerate catalog");
+
+        let SourceEvent::Descriptors(descriptors) = event_rx.recv().expect("descriptor event")
+        else {
+            panic!("expected descriptors");
+        };
+        assert_eq!(descriptors.len(), 128);
+        assert_eq!(descriptors.first().expect("first").name, "var000");
+        assert_eq!(descriptors.last().expect("last").name, "var127");
+    }
+
+    #[test]
+    fn enumeration_rejects_total_that_differs_from_hello() {
+        let response = codec::encode_frame(
+            codec::message::ENUMERATE | 0x80,
+            1,
+            &enum_payload(127, 0, ENUM_PAGE_SIZE),
+        );
+        let (event_tx, _event_rx) = mpsc::channel();
+        let mut session = session(vec![response], device_info(0, 128, CAP_ENUM));
+
+        assert!(session.enumerate(&event_tx).is_err());
+    }
+
+    #[test]
+    fn enumeration_rejects_wrong_start_and_premature_end() {
+        let wrong_start =
+            codec::encode_frame(codec::message::ENUMERATE | 0x80, 1, &enum_payload(8, 1, 7));
+        let premature_end =
+            codec::encode_frame(codec::message::ENUMERATE | 0x80, 1, &enum_payload(8, 0, 0));
+        let (event_tx, _event_rx) = mpsc::channel();
+
+        assert!(
+            session(vec![wrong_start], device_info(0, 8, CAP_ENUM))
+                .enumerate(&event_tx)
+                .is_err()
+        );
+        assert!(
+            session(vec![premature_end], device_info(0, 8, CAP_ENUM))
+                .enumerate(&event_tx)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn build_hash_change_refreshes_device_info_and_stops_scope() {
+        let old_hash = 0x1111_1111;
+        let new_info = device_info(0x2222_2222, 1, CAP_ENUM);
+        let status = codec::encode_frame(
+            codec::message::STATUS | 0x80,
+            1,
+            &status_payload(new_info.build_hash),
+        );
+        let hello = codec::encode_frame(codec::message::HELLO | 0x80, 2, &hello_payload(&new_info));
+        let enumeration =
+            codec::encode_frame(codec::message::ENUMERATE | 0x80, 3, &enum_payload(1, 0, 1));
+        let confirmation =
+            codec::encode_frame(codec::message::HELLO | 0x80, 4, &hello_payload(&new_info));
+        let (event_tx, event_rx) = mpsc::channel();
+        let mut session = session(
+            vec![status, hello, enumeration, confirmation],
+            device_info(old_hash, 4, CAP_ENUM),
+        );
+        session.scope_active = true;
+        session.expected_block_sequence = Some(7);
+
+        session.poll_status(&event_tx).expect("refresh session");
+
+        assert_eq!(session.info.build_hash, new_info.build_hash);
+        assert!(!session.scope_active);
+        assert_eq!(session.expected_block_sequence, None);
+        let SourceEvent::DeviceChanged {
+            old_hash: event_old_hash,
+            info,
+        } = event_rx.recv().expect("device changed event")
+        else {
+            panic!("expected device change");
+        };
+        assert_eq!(event_old_hash, old_hash);
+        assert_eq!(info.build_hash, new_info.build_hash);
+        let SourceEvent::Descriptors(descriptors) = event_rx.recv().expect("descriptor event")
+        else {
+            panic!("expected descriptors");
+        };
+        assert_eq!(descriptors.len(), 1);
+        assert_eq!(descriptors[0].name, "var000");
+        assert!(matches!(
+            event_rx.recv().expect("status event"),
+            SourceEvent::Status(_)
+        ));
+    }
+
+    #[test]
+    fn stale_catalog_command_is_rejected_without_transport_request() {
+        let current_hash = 0x2222_2222;
+        let (event_tx, event_rx) = mpsc::channel();
+        let mut session = session(Vec::new(), device_info(current_hash, 1, CAP_ENUM));
+        let command = SourceCommand::Catalog {
+            build_hash: 0x1111_1111,
+            command: CatalogCommand::ReadValues(vec![ValueRead {
+                descriptor_index: 0,
+                var: VarRef {
+                    addr: 0xB000,
+                    ty: VarType::F32,
+                },
+            }]),
+        };
+
+        assert!(
+            session
+                .handle_command(command, &event_tx)
+                .expect("reject stale command")
+        );
+        let SourceEvent::Log(message) = event_rx.recv().expect("stale command log") else {
+            panic!("expected log event");
+        };
+        assert!(message.contains("discarded stale catalog command"));
+    }
+
+    #[test]
     fn request_times_out_after_retries() {
         let (event_tx, _event_rx) = mpsc::channel();
-        let now = Instant::now();
-        let mut session = Session {
-            transport: Box::new(ScriptedTransport {
-                reads: Vec::new(),
-                writes: Vec::new(),
-            }),
-            decoder: FrameDecoder::default(),
-            next_sequence: 1,
-            info: DeviceInfo {
-                protocol_version: 2,
-                contract_version: EXPECTED_CONTRACT_VERSION,
-                build_hash: 0,
-                descriptor_count: 0,
-                firmware_name: String::new(),
-                tick_hz: 0,
-                capabilities: 0,
-            },
-            scope_active: false,
-            expected_block_sequence: None,
-            next_status: now,
-            next_block_poll: now,
-        };
+        let mut session = session(Vec::new(), device_info(0, 0, 0));
         assert!(
             session
                 .request(codec::message::STATUS, &[], &event_tx)

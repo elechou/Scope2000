@@ -88,6 +88,10 @@ impl VarDescriptor {
     pub fn is_scope(&self) -> bool {
         self.kind & 0x0002 != 0
     }
+
+    pub fn is_user(&self) -> bool {
+        self.kind & 0x0004 != 0
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -280,14 +284,22 @@ pub struct ValueRead {
 }
 
 #[derive(Debug)]
-pub enum SourceCommand {
-    Connect(TransportEndpoint),
-    Disconnect,
+pub enum CatalogCommand {
     WriteParams(Vec<ParamWrite>),
     CommitParams,
     ReadValues(Vec<ValueRead>),
     BindChannels { channels: Vec<VarRef> },
     ConfigureScope(ScopeConfig),
+}
+
+#[derive(Debug)]
+pub enum SourceCommand {
+    Connect(TransportEndpoint),
+    Disconnect,
+    Catalog {
+        build_hash: u32,
+        command: CatalogCommand,
+    },
     SystemCommand(SystemCommand),
 }
 
@@ -324,7 +336,7 @@ pub enum SourceEvent {
     },
     DeviceChanged {
         old_hash: u32,
-        new_hash: u32,
+        info: DeviceInfo,
     },
     Error(String),
     Log(String),
