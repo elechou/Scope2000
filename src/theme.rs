@@ -35,6 +35,15 @@ pub const RED: Color32 = Color32::from_rgb(220, 53, 69);
 #[allow(dead_code)]
 pub const YELLOW: Color32 = Color32::from_rgb(255, 200, 40);
 
+/// Control-cycle budget bar. A low-clash spectral palette (RdYlBu-derived)
+/// laid out left-to-right across the work segments, with a dim slate for the
+/// remaining headroom.
+pub const LOAD_ADC: Color32 = Color32::from_rgb(220, 53, 69);
+pub const LOAD_CONTROL: Color32 = Color32::from_rgb(255, 200, 40);
+pub const LOAD_SCOPE: Color32 = Color32::from_rgb(40, 167, 69);
+pub const LOAD_RUNTIME: Color32 = Color32::from_rgb(0, 61, 161);
+pub const LOAD_HEADROOM: Color32 = Color32::from_rgb(0x39, 0x41, 0x4e);
+
 /// Structure / borders.
 pub const SEPARATOR: Color32 = Color32::from_rgb(45, 50, 54);
 

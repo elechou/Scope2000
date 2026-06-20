@@ -186,64 +186,36 @@ impl ScopeApp {
         let sample = self.hardware.performance.sample();
         let width = ui.available_width();
         let (rect, response) =
-            ui.allocate_exact_size(egui::vec2(width, 16.0), egui::Sense::hover());
+            ui.allocate_exact_size(egui::vec2(width, LOAD_BAR_HEIGHT), egui::Sense::hover());
+        let hover = response.hover_pos();
         let painter = ui.painter();
 
         if let Some(sample) = sample {
-            paint_load_track(painter, rect, sample.has_violation());
-            let fill_rect = load_fill_rect(rect);
-            let budget = sample.cycle_budget as f32;
-            let mut used = 0.0_f32;
-            paint_load_segment(
-                painter,
-                fill_rect,
-                &mut used,
-                sample.adc_at_peak() as f32,
-                budget,
-                theme::RED,
-            );
-            paint_load_segment(
-                painter,
-                fill_rect,
-                &mut used,
-                sample.control_at_peak as f32,
-                budget,
-                theme::SELECT_BG,
-            );
-            paint_load_segment(
-                painter,
-                fill_rect,
-                &mut used,
-                sample.scope_at_peak as f32,
-                budget,
-                theme::YELLOW,
-            );
-            paint_load_segment(
-                painter,
-                fill_rect,
-                &mut used,
-                sample.runtime_at_peak() as f32,
-                budget,
-                theme::GREEN,
-            );
-            paint_load_track_stroke(painter, rect, sample.has_violation());
+            let segments = [
+                (theme::LOAD_ADC, sample.adc_at_peak() as f32),
+                (theme::LOAD_CONTROL, sample.control_at_peak as f32),
+                (theme::LOAD_SCOPE, sample.scope_at_peak as f32),
+                (theme::LOAD_RUNTIME, sample.runtime_at_peak() as f32),
+                (theme::LOAD_HEADROOM, sample.headroom_at_peak() as f32),
+            ];
+            paint_load_bar(painter, rect, &segments, sample.cycle_budget as f32, hover);
 
             response.on_hover_ui(|ui| {
-                ui.label(egui::RichText::new("Last completed 1 s ISR window").small());
+                ui.set_min_width(LOAD_TOOLTIP_WIDTH);
                 ui.colored_label(
-                    theme::RED,
+                    theme::LOAD_ADC,
                     format!("ADC/EOC: {} cycles", sample.adc_at_peak()),
                 );
                 ui.colored_label(
-                    theme::SELECT_BG,
+                    theme::LOAD_CONTROL,
                     format!("Control: {} cycles", sample.control_at_peak),
                 );
                 ui.colored_label(
-                    theme::YELLOW,
+                    theme::LOAD_SCOPE,
                     format!("Scope: {} cycles", sample.scope_at_peak),
                 );
                 ui.colored_label(
-                    theme::GREEN,
+                    theme::LOAD_RUNTIME,
                     format!("Runtime: {} cycles", sample.runtime_at_peak()),
                 );
                 ui.colored_label(
@@ -270,8 +242,7 @@ impl ScopeApp {
                     }),
             );
         } else {
-            paint_load_track(painter, rect, false);
-            paint_load_track_stroke(painter, rect, false);
+            paint_load_bar(painter, rect, &[(theme::LOAD_HEADROOM, 1.0)], 1.0, None);
             let text = if self.hardware.connected && self.hardware.performance.is_available() {
                 "Collecting performance data…"
             } else {
@@ -326,78 +297,65 @@ impl ScopeApp {
     }
 }
 
-fn paint_load_track(painter: &egui::Painter, rect: egui::Rect, warning: bool) {
-    let radius = egui::CornerRadius::same(8);
-    painter.rect_filled(rect, radius, theme::WIDGET_BG);
-    let fill_rect = load_fill_rect(rect);
-    painter.rect_filled(fill_rect, egui::CornerRadius::same(6), theme::WIDGET_ACTIVE);
-    let sheen = egui::Rect::from_min_max(
-        fill_rect.min,
-        egui::pos2(
-            fill_rect.right(),
-            fill_rect.top() + fill_rect.height() * 0.42,
-        ),
-    );
-    painter.rect_filled(
-        sheen,
-        egui::CornerRadius {
-            nw: 6,
-            ne: 6,
-            sw: 0,
-            se: 0,
-        },
-        egui::Color32::from_white_alpha(if warning { 18 } else { 10 }),
-    );
-}
+const LOAD_BAR_HEIGHT: f32 = 8.0;
+const LOAD_SEG_GAP: f32 = 2.0;
+const LOAD_SEG_ROUND: f32 = 2.0;
+/// Floor width for any non-empty block, so sub-1% slivers stay visible and read
+/// at a uniform height instead of collapsing into sub-pixel fuzz. Set to 0.0
+/// for strictly proportional widths.
+const LOAD_SEG_MIN_W: f32 = 2.0;
+const LOAD_TOOLTIP_WIDTH: f32 = 220.0;
 
-fn paint_load_track_stroke(painter: &egui::Painter, rect: egui::Rect, warning: bool) {
-    painter.rect_stroke(
-        rect,
-        egui::CornerRadius::same(8),
-        egui::Stroke::new(
-            1.0,
-            if warning {
-                theme::RED
-            } else {
-                theme::SEPARATOR
-            },
-        ),
-        egui::StrokeKind::Inside,
-    );
-}
-
-fn load_fill_rect(rect: egui::Rect) -> egui::Rect {
-    rect.shrink2(egui::vec2(2.0, 2.0))
-}
-
-fn paint_load_segment(
+/// Paint the cycle-budget bar as discrete blocks separated by a uniform gap.
+/// Each `(color, cycles)` block is sized proportionally to `total`. Gaps are
+/// reserved up front (not carved out of the blocks) so they stay constant, and
+/// the corner radius is clamped to each block's own width so thin slivers keep
+/// full height instead of rounding down to a dot. The block under the pointer
+/// (if any) is brightened.
+fn paint_load_bar(
     painter: &egui::Painter,
     rect: egui::Rect,
-    used: &mut f32,
-    cycles: f32,
-    budget: f32,
-    color: egui::Color32,
+    segments: &[(egui::Color32, f32)],
+    total: f32,
+    hover: Option<egui::Pos2>,
 ) {
-    let start = (*used / budget).clamp(0.0, 1.0);
-    *used += cycles;
-    let end = (*used / budget).clamp(0.0, 1.0);
-    if end <= start {
+    if total <= 0.0 {
         return;
     }
-    let segment = egui::Rect::from_min_max(
-        egui::pos2(rect.left() + rect.width() * start, rect.top()),
-        egui::pos2(rect.left() + rect.width() * end, rect.bottom()),
-    );
-    painter.rect_filled(segment, segment_rounding(start, end, rect.height()), color);
-}
+    let visible = segments.iter().filter(|(_, cycles)| *cycles > 0.0).count();
+    if visible == 0 {
+        return;
+    }
 
-fn segment_rounding(start: f32, end: f32, height: f32) -> egui::CornerRadius {
-    let radius = ((height * 0.5).round() as u8).max(1);
-    egui::CornerRadius {
-        nw: if start <= 0.0 { radius } else { 0 },
-        sw: if start <= 0.0 { radius } else { 0 },
-        ne: if end >= 1.0 { radius } else { 0 },
-        se: if end >= 1.0 { radius } else { 0 },
+    // Reserve the gaps before distributing pixels to fills, so every gap is
+    // exactly LOAD_SEG_GAP regardless of how thin its neighbours are.
+    let fill_budget = (rect.width() - LOAD_SEG_GAP * (visible - 1) as f32).max(0.0);
+    let half_height = rect.height() * 0.5;
+    let right = rect.right();
+
+    let mut x = rect.left();
+    for (color, cycles) in segments {
+        if *cycles <= 0.0 || x >= right {
+            continue;
+        }
+        let w = (fill_budget * cycles / total).max(LOAD_SEG_MIN_W);
+        let seg_right = (x + w).min(right);
+        if seg_right > x {
+            // Radius never exceeds half the block's own width (or height), so a
+            // 2px sliver stays a full-height bar rather than a rounded pill.
+            let radius = LOAD_SEG_ROUND
+                .min((seg_right - x) * 0.5)
+                .min(half_height)
+                .round() as u8;
+            let seg = egui::Rect::from_min_max(
+                egui::pos2(x, rect.top()),
+                egui::pos2(seg_right, rect.bottom()),
+            );
+            let hot = hover.is_some_and(|p| seg.contains(p));
+            let fill = if hot { color.gamma_multiply(1.15) } else { *color };
+            painter.rect_filled(seg, egui::CornerRadius::same(radius), fill);
+        }
+        x = seg_right + LOAD_SEG_GAP;
     }
 }
 
