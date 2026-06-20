@@ -73,18 +73,25 @@ pub fn show(
                 };
                 plug_btn.on_hover_text(hover);
 
-                let addr_color = if hardware.connected {
+                let endpoint_color = if hardware.connected {
                     theme::GREEN
-                } else if is_connecting {
+                } else if hardware.connecting {
                     theme::YELLOW
                 } else {
                     theme::TEXT_SUBDUED
                 };
-                ui.label(
-                    egui::RichText::new(hardware.endpoint_label())
-                        .color(addr_color)
-                        .monospace(),
-                );
+                let endpoint_text = egui::RichText::new(hardware.endpoint_label())
+                    .color(endpoint_color)
+                    .monospace();
+                let connection_settings = if hardware.can_configure_connection() {
+                    ui.add(egui::Button::new(endpoint_text).frame(false))
+                        .on_hover_text("Connection settings")
+                } else {
+                    ui.label(endpoint_text)
+                };
+                if connection_settings.clicked() {
+                    ui_state.show_connection_settings = true;
+                }
 
                 if hardware.connecting {
                     ui.spinner();
@@ -112,10 +119,16 @@ pub fn show(
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    ui.label(format!("System: {}", hardware.state_label()));
                     if let Some(ref info) = hardware.version {
+                        let device_info = ui.add(
+                            egui::Button::new(egui::RichText::new(info).color(theme::TEXT_SUBDUED))
+                                .frame(false),
+                        );
+                        if device_info.clicked() {
+                            ui_state.show_device_info_window = !ui_state.show_device_info_window;
+                        }
+                        device_info.on_hover_text("Device Info");
                         ui.separator();
-                        ui.label(egui::RichText::new(info).color(theme::TEXT_SUBDUED));
                     }
                 });
             });

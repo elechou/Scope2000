@@ -9,7 +9,11 @@ pub enum MenuAction {
 }
 
 /// Show the top menu bar and dock toggles.
-pub fn show(ui: &mut egui::Ui, ui_state: &mut UiState) -> Option<MenuAction> {
+pub fn show(
+    ui: &mut egui::Ui,
+    ui_state: &mut UiState,
+    can_configure_connection: bool,
+) -> Option<MenuAction> {
     let mut action = None;
     let mut quit_clicked = false;
 
@@ -30,6 +34,16 @@ pub fn show(ui: &mut egui::Ui, ui_state: &mut UiState) -> Option<MenuAction> {
                     ui.separator();
                     if ui.button("Quit").clicked() {
                         quit_clicked = true;
+                        ui.close_kind(egui::UiKind::Menu);
+                    }
+                });
+
+                ui.menu_button("Settings", |ui| {
+                    if ui
+                        .add_enabled(can_configure_connection, egui::Button::new("Connect"))
+                        .clicked()
+                    {
+                        ui_state.show_connection_settings = true;
                         ui.close_kind(egui::UiKind::Menu);
                     }
                 });
@@ -65,12 +79,12 @@ pub fn show(ui: &mut egui::Ui, ui_state: &mut UiState) -> Option<MenuAction> {
                     if theme::dock_toggle(
                         ui,
                         "\u{F10AA}",
-                        ui_state.show_device_panel,
-                        "Toggle Device panel",
+                        ui_state.show_system_panel,
+                        "Toggle System panel",
                     )
                     .clicked()
                     {
-                        ui_state.show_device_panel = !ui_state.show_device_panel;
+                        ui_state.show_system_panel = !ui_state.show_system_panel;
                     }
                 });
             });

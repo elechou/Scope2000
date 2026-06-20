@@ -90,113 +90,7 @@ impl ScopeApp {
             .is_some_and(|info| info.has(capability))
     }
 
-    fn device_panel(&mut self, ui: &mut egui::Ui) {
-        theme::section_header(ui, "Device");
-        ui.add_space(4.0);
-
-        ui.horizontal(|ui| {
-            if theme::action_button(ui, "Refresh", theme::WIDGET_BG, true) {
-                self.hardware.serial_ports = transport::available_serial_ports();
-                if !self.hardware.port.is_empty()
-                    && !self.hardware.serial_ports.contains(&self.hardware.port)
-                {
-                    self.hardware
-                        .serial_ports
-                        .insert(0, self.hardware.port.clone());
-                }
-            }
-        });
-
-        egui::ComboBox::from_id_salt("serial_port")
-            .width(ui.available_width())
-            .selected_text(if self.hardware.port.is_empty() {
-                "Select serial port"
-            } else {
-                &self.hardware.port
-            })
-            .show_ui(ui, |ui| {
-                for port in &self.hardware.serial_ports {
-                    ui.selectable_value(&mut self.hardware.port, port.clone(), port);
-                }
-            });
-        egui::ComboBox::from_id_salt("baud")
-            .width(ui.available_width())
-            .selected_text(self.hardware.baud.to_string())
-            .show_ui(ui, |ui| {
-                for baud in [115_200, 230_400, 460_800, 921_600, 1_500_000] {
-                    ui.selectable_value(&mut self.hardware.baud, baud, baud.to_string());
-                }
-            });
-
-        let button_gap = ui.spacing().item_spacing.x;
-        let pair_button_w = ((ui.available_width() - button_gap) / 2.0).max(0.0);
-        ui.horizontal(|ui| {
-            let can_connect = !self.hardware.connected
-                && !self.hardware.connecting
-                && !self.hardware.port.is_empty();
-            if theme::action_button_w(ui, "Connect", theme::GREEN, can_connect, pair_button_w) {
-                self.connect();
-            }
-            if theme::action_button_w(
-                ui,
-                "Disconnect",
-                theme::RED,
-                self.hardware.connected,
-                pair_button_w,
-            ) {
-                self.disconnect_or_warn();
-            }
-        });
-
-        ui.separator();
-        if let Some(info) = &self.hardware.info {
-            ui.monospace(format!("firmware {}", info.firmware_name));
-            ui.monospace(format!(
-                "wire {} contract {}",
-                info.protocol_version, info.contract_version
-            ));
-            ui.monospace(format!("build 0x{:08X}", info.build_hash));
-            ui.monospace(format!("tick {} Hz", info.tick_hz));
-            ui.monospace(format!(
-                "descriptors {}/{}",
-                self.inspector.descriptors.len(),
-                info.descriptor_count
-            ));
-            ui.monospace(format!("capabilities 0x{:08X}", info.capabilities));
-        } else {
-            ui.weak("No Viewer2000 session");
-        }
-
-        if let Some(status) = &self.hardware.status {
-            ui.separator();
-            ui.monospace(format!(
-                "state={}({}) fault={} flags=0x{:04X}",
-                status.system_state,
-                status.system_state.wire_value(),
-                status.fault_code,
-                status.status_flags
-            ));
-            ui.monospace(format!("tick={}", status.tick));
-            ui.monospace(format!(
-                "hb={}/{}",
-                status.cpu1_heartbeat, status.cpu2_heartbeat
-            ));
-            ui.monospace(format!(
-                "cal seq={} result={} fail={}",
-                status.applied_seq, status.calibration_result, status.calibration_fail_index
-            ));
-            ui.monospace(format!(
-                "scope={} flags=0x{:02X}",
-                self.hardware.scope_mode_label(),
-                status.scope_flags,
-            ));
-            ui.monospace(format!(
-                "cmd ack={} result={}",
-                status.command_ack_seq.unwrap_or_default(),
-                status.command_result.unwrap_or_default()
-            ));
-        }
-
+    fn system_panel(&mut self, ui: &mut egui::Ui) {
         theme::section_header(ui, "System");
         ui.add_space(4.0);
         let system_state = self
@@ -209,23 +103,30 @@ impl ScopeApp {
         let can_start = can_send_system_command && matches!(system_state, Some(SystemState::Idle));
         let can_stop =
             can_send_system_command && matches!(system_state, Some(SystemState::Running));
-        let can_clear_fault =
-            can_send_system_command && matches!(system_state, Some(SystemState::Fault));
-        let button_gap = ui.spacing().item_spacing.x;
-        let start_w = 70.0;
-        let stop_w = 70.0;
-        let clear_w = (ui.available_width() - start_w - stop_w - button_gap * 2.0).max(0.0);
-        ui.horizontal(|ui| {
-            if theme::action_button_w(ui, "Start", theme::GREEN, can_start, start_w) {
-                self.send(SourceCommand::SystemCommand(SystemCommand::Start));
-            }
-            if theme::action_button_w(ui, "Stop", theme::RED, can_stop, stop_w) {
-                self.send(SourceCommand::SystemCommand(SystemCommand::Stop));
-            }
-            if theme::action_button_w(ui, "Clear Fault", theme::GREEN, can_clear_fault, clear_w) {
+
+        if matches!(system_state, Some(SystemState::Fault)) {
+            let clear_w = ui.available_width();
+            if theme::action_button_w(
+                ui,
+                "Clear Fault",
+                theme::GREEN,
+                can_send_system_command,
+                clear_w,
+            ) {
                 self.send(SourceCommand::SystemCommand(SystemCommand::ClearFault));
             }
-        });
+        } else {
+            let button_gap = ui.spacing().item_spacing.x;
+            let button_w = ((ui.available_width() - button_gap) / 2.0).max(0.0);
+            ui.horizontal(|ui| {
+                if theme::action_button_w(ui, "Start", theme::GREEN, can_start, button_w) {
+                    self.send(SourceCommand::SystemCommand(SystemCommand::Start));
+                }
+                if theme::action_button_w(ui, "Stop", theme::RED, can_stop, button_w) {
+                    self.send(SourceCommand::SystemCommand(SystemCommand::Stop));
+                }
+            });
+        }
 
         let (state_label, state_color) =
             user_system_state_label(system_state, self.hardware.connected);
@@ -298,9 +199,14 @@ impl eframe::App for ScopeApp {
 
         crate::ui::modals::handle_close_guard(ui, &self.hardware, &mut self.ui);
         crate::ui::modals::show_stop_warning(ui, &mut self.ui);
+        if crate::ui::modals::show_connection_settings(ui, &mut self.hardware, &mut self.ui) {
+            self.connect();
+        }
         crate::ui::modals::show_about_window(ui, &mut self.ui);
 
-        if let Some(action) = crate::ui::menu_bar::show(ui, &mut self.ui) {
+        if let Some(action) =
+            crate::ui::menu_bar::show(ui, &mut self.ui, self.hardware.can_configure_connection())
+        {
             self.handle_menu_action(action);
         }
         if let Some(action) =
@@ -313,6 +219,12 @@ impl eframe::App for ScopeApp {
                 StatusBarAction::Disconnect => self.disconnect_or_warn(),
             }
         }
+        crate::ui::modals::show_device_info_window(
+            ui,
+            &self.hardware,
+            self.inspector.descriptors.len(),
+            &mut self.ui,
+        );
 
         theme::pretick_panel_animation(ui.ctx(), "console_panel", self.ui.show_console_panel);
         egui::Panel::bottom("console_panel")
@@ -325,14 +237,14 @@ impl eframe::App for ScopeApp {
             });
 
         self.viewport.drop_hover_panel = false;
-        theme::pretick_panel_animation(ui.ctx(), "device_panel", self.ui.show_device_panel);
-        egui::Panel::left("device_panel")
+        theme::pretick_panel_animation(ui.ctx(), "system_panel", self.ui.show_system_panel);
+        egui::Panel::left("system_panel")
             .resizable(false)
             .exact_size(250.0)
             .show_separator_line(true)
             .frame(theme::side_panel_frame())
-            .show_animated_inside(ui, self.ui.show_device_panel, |ui| {
-                self.device_panel(ui);
+            .show_animated_inside(ui, self.ui.show_system_panel, |ui| {
+                self.system_panel(ui);
                 ui.separator();
                 let pinned_changed = crate::variable::panel::show_variable_map(
                     ui,

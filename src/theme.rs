@@ -432,12 +432,6 @@ fn action_button_size(ui: &egui::Ui, text: &str, min_width: f32) -> egui::Vec2 {
     )
 }
 
-/// Styled action button (Execute, Stop, Run, etc).
-pub fn action_button(ui: &mut egui::Ui, text: &str, color: Color32, enabled: bool) -> bool {
-    let size = action_button_size(ui, text, 0.0);
-    action_button_response_sized(ui, text, color, enabled, size).clicked()
-}
-
 /// Styled action button with fixed width. Text is centered both axes.
 pub fn action_button_response_w(
     ui: &mut egui::Ui,
