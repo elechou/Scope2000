@@ -665,7 +665,7 @@ mod tests {
     fn device(name: &str) -> DeviceInfo {
         DeviceInfo {
             protocol_version: 6,
-            contract_version: 12,
+            contract_version: 13,
             build_hash: 1,
             descriptor_count: 0,
             firmware_name: "viewer2000".to_owned(),

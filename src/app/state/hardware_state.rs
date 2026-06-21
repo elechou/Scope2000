@@ -177,7 +177,7 @@ mod tests {
         let hardware = HardwareState {
             info: Some(DeviceInfo {
                 protocol_version: 1,
-                contract_version: 12,
+                contract_version: 13,
                 build_hash: 0x3C31_3C66,
                 descriptor_count: 0,
                 firmware_name: "viewer2000".to_owned(),

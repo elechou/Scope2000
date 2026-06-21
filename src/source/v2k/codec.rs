@@ -700,7 +700,7 @@ mod tests {
     fn hello_parser_accepts_missing_project_tail() {
         let mut payload = Vec::new();
         payload.extend_from_slice(&u16::from(WIRE_VERSION).to_le_bytes());
-        payload.extend_from_slice(&12_u16.to_le_bytes());
+        payload.extend_from_slice(&13_u16.to_le_bytes());
         payload.extend_from_slice(&0x1234_5678_u32.to_le_bytes());
         payload.extend_from_slice(&2_u16.to_le_bytes());
         payload.extend_from_slice(&0_u16.to_le_bytes());

@@ -14,7 +14,7 @@ use crate::source::{
     SourceEvent, SourceHandle, TransportEndpoint,
 };
 
-const EXPECTED_CONTRACT_VERSION: u16 = 12;
+const EXPECTED_CONTRACT_VERSION: u16 = 13;
 const ENUM_PAGE_SIZE: u8 = 8;
 #[cfg(not(test))]
 const REQUEST_TIMEOUT: Duration = Duration::from_millis(150);
@@ -695,22 +695,23 @@ mod tests {
     }
 
     #[test]
-    fn enumerates_full_128_entry_catalog() {
-        let info = device_info(0x1234_5678, 128, CAP_ENUM);
-        let mut reads: Vec<_> = (0_u16..128)
+    fn enumerates_full_176_entry_catalog() {
+        let info = device_info(0x1234_5678, 176, CAP_ENUM);
+        let mut reads: Vec<_> = (0_u16..176)
             .step_by(usize::from(ENUM_PAGE_SIZE))
             .enumerate()
             .map(|(page, start)| {
                 codec::encode_frame(
                     codec::message::ENUMERATE | 0x80,
                     page as u16 + 1,
-                    &enum_payload(128, start, ENUM_PAGE_SIZE),
+                    &enum_payload(176, start, ENUM_PAGE_SIZE),
                 )
             })
             .collect();
+        let confirm_sequence = reads.len() as u16 + 1;
         reads.push(codec::encode_frame(
             codec::message::HELLO | 0x80,
-            17,
+            confirm_sequence,
             &hello_payload(&info),
         ));
         let (event_tx, event_rx) = mpsc::channel();
@@ -722,9 +723,9 @@ mod tests {
         else {
             panic!("expected descriptors");
         };
-        assert_eq!(descriptors.len(), 128);
+        assert_eq!(descriptors.len(), 176);
         assert_eq!(descriptors.first().expect("first").name, "var000");
-        assert_eq!(descriptors.last().expect("last").name, "var127");
+        assert_eq!(descriptors.last().expect("last").name, "var175");
     }
 
     #[test]
@@ -735,7 +736,7 @@ mod tests {
             &enum_payload(127, 0, ENUM_PAGE_SIZE),
         );
         let (event_tx, _event_rx) = mpsc::channel();
-        let mut session = session(vec![response], device_info(0, 128, CAP_ENUM));
+        let mut session = session(vec![response], device_info(0, 176, CAP_ENUM));
 
         assert!(session.enumerate(&event_tx).is_err());
     }
