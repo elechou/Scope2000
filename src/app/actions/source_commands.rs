@@ -4,7 +4,8 @@ use crate::app::ScopeApp;
 use crate::console::LogLevel;
 use crate::source::{
     CAP_CAL, CAP_NATIVE_BLOCK, CAP_PRE_TRIGGER, CAP_SCOPE_CAPTURE, CAP_SCOPE_STREAM,
-    CatalogCommand, ParamWrite, ScopeConfig, ScopeMode, SourceCommand, TriggerEdge, VarDescriptor,
+    CAP_SYSTEM_CMD, CatalogCommand, ParamWrite, ScopeConfig, ScopeMode, SourceCommand,
+    SystemCommand, TriggerEdge, VarDescriptor,
 };
 use crate::wave::{max_record_points_for_binding, pane::PaneKind};
 
@@ -23,6 +24,29 @@ impl ScopeApp {
         });
     }
 
+    pub(in crate::app) fn send_system_command(&mut self, command: SystemCommand) {
+        if self.hardware.pending_system_command.is_some() {
+            self.log.push(
+                LogLevel::Warn,
+                "A system command is already pending".to_owned(),
+            );
+            return;
+        }
+        if !self.hardware.connected {
+            self.log.push(LogLevel::Warn, "Not connected".to_owned());
+            return;
+        }
+        if !self.has_capability(CAP_SYSTEM_CMD) {
+            self.log.push(
+                LogLevel::Warn,
+                "SYSTEM_CMD capability is not available".to_owned(),
+            );
+            return;
+        }
+        self.hardware.begin_system_command(command);
+        self.send(SourceCommand::SystemCommand(command));
+    }
+
     pub(in crate::app) fn connect(&mut self) {
         let Some(endpoint) = self.hardware.endpoint() else {
             self.log
@@ -36,6 +60,7 @@ impl ScopeApp {
         self.hardware.info = None;
         self.hardware.status = None;
         self.hardware.performance.clear();
+        self.hardware.clear_system_command_state();
         self.send(SourceCommand::Connect(endpoint));
     }
 

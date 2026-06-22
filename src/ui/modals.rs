@@ -2,6 +2,7 @@ use eframe::egui;
 
 use crate::app::state::{HardwareState, UiState};
 use crate::source::v2k::transport;
+use crate::source::{command_result_text, fault_code_text};
 use crate::theme;
 
 /// Cancel a close request while the board is Running and surface the stop warning.
@@ -169,9 +170,10 @@ pub fn show_device_info_window(
             if let Some(status) = &hardware.status {
                 ui.separator();
                 ui.monospace(format!(
-                    "state={}({}) fault={} flags=0x{:04X}",
+                    "state={}({}) fault={}({}) flags=0x{:04X}",
                     status.system_state,
                     status.system_state.wire_value(),
+                    fault_code_text(status.fault_code),
                     status.fault_code,
                     status.status_flags
                 ));
@@ -190,10 +192,17 @@ pub fn show_device_info_window(
                     status.scope_flags,
                 ));
                 ui.monospace(format!(
-                    "cmd ack={} result={}",
+                    "cmd ack={} result={}({})",
                     status.command_ack_seq.unwrap_or_default(),
+                    command_result_text(status.command_result.unwrap_or_default()),
                     status.command_result.unwrap_or_default()
                 ));
+                if let Some(text) = hardware.pending_system_command_text() {
+                    ui.monospace(text);
+                }
+                if let Some(text) = hardware.last_system_command_text() {
+                    ui.monospace(text);
+                }
             }
         });
 }

@@ -3,13 +3,13 @@ use std::time::Instant;
 
 use eframe::egui;
 
-use crate::app::{LOCAL_METADATA_REFRESH_PERIOD, ScopeApp};
 use crate::app::state::{
     LocalProject, MutationPolicy, ProjectBinding, ProjectStatus, UNTITLED_PROJECT, UnresolvedRefs,
     WorkspaceStore, refresh_local_build, scan_project_directory,
 };
+use crate::app::{LOCAL_METADATA_REFRESH_PERIOD, ScopeApp};
 use crate::console::LogLevel;
-use crate::source::{SourceCommand, SystemCommand};
+use crate::source::SystemCommand;
 use crate::theme;
 
 impl ScopeApp {
@@ -25,7 +25,7 @@ impl ScopeApp {
             );
             return;
         }
-        self.send(SourceCommand::SystemCommand(SystemCommand::Start));
+        self.send_system_command(SystemCommand::Start);
     }
 
     pub(in crate::app) fn handle_firmware_project(&mut self) {

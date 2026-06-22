@@ -10,6 +10,7 @@ use crate::console::{LogBuffer, LogLevel};
 use crate::source::v2k::{V2kSource, transport};
 use crate::source::{
     CAP_SYSTEM_CMD, DataSource, ScopeMode, SourceCommand, SourceHandle, SystemCommand, SystemState,
+    fault_code_text,
 };
 use crate::theme;
 use crate::variable::InspectorState;
@@ -147,8 +148,10 @@ impl ScopeApp {
             .status
             .as_ref()
             .map(|status| status.system_state);
-        let can_send_system_command =
-            self.hardware.connected && self.has_capability(CAP_SYSTEM_CMD);
+        let system_command_pending = self.hardware.pending_system_command.is_some();
+        let can_send_system_command = self.hardware.connected
+            && self.has_capability(CAP_SYSTEM_CMD)
+            && !system_command_pending;
         let can_start = can_send_system_command
             && self.project_policy().system_start
             && matches!(system_state, Some(SystemState::Idle));
@@ -164,7 +167,7 @@ impl ScopeApp {
                 can_send_system_command,
                 clear_w,
             ) {
-                self.send(SourceCommand::SystemCommand(SystemCommand::ClearFault));
+                self.send_system_command(SystemCommand::ClearFault);
             }
         } else {
             let button_gap = ui.spacing().item_spacing.x;
@@ -174,7 +177,7 @@ impl ScopeApp {
                     self.start_system();
                 }
                 if theme::action_button_w(ui, "Stop", theme::RED, can_stop, button_w) {
-                    self.send(SourceCommand::SystemCommand(SystemCommand::Stop));
+                    self.send_system_command(SystemCommand::Stop);
                 }
             });
         }
@@ -182,6 +185,24 @@ impl ScopeApp {
         let (state_label, state_color) =
             user_system_state_label(system_state, self.hardware.connected);
         ui.colored_label(state_color, format!("User system: {state_label}"));
+        if let Some(text) = self.hardware.pending_system_command_text() {
+            ui.colored_label(theme::YELLOW, text);
+        }
+        if let Some(text) = self.hardware.last_system_command_text() {
+            ui.colored_label(theme::TEXT_SUBDUED, text);
+        }
+        if let Some(status) = &self.hardware.status
+            && status.fault_code != 0
+        {
+            ui.colored_label(
+                theme::RED,
+                format!(
+                    "Fault: {} ({})",
+                    fault_code_text(status.fault_code),
+                    status.fault_code
+                ),
+            );
+        }
         self.performance_panel(ui);
     }
 
@@ -359,7 +380,11 @@ fn paint_load_bar(
                 egui::pos2(seg_right, rect.bottom()),
             );
             let hot = hover.is_some_and(|p| seg.contains(p));
-            let fill = if hot { color.gamma_multiply(1.15) } else { *color };
+            let fill = if hot {
+                color.gamma_multiply(1.15)
+            } else {
+                *color
+            };
             painter.rect_filled(seg, egui::CornerRadius::same(radius), fill);
         }
         x = seg_right + LOAD_SEG_GAP;

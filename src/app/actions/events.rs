@@ -2,7 +2,7 @@ use std::{cmp::Ordering, time::Instant};
 
 use crate::app::ScopeApp;
 use crate::console::LogLevel;
-use crate::source::{ScopeBlock, ScopeMode, SourceEvent, VarDescriptor};
+use crate::source::{ScopeBlock, ScopeMode, SourceEvent, VarDescriptor, command_result_text};
 use crate::variable::InspectorState;
 use crate::wave::{WaveState, data::PlotData};
 
@@ -14,6 +14,7 @@ impl ScopeApp {
                 SourceEvent::Connected(info) => {
                     self.hardware.connected = true;
                     self.hardware.connecting = false;
+                    self.hardware.clear_system_command_state();
                     self.descriptor_catalog_ready = false;
                     self.workspace_watch_restored = false;
                     self.log.push(
@@ -41,6 +42,7 @@ impl ScopeApp {
                     self.hardware.info = None;
                     self.hardware.status = None;
                     self.hardware.performance.clear();
+                    self.hardware.clear_system_command_state();
                     self.wave.active = false;
                     self.wave.restart_pending = None;
                     self.descriptor_catalog_ready = false;
@@ -68,6 +70,7 @@ impl ScopeApp {
                     self.next_watch_read = Instant::now();
                 }
                 SourceEvent::Status(status) => {
+                    let completed_command = self.hardware.complete_pending_system_command(&status);
                     let previous_state = self
                         .hardware
                         .status
@@ -78,6 +81,22 @@ impl ScopeApp {
                     let performance = status.performance;
                     self.hardware.status = Some(status);
                     self.hardware.performance.ingest_status(performance);
+                    if let Some(completed) = completed_command {
+                        let result = command_result_text(completed.result);
+                        let level = if completed.result == 0 {
+                            LogLevel::Notice
+                        } else {
+                            LogLevel::Warn
+                        };
+                        self.log.push(
+                            level,
+                            format!(
+                                "System command {} completed {result} as sequence {}",
+                                completed.command.label(),
+                                completed.sequence
+                            ),
+                        );
+                    }
                     if entered_running {
                         self.next_watch_read = Instant::now();
                         self.log.push(
@@ -116,6 +135,25 @@ impl ScopeApp {
                         LogLevel::Info,
                         format!("Scope binding accepted as sequence {bind_sequence}"),
                     );
+                }
+                SourceEvent::SystemCommandAccepted { command, sequence } => {
+                    if self.hardware.accept_system_command(command, sequence) {
+                        self.log.push(
+                            LogLevel::Info,
+                            format!(
+                                "System command {} accepted as sequence {sequence}",
+                                command.label()
+                            ),
+                        );
+                    } else {
+                        self.log.push(
+                            LogLevel::Warn,
+                            format!(
+                                "Ignored system command {} ACK sequence {sequence} without matching pending command",
+                                command.label()
+                            ),
+                        );
+                    }
                 }
                 SourceEvent::ScopeConfigured { mode } => {
                     self.wave.mode = mode;
@@ -214,6 +252,7 @@ impl ScopeApp {
                     self.hardware.info = Some(info);
                     self.hardware.status = None;
                     self.hardware.performance.clear();
+                    self.hardware.clear_system_command_state();
                     self.hardware.version = self.hardware.version_text();
                     self.workspace_watch_restored = false;
                     self.descriptor_catalog_ready = false;
@@ -227,6 +266,7 @@ impl ScopeApp {
                 }
                 SourceEvent::Error(error) => {
                     self.hardware.connecting = false;
+                    self.hardware.clear_system_command_state();
                     self.log.push(LogLevel::Error, error);
                 }
                 SourceEvent::Log(message) => self.log.push(LogLevel::Info, message),

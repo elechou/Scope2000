@@ -324,11 +324,41 @@ pub struct ScopeConfig {
     pub record_points: u16,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SystemCommand {
     Start,
     Stop,
     ClearFault,
+}
+
+impl SystemCommand {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Start => "Start",
+            Self::Stop => "Stop",
+            Self::ClearFault => "Clear Fault",
+        }
+    }
+}
+
+pub fn fault_code_text(code: u16) -> String {
+    match code {
+        0 => "NONE".to_owned(),
+        1 => "TZ1_EXT".to_owned(),
+        2 => "OVERCURRENT".to_owned(),
+        other => format!("FAULT_{other}"),
+    }
+}
+
+pub fn command_result_text(result: u16) -> String {
+    match result {
+        0 => "OK".to_owned(),
+        1 => "BAD_CMD".to_owned(),
+        2 => "BAD_STATE".to_owned(),
+        3 => "NOT_READY".to_owned(),
+        4 => "START_FAILED".to_owned(),
+        other => format!("CMDR_{other}"),
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -392,6 +422,10 @@ pub enum SourceEvent {
     ChannelsBound {
         bind_sequence: u16,
     },
+    SystemCommandAccepted {
+        command: SystemCommand,
+        sequence: u32,
+    },
     ScopeConfigured {
         mode: ScopeMode,
     },
@@ -420,4 +454,27 @@ pub struct SourceHandle {
 
 pub trait DataSource: Send + 'static {
     fn spawn(self: Box<Self>) -> SourceHandle;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fault_code_text_names_known_codes_and_preserves_unknowns() {
+        assert_eq!(fault_code_text(0), "NONE");
+        assert_eq!(fault_code_text(1), "TZ1_EXT");
+        assert_eq!(fault_code_text(2), "OVERCURRENT");
+        assert_eq!(fault_code_text(99), "FAULT_99");
+    }
+
+    #[test]
+    fn command_result_text_names_known_results_and_preserves_unknowns() {
+        assert_eq!(command_result_text(0), "OK");
+        assert_eq!(command_result_text(1), "BAD_CMD");
+        assert_eq!(command_result_text(2), "BAD_STATE");
+        assert_eq!(command_result_text(3), "NOT_READY");
+        assert_eq!(command_result_text(4), "START_FAILED");
+        assert_eq!(command_result_text(99), "CMDR_99");
+    }
 }

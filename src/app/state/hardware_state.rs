@@ -1,4 +1,7 @@
-use crate::source::{DeviceInfo, DeviceStatus, PerformanceSample, ScopeMode, TransportEndpoint};
+use crate::source::{
+    DeviceInfo, DeviceStatus, PerformanceSample, ScopeMode, SystemCommand, TransportEndpoint,
+    command_result_text,
+};
 
 #[derive(Default)]
 pub struct PerformanceState {
@@ -45,6 +48,21 @@ pub(crate) struct HardwareState {
     pub status: Option<DeviceStatus>,
     pub version: Option<String>,
     pub performance: PerformanceState,
+    pub pending_system_command: Option<PendingSystemCommand>,
+    pub last_system_command: Option<CompletedSystemCommand>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PendingSystemCommand {
+    pub command: SystemCommand,
+    pub sequence: Option<u32>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CompletedSystemCommand {
+    pub command: SystemCommand,
+    pub sequence: u32,
+    pub result: u16,
 }
 
 impl Default for HardwareState {
@@ -59,6 +77,8 @@ impl Default for HardwareState {
             status: None,
             version: None,
             performance: PerformanceState::default(),
+            pending_system_command: None,
+            last_system_command: None,
         }
     }
 }
@@ -121,6 +141,71 @@ impl HardwareState {
             ScopeMode::Unknown(_) => "unknown",
         }
     }
+
+    pub fn begin_system_command(&mut self, command: SystemCommand) {
+        self.pending_system_command = Some(PendingSystemCommand {
+            command,
+            sequence: None,
+        });
+    }
+
+    pub fn accept_system_command(&mut self, command: SystemCommand, sequence: u32) -> bool {
+        let Some(pending) = &mut self.pending_system_command else {
+            return false;
+        };
+        if pending.command != command {
+            return false;
+        }
+        pending.sequence = Some(sequence);
+        true
+    }
+
+    pub fn complete_pending_system_command(
+        &mut self,
+        status: &DeviceStatus,
+    ) -> Option<CompletedSystemCommand> {
+        let pending = self.pending_system_command?;
+        let sequence = pending.sequence?;
+        if status.command_ack_seq != Some(sequence) {
+            return None;
+        }
+        let completed = CompletedSystemCommand {
+            command: pending.command,
+            sequence,
+            result: status.command_result.unwrap_or_default(),
+        };
+        self.pending_system_command = None;
+        self.last_system_command = Some(completed);
+        Some(completed)
+    }
+
+    pub fn clear_system_command_state(&mut self) {
+        self.pending_system_command = None;
+        self.last_system_command = None;
+    }
+
+    pub fn pending_system_command_text(&self) -> Option<String> {
+        let pending = self.pending_system_command?;
+        Some(match pending.sequence {
+            Some(sequence) => {
+                format!(
+                    "Command: {} pending seq {sequence}",
+                    pending.command.label()
+                )
+            }
+            None => format!("Command: {} sending...", pending.command.label()),
+        })
+    }
+
+    pub fn last_system_command_text(&self) -> Option<String> {
+        let completed = self.last_system_command?;
+        Some(format!(
+            "Last command: {} {} (seq {})",
+            completed.command.label(),
+            command_result_text(completed.result),
+            completed.sequence
+        ))
+    }
 }
 
 fn tick_rate_text(tick_hz: u32) -> String {
@@ -134,7 +219,29 @@ fn tick_rate_text(tick_hz: u32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::source::{DeviceInfo, PerformanceSample};
+    use crate::source::{
+        DeviceInfo, DeviceStatus, PerformanceSample, ScopeMode, SystemCommand, SystemState,
+    };
+
+    fn device_status(command_ack_seq: Option<u32>, command_result: Option<u16>) -> DeviceStatus {
+        DeviceStatus {
+            system_state: SystemState::Idle,
+            fault_code: 0,
+            status_flags: 0,
+            tick: 0,
+            cpu1_heartbeat: 0,
+            cpu2_heartbeat: 0,
+            applied_seq: 0,
+            calibration_result: 0,
+            calibration_fail_index: 0,
+            build_hash: 0,
+            scope_mode: ScopeMode::Off,
+            scope_flags: 0,
+            command_ack_seq,
+            command_result,
+            performance: None,
+        }
+    }
 
     #[test]
     fn connection_settings_are_locked_while_connecting_or_connected() {
@@ -252,5 +359,66 @@ mod tests {
         assert_eq!(overloaded.peak_percent(), 153.0);
         assert_eq!(overloaded.headroom_at_peak(), 0);
         assert!(overloaded.has_violation());
+    }
+
+    #[test]
+    fn pending_system_command_completes_on_matching_status_sequence() {
+        let mut hardware = HardwareState::default();
+        hardware.begin_system_command(SystemCommand::Start);
+        assert_eq!(
+            hardware.pending_system_command_text().as_deref(),
+            Some("Command: Start sending...")
+        );
+
+        assert!(hardware.accept_system_command(SystemCommand::Start, 42));
+        assert_eq!(
+            hardware.pending_system_command_text().as_deref(),
+            Some("Command: Start pending seq 42")
+        );
+
+        let completed = hardware
+            .complete_pending_system_command(&device_status(Some(42), Some(0)))
+            .expect("matching sequence completes");
+
+        assert_eq!(completed.command, SystemCommand::Start);
+        assert_eq!(completed.sequence, 42);
+        assert_eq!(completed.result, 0);
+        assert_eq!(hardware.pending_system_command, None);
+        assert_eq!(
+            hardware.last_system_command_text().as_deref(),
+            Some("Last command: Start OK (seq 42)")
+        );
+    }
+
+    #[test]
+    fn non_matching_status_sequence_does_not_complete_pending_command() {
+        let mut hardware = HardwareState::default();
+        hardware.begin_system_command(SystemCommand::Start);
+        assert!(hardware.accept_system_command(SystemCommand::Start, 42));
+
+        assert_eq!(
+            hardware.complete_pending_system_command(&device_status(Some(41), Some(0))),
+            None
+        );
+        assert!(hardware.pending_system_command.is_some());
+        assert_eq!(hardware.last_system_command, None);
+    }
+
+    #[test]
+    fn system_command_state_clear_drops_pending_and_last_command() {
+        let mut hardware = HardwareState::default();
+        hardware.begin_system_command(SystemCommand::Stop);
+        assert!(hardware.accept_system_command(SystemCommand::Stop, 7));
+        assert!(
+            hardware
+                .complete_pending_system_command(&device_status(Some(7), Some(4)))
+                .is_some()
+        );
+        hardware.begin_system_command(SystemCommand::ClearFault);
+
+        hardware.clear_system_command_state();
+
+        assert_eq!(hardware.pending_system_command, None);
+        assert_eq!(hardware.last_system_command, None);
     }
 }

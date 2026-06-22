@@ -241,7 +241,14 @@ impl Session {
                     &codec::system_command_request(command),
                     events,
                 )?;
-                require_ack(&response, codec::message::SYSTEM_COMMAND)?;
+                let ack = require_ack(&response, codec::message::SYSTEM_COMMAND)?;
+                send_event(
+                    events,
+                    SourceEvent::SystemCommandAccepted {
+                        command,
+                        sequence: ack.data,
+                    },
+                );
             }
         }
         Ok(true)
@@ -537,7 +544,7 @@ fn send_event(events: &mpsc::Sender<SourceEvent>, event: SourceEvent) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::source::{ValueRead, VarRef, VarType};
+    use crate::source::{SystemCommand, ValueRead, VarRef, VarType};
 
     struct ScriptedTransport {
         reads: Vec<Vec<u8>>,
@@ -669,6 +676,12 @@ mod tests {
         let mut payload = vec![0_u8; 84];
         payload[..2].copy_from_slice(&1_u16.to_le_bytes());
         payload[26..30].copy_from_slice(&build_hash.to_le_bytes());
+        payload
+    }
+
+    fn ack_payload(echoed_type: u8, data: u32) -> Vec<u8> {
+        let mut payload = vec![0_u8, echoed_type, 0, 0];
+        payload.extend_from_slice(&data.to_le_bytes());
         payload
     }
 
@@ -834,6 +847,34 @@ mod tests {
             panic!("expected log event");
         };
         assert!(message.contains("discarded stale catalog command"));
+    }
+
+    #[test]
+    fn system_command_ack_data_is_emitted_as_sequence() {
+        let response = codec::encode_frame(
+            codec::message::SYSTEM_COMMAND | 0x80,
+            1,
+            &ack_payload(codec::message::SYSTEM_COMMAND, 42),
+        );
+        let (event_tx, event_rx) = mpsc::channel();
+        let mut session = session(vec![response], device_info(0, 0, 0));
+
+        assert!(
+            session
+                .handle_command(
+                    SourceCommand::SystemCommand(SystemCommand::Start),
+                    &event_tx,
+                )
+                .expect("system command accepted")
+        );
+
+        let SourceEvent::SystemCommandAccepted { command, sequence } =
+            event_rx.recv().expect("system command accepted event")
+        else {
+            panic!("expected system command accepted event");
+        };
+        assert_eq!(command, SystemCommand::Start);
+        assert_eq!(sequence, 42);
     }
 
     #[test]
