@@ -4,7 +4,7 @@ use crate::theme;
 use crate::variable::InspectorState;
 use crate::wave::data::PlotData;
 use crate::wave::dnd;
-use crate::wave::pane::PaneKind;
+use crate::wave::pane::{PaneKind, ViewPane};
 use crate::wave::selection::Selection;
 use crate::wave::tiles::MyTilesDelegate;
 
@@ -26,7 +26,7 @@ pub fn show_viewport(
     let var_values = inspector.display_values();
     // Blueprint hover (same frame) takes priority over plot hover (prev frame)
     let highlight_var = vp.hovered_blueprint_var.or(*vp.hovered_plot_var);
-    let time_axis_sync_group = time_axis_sync_group_id(vp);
+    let time_axis_sync_group = time_axis_sync_group_id(vp, plot_data);
     let (drop_hover_tile, pending_move, drop_feedback) = {
         let mut delegate = MyTilesDelegate {
             data: plot_data,
@@ -181,7 +181,7 @@ pub fn show_viewport(
     viewport_drop_feedback
 }
 
-fn time_axis_sync_group_id(vp: &ViewportPanelState<'_>) -> Option<egui::Id> {
+fn time_axis_sync_group_id(vp: &ViewportPanelState<'_>, plot_data: &PlotData) -> Option<egui::Id> {
     vp.tree
         .tiles
         .tile_ids()
@@ -189,9 +189,20 @@ fn time_axis_sync_group_id(vp: &ViewportPanelState<'_>) -> Option<egui::Id> {
             matches!(
                 vp.tree.tiles.get(tile_id),
                 Some(egui_tiles::Tile::Pane(pane))
-                    if pane.kind == PaneKind::TimeSeries && pane.properties.sync_time_axis
+                    if pane.kind == PaneKind::TimeSeries
+                        && pane.properties.sync_time_axis
+                        && time_series_pane_has_samples(pane, plot_data)
             )
         })
         .min_by_key(|tile_id| tile_id.0)
         .map(|tile_id| egui::Id::new(("scope2000_wave_time_axis", tile_id.0)))
+}
+
+fn time_series_pane_has_samples(pane: &ViewPane, plot_data: &PlotData) -> bool {
+    pane.series.iter().any(|series| {
+        plot_data
+            .series
+            .get(&series.var_name)
+            .is_some_and(|data| !data.times.is_empty())
+    })
 }

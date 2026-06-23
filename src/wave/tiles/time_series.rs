@@ -139,6 +139,9 @@ impl<'a> MyTilesDelegate<'a> {
 
         let props = &pane.properties;
         let highlight_var = self.highlight_var;
+        let has_time_axis_data = series_data
+            .iter()
+            .any(|(_, _, points, _)| !points.is_empty());
 
         ui.style_mut().visuals.extreme_bg_color = props.background;
 
@@ -229,7 +232,10 @@ impl<'a> MyTilesDelegate<'a> {
                     ])
                     .show_grid(show_grid);
 
-                if sync_time_axis && let Some(group_id) = self.time_axis_sync_group {
+                if sync_time_axis
+                    && has_time_axis_data
+                    && let Some(group_id) = self.time_axis_sync_group
+                {
                     plot = plot.link_axis(group_id, egui::Vec2b::new(true, false));
                 }
 

@@ -235,8 +235,12 @@ fn show_sampling_controls(
             .iter()
             .position(|&prescaler| prescaler == wave.settings.prescaler)
             .unwrap_or(0);
-        let mut step_idx = current_idx as i32;
+        let edit_id = ui.make_persistent_id("wave_sampling_step_edit");
         let max_step_idx = steps.len().saturating_sub(1) as i32;
+        let mut step_idx = ui
+            .data_mut(|data| data.get_temp::<i32>(edit_id))
+            .unwrap_or(current_idx as i32)
+            .clamp(0, max_step_idx);
         let format_steps = steps.clone();
         let parse_steps = steps.clone();
         let response = ui.add(
@@ -260,18 +264,25 @@ fn show_sampling_controls(
                 .update_while_editing(false),
         );
         if response.changed() {
+            ui.data_mut(|data| data.insert_temp(edit_id, step_idx));
+        }
+        if response.drag_stopped() || (response.changed() && !response.dragged()) {
             let idx = sampling_step_index(f64::from(step_idx), steps.len());
             wave.settings.prescaler = steps[idx];
+            ui.data_mut(|data| data.remove::<i32>(edit_id));
         }
         *any_dragging |= response.dragged();
-        ui.weak(format_rate(wave.settings.sample_rate_hz(tick_hz)));
+        let preview_idx = sampling_step_index(f64::from(step_idx), steps.len());
+        let mut preview_settings = wave.settings.clone();
+        preview_settings.prescaler = steps[preview_idx];
+        ui.weak(format_rate(preview_settings.sample_rate_hz(tick_hz)));
     });
     ui.horizontal(|ui| {
         ui.label("Record");
         let response = ui.add(
             egui::DragValue::new(&mut wave.settings.record_points)
                 .range(MIN_RECORD_POINTS..=record_max_points)
-                .speed(100.0)
+                .speed(10.0)
                 .update_while_editing(false)
                 .suffix(" pts"),
         );
