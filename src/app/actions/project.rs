@@ -402,6 +402,7 @@ impl ScopeApp {
     pub(in crate::app) fn project_panel(&mut self, ui: &mut egui::Ui) {
         let status = self.project.status(self.hardware.info.as_ref());
         let build_mismatch = self.project.build_mismatch(self.hardware.info.as_ref());
+        let build_matches = self.project.build_matches(self.hardware.info.as_ref());
         let fill = if build_mismatch {
             // Same project, stale build: flag the name red as an alarm. This is
             // purely advisory — the mutation policy stays Matched so the user
@@ -474,6 +475,11 @@ impl ScopeApp {
                 theme::RED,
                 "CCS build differs from connected firmware — repo artifact is not what's running",
             );
+        } else if build_matches {
+            ui.horizontal_wrapped(|ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                ui.label(egui::RichText::new("Built binary matches the firmware on device.").small());
+            });
         }
         let unresolved = self.project.unresolved.count();
         if unresolved > 0

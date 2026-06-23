@@ -598,18 +598,23 @@ impl ProjectContext {
         let (Some(local), Some(device)) = (self.local.as_ref(), info) else {
             return false;
         };
-        // The contract hash catches descriptor-layout drift, but it is unchanged
-        // by a plain recompile. A zero hash means the firmware did not report one.
-        let hash_differs = local
+        // The baker hashes the normalized final ELF and descriptors. Build time
+        // is human-readable metadata and is deliberately not an identity check.
+        local.build_hash.is_some_and(|local_hash| {
+            local_hash != 0 && device.build_hash != 0 && device.build_hash != local_hash
+        })
+    }
+
+    pub fn build_matches(&self, info: Option<&DeviceInfo>) -> bool {
+        if self.status(info) != ProjectStatus::Matched {
+            return false;
+        }
+        let (Some(local), Some(device)) = (self.local.as_ref(), info) else {
+            return false;
+        };
+        local
             .build_hash
-            .is_some_and(|local_hash| device.build_hash != 0 && device.build_hash != local_hash);
-        // The build time is the field the panel shows, so a recompile that keeps
-        // the same contract must still alarm — otherwise the two displayed
-        // "Built Time" values disagree with nothing flagged.
-        let time_differs = local.build_time_utc.is_some_and(|local_time| {
-            local_time != 0 && device.build_time_utc != 0 && local_time != device.build_time_utc
-        });
-        hash_differs || time_differs
+            .is_some_and(|local_hash| local_hash != 0 && local_hash == device.build_hash)
     }
 }
 
@@ -755,20 +760,21 @@ mod tests {
     }
 
     #[test]
-    fn recompile_with_same_contract_still_alarms_on_build_time() {
+    fn matching_hash_ignores_build_time_difference() {
         let mut context = context(Some("A"), Some("A"));
         let local = context.local.as_mut().unwrap();
         local.build_hash = Some(1);
         local.build_time_utc = Some(200);
         let mut device = device("A");
-        device.build_hash = 1; // identical descriptor contract
-        device.build_time_utc = 100; // firmware predates the local rebuild
+        device.build_hash = 1;
+        device.build_time_utc = 100;
 
-        assert!(context.build_mismatch(Some(&device)));
+        assert!(!context.build_mismatch(Some(&device)));
+        assert!(context.build_matches(Some(&device)));
     }
 
     #[test]
-    fn matching_hash_and_build_time_does_not_alarm() {
+    fn matching_hash_does_not_alarm() {
         let mut context = context(Some("A"), Some("A"));
         let local = context.local.as_mut().unwrap();
         local.build_hash = Some(1);
@@ -778,6 +784,20 @@ mod tests {
         device.build_time_utc = 100;
 
         assert!(!context.build_mismatch(Some(&device)));
+        assert!(context.build_matches(Some(&device)));
+    }
+
+    #[test]
+    fn missing_or_zero_hash_is_not_a_confirmed_match() {
+        let mut context = context(Some("A"), Some("A"));
+        let mut device = device("A");
+
+        assert!(!context.build_matches(Some(&device)));
+
+        context.local.as_mut().unwrap().build_hash = Some(0);
+        device.build_hash = 0;
+        assert!(!context.build_mismatch(Some(&device)));
+        assert!(!context.build_matches(Some(&device)));
     }
 
     #[test]
@@ -939,8 +959,8 @@ mod tests {
         // A rebuild rewrites the same report in place; the cached path must pick
         // the new build up directly.
         write_build_report(&report_dir, "demo", 300, 30);
-        let scan =
-            refresh_local_build(project_file, "demo".to_owned(), Some(report_path.clone())).unwrap();
+        let scan = refresh_local_build(project_file, "demo".to_owned(), Some(report_path.clone()))
+            .unwrap();
 
         assert_eq!(scan.project.build_time_utc, Some(300));
         assert_eq!(scan.project.build_hash, Some(30));
