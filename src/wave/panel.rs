@@ -158,23 +158,64 @@ pub fn show_wave_section(
 
     ui.horizontal(|ui| {
         ui.label("Level");
-        let r = ui.add(egui::DragValue::new(&mut wave.settings.trigger_level).speed(0.1));
-        any_dragging |= r.dragged();
-        ui.label("Hyst");
-        let r = ui.add(
-            egui::DragValue::new(&mut wave.settings.trigger_hysteresis)
-                .range(0.0..=f32::MAX)
-                .speed(0.01),
+        let edit_id = ui.make_persistent_id("wave_trigger_level_edit");
+        let mut value = ui
+            .data_mut(|data| data.get_temp::<f32>(edit_id))
+            .unwrap_or(wave.settings.trigger_level);
+        let response = ui.add(
+            egui::DragValue::new(&mut value)
+                .speed(0.1)
+                .update_while_editing(false),
         );
-        any_dragging |= r.dragged();
+        commit_deferred_edit(
+            ui,
+            edit_id,
+            value,
+            &mut wave.settings.trigger_level,
+            &response,
+        );
+        any_dragging |= response.dragged();
+
+        ui.label("Hyst");
+        let edit_id = ui.make_persistent_id("wave_trigger_hysteresis_edit");
+        let mut value = ui
+            .data_mut(|data| data.get_temp::<f32>(edit_id))
+            .unwrap_or(wave.settings.trigger_hysteresis);
+        let response = ui.add(
+            egui::DragValue::new(&mut value)
+                .range(0.0..=f32::MAX)
+                .speed(0.01)
+                .update_while_editing(false),
+        );
+        commit_deferred_edit(
+            ui,
+            edit_id,
+            value,
+            &mut wave.settings.trigger_hysteresis,
+            &response,
+        );
+        any_dragging |= response.dragged();
+
         ui.label("Pre");
-        let r = ui.add(
-            egui::DragValue::new(&mut wave.settings.pre_trigger_percent)
+        let edit_id = ui.make_persistent_id("wave_pre_trigger_percent_edit");
+        let mut value = ui
+            .data_mut(|data| data.get_temp::<u8>(edit_id))
+            .unwrap_or(wave.settings.pre_trigger_percent);
+        let response = ui.add(
+            egui::DragValue::new(&mut value)
                 .range(0..=100)
                 .speed(1.0)
+                .update_while_editing(false)
                 .suffix("%"),
         );
-        any_dragging |= r.dragged();
+        commit_deferred_edit(
+            ui,
+            edit_id,
+            value,
+            &mut wave.settings.pre_trigger_percent,
+            &response,
+        );
+        any_dragging |= response.dragged();
     });
 
     wave.settings.clamp();
@@ -189,6 +230,24 @@ pub fn show_wave_section(
     }
 
     action
+}
+
+fn commit_deferred_edit<T>(
+    ui: &mut egui::Ui,
+    edit_id: egui::Id,
+    edited_value: T,
+    committed_value: &mut T,
+    response: &egui::Response,
+) where
+    T: Copy + Send + Sync + 'static,
+{
+    if response.changed() {
+        ui.data_mut(|data| data.insert_temp(edit_id, edited_value));
+    }
+    if response.drag_stopped() || (response.changed() && !response.dragged()) {
+        *committed_value = edited_value;
+        ui.data_mut(|data| data.remove::<T>(edit_id));
+    }
 }
 
 fn settings_changed_for_mode(
