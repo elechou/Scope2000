@@ -31,14 +31,11 @@ impl DataSource for V2kSource {
     fn spawn(self: Box<Self>) -> SourceHandle {
         let (command_tx, command_rx) = mpsc::channel();
         let (event_tx, event_rx) = mpsc::channel();
-        thread::Builder::new()
+        let worker = thread::Builder::new()
             .name("v2k-source".into())
             .spawn(move || worker(command_rx, event_tx))
             .expect("spawn V2kSource worker");
-        SourceHandle {
-            commands: command_tx,
-            events: event_rx,
-        }
+        SourceHandle::new(command_tx, event_rx, worker)
     }
 }
 
@@ -219,6 +216,7 @@ impl Session {
                 send_event(events, SourceEvent::Error("already connected".to_owned()));
             }
             SourceCommand::Disconnect => return Ok(false),
+            SourceCommand::Shutdown => return Ok(false),
             SourceCommand::Catalog {
                 build_hash,
                 command,
@@ -436,6 +434,7 @@ fn worker(commands: mpsc::Receiver<SourceCommand>, events: mpsc::Sender<SourceEv
                         Err(error) => send_event(&events, SourceEvent::Error(error.to_string())),
                     }
                 }
+                Ok(SourceCommand::Shutdown) => break,
                 Ok(_) => send_event(
                     &events,
                     SourceEvent::Error("connect a transport first".to_owned()),
@@ -447,6 +446,7 @@ fn worker(commands: mpsc::Receiver<SourceCommand>, events: mpsc::Sender<SourceEv
 
         let connected = session.as_mut().expect("checked above");
         let result = match commands.try_recv() {
+            Ok(SourceCommand::Shutdown) => Ok(WorkerStep::Shutdown),
             Ok(command) => connected.handle_command(command, &events).map(|keep| {
                 if keep {
                     WorkerStep::Continue
@@ -473,6 +473,7 @@ fn worker(commands: mpsc::Receiver<SourceCommand>, events: mpsc::Sender<SourceEv
                 session = None;
                 send_event(&events, SourceEvent::Disconnected);
             }
+            Ok(WorkerStep::Shutdown) => break,
             Err(error) => {
                 send_event(&events, SourceEvent::Error(error.to_string()));
                 session = None;
@@ -485,6 +486,7 @@ fn worker(commands: mpsc::Receiver<SourceCommand>, events: mpsc::Sender<SourceEv
 enum WorkerStep {
     Continue,
     Disconnect,
+    Shutdown,
 }
 
 fn require_ack(frame: &Frame, request_type: u8) -> Result<codec::Ack> {
@@ -544,7 +546,7 @@ fn send_event(events: &mpsc::Sender<SourceEvent>, event: SourceEvent) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::source::{SystemCommand, ValueRead, VarRef, VarType};
+    use crate::source::{DataSource, SystemCommand, ValueRead, VarRef, VarType};
 
     struct ScriptedTransport {
         reads: Vec<Vec<u8>>,
@@ -614,6 +616,13 @@ mod tests {
                 .to_string()
                 .contains("whitespace")
         );
+    }
+
+    #[test]
+    fn spawned_source_shutdown_exits_worker() {
+        let mut source = Box::new(V2kSource).spawn();
+
+        source.shutdown();
     }
 
     fn session(reads: Vec<Vec<u8>>, info: DeviceInfo) -> Session {

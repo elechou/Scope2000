@@ -3,6 +3,7 @@ pub mod v2k;
 use std::fmt;
 use std::path::PathBuf;
 use std::sync::mpsc;
+use std::thread;
 
 use serde::{Deserialize, Serialize};
 
@@ -396,6 +397,7 @@ pub enum CatalogCommand {
 pub enum SourceCommand {
     Connect(TransportEndpoint),
     Disconnect,
+    Shutdown,
     Catalog {
         build_hash: u32,
         command: CatalogCommand,
@@ -450,6 +452,34 @@ pub enum SourceEvent {
 pub struct SourceHandle {
     pub commands: mpsc::Sender<SourceCommand>,
     pub events: mpsc::Receiver<SourceEvent>,
+    worker: Option<thread::JoinHandle<()>>,
+}
+
+impl SourceHandle {
+    pub fn new(
+        commands: mpsc::Sender<SourceCommand>,
+        events: mpsc::Receiver<SourceEvent>,
+        worker: thread::JoinHandle<()>,
+    ) -> Self {
+        Self {
+            commands,
+            events,
+            worker: Some(worker),
+        }
+    }
+
+    pub fn shutdown(&mut self) {
+        let _ = self.commands.send(SourceCommand::Shutdown);
+        if let Some(worker) = self.worker.take() {
+            let _ = worker.join();
+        }
+    }
+}
+
+impl Drop for SourceHandle {
+    fn drop(&mut self) {
+        self.shutdown();
+    }
 }
 
 pub trait DataSource: Send + 'static {

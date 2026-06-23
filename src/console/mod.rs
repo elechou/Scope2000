@@ -31,7 +31,7 @@ pub struct LogEntry {
     pub message: String,
 }
 
-/// A status-bar message promoted from the console log (Warn/Error level).
+/// A status-bar message promoted from the console log (Notice/Warn/Error).
 pub struct StatusMessage {
     pub level: LogLevel,
     pub text: String,
@@ -43,7 +43,7 @@ pub struct LogBuffer {
     pub logs: Vec<LogEntry>,
     /// Minimum severity shown in the console panel.
     pub log_min_level: LogLevel,
-    /// Latest Warn/Error message, displayed in the status bar.
+    /// Latest Notice/Warn/Error message, displayed in the status bar.
     pub status_message: Option<StatusMessage>,
 }
 
@@ -75,8 +75,29 @@ impl LogBuffer {
             level,
             message,
         });
-        if self.logs.len() > 500 {
-            self.logs.drain(..self.logs.len() - 500);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn console_entries_are_not_trimmed() {
+        let mut log = LogBuffer::default();
+
+        for index in 0..600 {
+            log.push(LogLevel::Info, format!("entry {index}"));
         }
+
+        assert_eq!(log.logs.len(), 600);
+        assert_eq!(
+            log.logs.first().map(|entry| entry.message.as_str()),
+            Some("entry 0")
+        );
+        assert_eq!(
+            log.logs.last().map(|entry| entry.message.as_str()),
+            Some("entry 599")
+        );
     }
 }

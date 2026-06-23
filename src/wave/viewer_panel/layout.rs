@@ -160,6 +160,10 @@ fn show_pane_selection(
                     axis_dirty = true;
                 }
                 ui.end_row();
+
+                prop_label(ui, "Sync");
+                ui.checkbox(&mut props.sync_time_axis, "");
+                ui.end_row();
             });
         axis_range_row(
             ui,

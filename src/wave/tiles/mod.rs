@@ -41,6 +41,7 @@ pub struct MyTilesDelegate<'a> {
     /// Output: feedback from the last drop action this frame.
     pub drop_feedback: Option<super::dnd::DropFeedback>,
     pub can_edit_variable_refs: bool,
+    pub time_axis_sync_group: Option<egui::Id>,
 }
 
 impl<'a> egui_tiles::Behavior<ViewPane> for MyTilesDelegate<'a> {

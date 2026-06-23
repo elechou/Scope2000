@@ -75,26 +75,58 @@ impl AcquisitionSettings {
         f64::from(self.prescaler.max(1)) * 1_000_000.0 / f64::from(effective_tick_hz(tick_hz))
     }
 
-    pub fn set_sample_interval_us(&mut self, tick_hz: u32, interval_us: f64) {
-        let tick_hz = effective_tick_hz(tick_hz);
-        let min_interval_us = 1_000_000.0 / f64::from(tick_hz);
-        let max_interval_us = f64::from(MAX_PRESCALER) * min_interval_us;
-        let interval_us = if interval_us.is_finite() {
-            interval_us.clamp(min_interval_us, max_interval_us)
-        } else {
-            min_interval_us
-        };
-        self.prescaler = ((interval_us * f64::from(tick_hz) / 1_000_000.0).round() as u16)
-            .clamp(MIN_PRESCALER, MAX_PRESCALER);
-    }
-
     pub fn record_duration_seconds(&self, tick_hz: u32) -> f64 {
-        f64::from(self.record_points) / self.sample_rate_hz(tick_hz).max(f64::MIN_POSITIVE)
+        f64::from(self.record_points) * self.sample_interval_us(tick_hz) / 1_000_000.0
     }
 }
 
 pub fn effective_tick_hz(tick_hz: u32) -> u32 {
     tick_hz.max(1)
+}
+
+pub(crate) fn sampling_prescaler_steps(tick_hz: u32) -> Vec<u16> {
+    let tick_hz = f64::from(effective_tick_hz(tick_hz));
+    let tick_period_us = 1_000_000.0 / tick_hz;
+    let max_interval_us = f64::from(MAX_PRESCALER) * tick_period_us;
+    let min_interval_us = tick_period_us;
+    let mut steps = std::collections::BTreeSet::new();
+    steps.insert(MIN_PRESCALER);
+    steps.insert(MAX_PRESCALER);
+
+    let mut decade = 10_f64.powf(min_interval_us.max(f64::MIN_POSITIVE).log10().floor());
+    while decade <= max_interval_us * 10.0 {
+        for multiplier in [1.0, 2.0, 5.0] {
+            let interval_us = multiplier * decade;
+            if interval_us < min_interval_us || interval_us > max_interval_us {
+                continue;
+            }
+            let prescaler = (interval_us / tick_period_us).round() as u16;
+            steps.insert(prescaler.clamp(MIN_PRESCALER, MAX_PRESCALER));
+        }
+        decade *= 10.0;
+    }
+
+    steps.into_iter().collect()
+}
+
+pub(crate) fn nearest_sampling_prescaler(tick_hz: u32, interval_us: f64, steps: &[u16]) -> u16 {
+    let tick_hz = f64::from(effective_tick_hz(tick_hz));
+    let target = if interval_us.is_finite() {
+        interval_us.max(0.0)
+    } else {
+        0.0
+    };
+    steps
+        .iter()
+        .copied()
+        .min_by(|left, right| {
+            let left_us = f64::from(*left) * 1_000_000.0 / tick_hz;
+            let right_us = f64::from(*right) * 1_000_000.0 / tick_hz;
+            (left_us - target)
+                .abs()
+                .total_cmp(&(right_us - target).abs())
+        })
+        .unwrap_or(MIN_PRESCALER)
 }
 
 pub fn max_record_points_for_binding(binding: &[VarDescriptor]) -> Option<u16> {
@@ -223,6 +255,23 @@ mod tests {
         assert_eq!(max_record_points_for_binding(&eight_f32), Some(1_280));
         assert_eq!(max_record_points_for_binding(&mixed), Some(2_560));
         assert_eq!(max_record_points_for_binding(&[]), None);
+    }
+
+    #[test]
+    fn sampling_prescaler_steps_follow_one_two_five_timebase() {
+        let steps = sampling_prescaler_steps(20_000);
+
+        assert_eq!(&steps[..8], &[1, 2, 4, 10, 20, 40, 100, 200]);
+        assert!(steps.contains(&MAX_PRESCALER));
+    }
+
+    #[test]
+    fn nearest_sampling_prescaler_snaps_to_supported_timebase_step() {
+        let steps = sampling_prescaler_steps(20_000);
+
+        assert_eq!(nearest_sampling_prescaler(20_000, 180.0, &steps), 4);
+        assert_eq!(nearest_sampling_prescaler(20_000, 120.0, &steps), 2);
+        assert_eq!(nearest_sampling_prescaler(20_000, 1_800.0, &steps), 40);
     }
 
     #[test]

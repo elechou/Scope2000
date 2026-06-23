@@ -67,13 +67,13 @@ pub enum AxisRange {
 /// Time axis coordinate mode for TimeSeries panes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub enum TimeAxisMode {
-    #[default]
     System,
+    #[default]
     TriggerRelative,
 }
 
 impl TimeAxisMode {
-    pub const ALL: &[Self] = &[Self::System, Self::TriggerRelative];
+    pub const ALL: &[Self] = &[Self::TriggerRelative, Self::System];
 
     pub fn label(&self) -> &'static str {
         match self {
@@ -159,6 +159,7 @@ pub struct ViewProperties {
     pub legend_visible: bool,
     pub legend_corner: LegendCorner,
     pub time_axis_mode: TimeAxisMode,
+    pub sync_time_axis: bool,
     pub time_axis_range: AxisRange,
     pub scalar_axis_range: AxisRange,
     /// Last known auto-fit bounds from the plot (updated every frame, not persisted).
@@ -183,6 +184,7 @@ impl Default for ViewProperties {
             legend_visible: true,
             legend_corner: LegendCorner::default(),
             time_axis_mode: TimeAxisMode::default(),
+            sync_time_axis: true,
             time_axis_range: AxisRange::Auto,
             scalar_axis_range: AxisRange::Auto,
             last_bounds_x: (0.0, 1.0),
@@ -232,4 +234,32 @@ const COLORS: &[egui::Color32] = &[
 
 pub fn default_color(index: usize) -> egui::Color32 {
     COLORS[index % COLORS.len()]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn time_axis_defaults_to_trigger_relative() {
+        assert_eq!(TimeAxisMode::default(), TimeAxisMode::TriggerRelative);
+    }
+
+    #[test]
+    fn new_time_series_pane_uses_trigger_relative_time_axis() {
+        let pane = ViewPane::new("Time Series 1", PaneKind::TimeSeries);
+
+        assert_eq!(
+            pane.properties.time_axis_mode,
+            TimeAxisMode::TriggerRelative
+        );
+        assert!(pane.properties.sync_time_axis);
+    }
+
+    #[test]
+    fn missing_time_axis_sync_property_defaults_to_enabled() {
+        let props: ViewProperties = serde_json::from_str("{}").expect("properties");
+
+        assert!(props.sync_time_axis);
+    }
 }

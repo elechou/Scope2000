@@ -11,8 +11,9 @@ use crate::wave::pane::PaneKind;
 
 use super::csv::CsvState;
 use super::{
-    DEFAULT_TICK_HZ, MAX_PRESCALER, MAX_RECORD_POINTS_ABSOLUTE, MIN_RECORD_POINTS, WaveState,
-    effective_tick_hz, format_record_duration,
+    DEFAULT_TICK_HZ, MAX_RECORD_POINTS_ABSOLUTE, MIN_PRESCALER, MIN_RECORD_POINTS, WaveState,
+    effective_tick_hz, format_record_duration, nearest_sampling_prescaler,
+    sampling_prescaler_steps,
 };
 
 // ---------------------------------------------------------------------------
@@ -229,22 +230,38 @@ fn show_sampling_controls(
     wave.settings.clamp_record_points(Some(record_max_points));
     ui.horizontal(|ui| {
         ui.label("Sampling");
-        let min_interval_us = 1_000_000.0 / f64::from(tick_hz);
-        let max_interval_us = f64::from(MAX_PRESCALER) * min_interval_us;
-        let mut sample_interval_us = wave
-            .settings
-            .sample_interval_us(tick_hz)
-            .clamp(min_interval_us, max_interval_us);
-        let sample_interval_speed = (sample_interval_us / 100.0).max(0.001);
+        let steps = sampling_steps_for_ui(tick_hz, wave.settings.prescaler);
+        let current_idx = steps
+            .iter()
+            .position(|&prescaler| prescaler == wave.settings.prescaler)
+            .unwrap_or(0);
+        let mut step_idx = current_idx as i32;
+        let max_step_idx = steps.len().saturating_sub(1) as i32;
+        let format_steps = steps.clone();
+        let parse_steps = steps.clone();
         let response = ui.add(
-            egui::DragValue::new(&mut sample_interval_us)
-                .range(min_interval_us..=max_interval_us)
-                .speed(sample_interval_speed)
-                .suffix(" us"),
+            egui::DragValue::new(&mut step_idx)
+                .range(0..=max_step_idx)
+                .speed(0.08)
+                .custom_formatter(move |value, _| {
+                    let idx = sampling_step_index(value, format_steps.len());
+                    format_sampling_interval_us(prescaler_interval_us(format_steps[idx], tick_hz))
+                })
+                .custom_parser(move |text| {
+                    parse_sampling_interval_us(text).map(|interval_us| {
+                        let prescaler =
+                            nearest_sampling_prescaler(tick_hz, interval_us, &parse_steps);
+                        parse_steps
+                            .iter()
+                            .position(|&step| step == prescaler)
+                            .unwrap_or(0) as f64
+                    })
+                })
+                .update_while_editing(false),
         );
         if response.changed() {
-            wave.settings
-                .set_sample_interval_us(tick_hz, sample_interval_us);
+            let idx = sampling_step_index(f64::from(step_idx), steps.len());
+            wave.settings.prescaler = steps[idx];
         }
         *any_dragging |= response.dragged();
         ui.weak(format_rate(wave.settings.sample_rate_hz(tick_hz)));
@@ -254,7 +271,8 @@ fn show_sampling_controls(
         let response = ui.add(
             egui::DragValue::new(&mut wave.settings.record_points)
                 .range(MIN_RECORD_POINTS..=record_max_points)
-                .speed(1.0)
+                .speed(100.0)
+                .update_while_editing(false)
                 .suffix(" pts"),
         );
         *any_dragging |= response.dragged();
@@ -262,6 +280,63 @@ fn show_sampling_controls(
             wave.settings.record_duration_seconds(tick_hz),
         ));
     });
+}
+
+fn sampling_steps_for_ui(tick_hz: u32, current_prescaler: u16) -> Vec<u16> {
+    let mut steps = sampling_prescaler_steps(tick_hz);
+    let current_prescaler = current_prescaler.clamp(MIN_PRESCALER, super::MAX_PRESCALER);
+    if !steps.contains(&current_prescaler) {
+        steps.push(current_prescaler);
+        steps.sort_unstable();
+    }
+    steps
+}
+
+fn sampling_step_index(value: f64, len: usize) -> usize {
+    (value.round() as isize).clamp(0, len.saturating_sub(1) as isize) as usize
+}
+
+fn prescaler_interval_us(prescaler: u16, tick_hz: u32) -> f64 {
+    f64::from(prescaler.max(1)) * 1_000_000.0 / f64::from(effective_tick_hz(tick_hz))
+}
+
+fn format_sampling_interval_us(interval_us: f64) -> String {
+    if interval_us >= 1_000_000.0 {
+        format_compact_time(interval_us / 1_000_000.0, "s")
+    } else if interval_us >= 1_000.0 {
+        format_compact_time(interval_us / 1_000.0, "ms")
+    } else {
+        format_compact_time(interval_us, "us")
+    }
+}
+
+fn format_compact_time(value: f64, unit: &str) -> String {
+    let decimals = if value >= 100.0 || value.fract() == 0.0 {
+        0
+    } else if value >= 10.0 {
+        1
+    } else {
+        3
+    };
+    let mut text = format!("{value:.decimals$}");
+    if text.contains('.') {
+        text = text.trim_end_matches('0').trim_end_matches('.').to_owned();
+    }
+    format!("{text} {unit}")
+}
+
+fn parse_sampling_interval_us(text: &str) -> Option<f64> {
+    let text = text.trim().to_ascii_lowercase();
+    let (number, multiplier) = if let Some(value) = text.strip_suffix("ms") {
+        (value.trim(), 1_000.0)
+    } else if let Some(value) = text.strip_suffix("us") {
+        (value.trim(), 1.0)
+    } else if let Some(value) = text.strip_suffix('s') {
+        (value.trim(), 1_000_000.0)
+    } else {
+        (text.as_str(), 1.0)
+    };
+    number.parse::<f64>().ok().map(|value| value * multiplier)
 }
 
 fn format_rate(hz: f64) -> String {

@@ -17,11 +17,11 @@ pub fn show(
     ui_state: &mut UiState,
     log: &mut LogBuffer,
 ) -> Option<StatusBarAction> {
-    // Auto-dismiss Warn and Info status messages after 5 seconds
+    // Auto-dismiss promoted status messages after 5 seconds.
     if let Some(ref msg) = log.status_message
         && matches!(
             msg.level,
-            LogLevel::Notice | LogLevel::Warn | LogLevel::Info
+            LogLevel::Notice | LogLevel::Warn | LogLevel::Error
         )
         && msg.timestamp.elapsed() > std::time::Duration::from_secs(5)
     {

@@ -9,7 +9,7 @@ use eframe::egui;
 use crate::console::{LogBuffer, LogLevel};
 use crate::source::v2k::{V2kSource, transport};
 use crate::source::{
-    CAP_SYSTEM_CMD, DataSource, ScopeMode, SourceCommand, SourceHandle, SystemCommand, SystemState,
+    CAP_SYSTEM_CMD, DataSource, ScopeMode, SourceHandle, SystemCommand, SystemState,
     fault_code_text,
 };
 use crate::theme;
@@ -406,9 +406,7 @@ fn user_system_state_label(state: Option<SystemState>, connected: bool) -> (Stri
 impl eframe::App for ScopeApp {
     fn on_exit(&mut self) {
         self.save_workspace();
-        if self.hardware.connected {
-            self.send(SourceCommand::Disconnect);
-        }
+        self.source.shutdown();
     }
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {

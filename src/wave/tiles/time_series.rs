@@ -145,6 +145,7 @@ impl<'a> MyTilesDelegate<'a> {
         let show_grid = props.show_grid;
         let legend_visible = props.legend_visible;
         let legend_corner = props.legend_corner;
+        let sync_time_axis = props.sync_time_axis;
         let time_range = props.time_axis_range.clone();
         let scalar_range = props.scalar_axis_range.clone();
         let time_is_auto = matches!(time_range, AxisRange::Auto);
@@ -227,6 +228,10 @@ impl<'a> MyTilesDelegate<'a> {
                         egui_plot::AxisHints::new_x().min_thickness(reserved_x),
                     ])
                     .show_grid(show_grid);
+
+                if sync_time_axis && let Some(group_id) = self.time_axis_sync_group {
+                    plot = plot.link_axis(group_id, egui::Vec2b::new(true, false));
+                }
 
                 if time_is_auto {
                     plot = plot.include_x(padded_x.0).include_x(padded_x.1);
