@@ -60,12 +60,11 @@ impl ScopeApp {
             return;
         };
 
-        let mut dialog = rfd::FileDialog::new()
+        let dialog_dir = resolve_snapshot_dir(&self.csv.snapshot_dir);
+        let dialog = rfd::FileDialog::new()
             .add_filter("CSV", &["csv"])
-            .set_file_name("scope2000.csv");
-        if !self.csv.snapshot_dir.is_empty() {
-            dialog = dialog.set_directory(&self.csv.snapshot_dir);
-        }
+            .set_file_name("scope2000.csv")
+            .set_directory(dialog_dir);
 
         if let Some(path) = dialog.save_file() {
             self.csv.save_rx = Some(spawn_csv_write(path, snapshot));
@@ -88,7 +87,7 @@ impl ScopeApp {
                 return;
             }
         };
-        let path = PathBuf::from(&self.csv.snapshot_dir).join(format!("{filename}.csv"));
+        let path = resolve_snapshot_dir(&self.csv.snapshot_dir).join(format!("{filename}.csv"));
         if path.exists() {
             self.csv.overwrite_pending = Some(OverwritePending { path, snapshot });
         } else {
@@ -141,6 +140,49 @@ impl ScopeApp {
             }
             None => {}
         }
+    }
+}
+
+fn resolve_snapshot_dir(configured_dir: &str) -> PathBuf {
+    let configured_dir = configured_dir.trim();
+    if !configured_dir.is_empty() {
+        return PathBuf::from(configured_dir);
+    }
+
+    dirs::download_dir()
+        .or_else(dirs::home_dir)
+        .or_else(|| std::env::current_dir().ok())
+        .unwrap_or_else(|| PathBuf::from("."))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn snapshot_dir_keeps_non_empty_config() {
+        let path = if cfg!(windows) {
+            r"C:\scope2000\captures"
+        } else {
+            "/tmp/scope2000/captures"
+        };
+
+        assert_eq!(resolve_snapshot_dir(path), PathBuf::from(path));
+        assert_eq!(
+            resolve_snapshot_dir(&format!("  {path}  ")),
+            PathBuf::from(path)
+        );
+    }
+
+    #[test]
+    fn empty_snapshot_dir_uses_platform_default() {
+        let expected = dirs::download_dir()
+            .or_else(dirs::home_dir)
+            .or_else(|| std::env::current_dir().ok())
+            .unwrap_or_else(|| PathBuf::from("."));
+
+        assert_eq!(resolve_snapshot_dir(""), expected);
+        assert_eq!(resolve_snapshot_dir(" \t"), expected);
     }
 }
 
