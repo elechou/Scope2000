@@ -86,7 +86,7 @@ pub fn show_connection_settings(
             .width(ui.available_width())
             .selected_text(hardware.baud.to_string())
             .show_ui(ui, |ui| {
-                for baud in [115_200, 230_400, 460_800, 921_600, 1_500_000] {
+                for baud in [115_200, 230_400, 460_800, 921_600, 1_500_000, 3_125_000] {
                     ui.selectable_value(&mut hardware.baud, baud, baud.to_string());
                 }
             });
