@@ -69,6 +69,10 @@ impl Session {
                 capabilities: 0,
                 project_name: String::new(),
                 build_time_utc: 0,
+                mcu_model: 0,
+                scope_max_ch: 0,
+                scope_block_ticks: 0,
+                scope_ring_words: 0,
             },
             scope_active: false,
             expected_block_sequence: None,
@@ -536,6 +540,15 @@ fn validate_device_info(info: &DeviceInfo) -> Result<()> {
     {
         bail!("HELLO project_name must contain printable ASCII only");
     }
+    if info.scope_max_ch == 0 {
+        bail!("HELLO scope_max_ch must be nonzero");
+    }
+    if info.scope_block_ticks == 0 {
+        bail!("HELLO scope_block_ticks must be nonzero");
+    }
+    if info.scope_ring_words == 0 {
+        bail!("HELLO scope_ring_words must be nonzero");
+    }
     Ok(())
 }
 
@@ -584,6 +597,10 @@ mod tests {
             capabilities,
             project_name: "phase4-demo".to_owned(),
             build_time_utc: 1_781_913_600,
+            mcu_model: 1,
+            scope_max_ch: 16,
+            scope_block_ticks: 10,
+            scope_ring_words: 0x7000,
         }
     }
 
@@ -678,6 +695,11 @@ mod tests {
         project[..project_len].copy_from_slice(&info.project_name.as_bytes()[..project_len]);
         payload.extend_from_slice(&project);
         payload.extend_from_slice(&info.build_time_utc.to_le_bytes());
+        payload.extend_from_slice(&info.mcu_model.to_le_bytes());
+        payload.extend_from_slice(&info.scope_max_ch.to_le_bytes());
+        payload.extend_from_slice(&info.scope_block_ticks.to_le_bytes());
+        payload.extend_from_slice(&0_u16.to_le_bytes());
+        payload.extend_from_slice(&info.scope_ring_words.to_le_bytes());
         payload
     }
 
@@ -708,10 +730,9 @@ mod tests {
 
     #[test]
     fn incompatible_contract_is_rejected() {
-        let mut payload = Vec::new();
-        payload.extend_from_slice(&u16::from(codec::WIRE_VERSION).to_le_bytes());
-        payload.extend_from_slice(&9_u16.to_le_bytes());
-        payload.resize(36, 0);
+        let mut source = device_info(0, 0, 0);
+        source.contract_version = 9;
+        let payload = hello_payload(&source);
         let info = codec::parse_hello(&payload).expect("parse old contract");
         assert!(validate_device_info(&info).is_err());
     }

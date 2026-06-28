@@ -7,7 +7,7 @@ use crate::source::{
     CAP_SYSTEM_CMD, CatalogCommand, ParamWrite, ScopeConfig, ScopeMode, SourceCommand,
     SystemCommand, TriggerEdge, VarDescriptor,
 };
-use crate::wave::{max_record_points_for_binding, pane::PaneKind};
+use crate::wave::{max_record_points_for_binding, pane::PaneKind, scope_channel_limit};
 
 impl ScopeApp {
     pub(in crate::app) fn send(&self, command: SourceCommand) {
@@ -182,7 +182,7 @@ impl ScopeApp {
         }
         self.wave
             .settings
-            .clamp_record_points(max_record_points_for_binding(&binding));
+            .clamp_record_points(self.max_record_points_for_scope_binding(&binding));
 
         self.plot_data.clear();
         self.wave.capture_frame_blocks.clear();
@@ -253,7 +253,7 @@ impl ScopeApp {
             return;
         }
         self.wave.capture_frame_blocks.clear();
-        let max_record_points = max_record_points_for_binding(&self.wave.binding);
+        let max_record_points = self.max_record_points_for_scope_binding(&self.wave.binding);
         self.wave.settings.clamp_record_points(max_record_points);
         self.wave.settings_snapshot = self.wave.settings.clone();
         self.send_catalog(CatalogCommand::ConfigureScope(
@@ -264,6 +264,9 @@ impl ScopeApp {
     }
 
     fn scope_config(&self, mode: ScopeMode, binding: &[VarDescriptor]) -> ScopeConfig {
+        let mut settings = self.wave.settings.clone();
+        settings.clamp();
+        settings.clamp_record_points(self.max_record_points_for_scope_binding(binding));
         let trigger_slot = self
             .wave
             .settings
@@ -279,13 +282,13 @@ impl ScopeApp {
         ScopeConfig {
             mode,
             trigger_slot,
-            trigger_level: self.wave.settings.trigger_level,
-            trigger_hysteresis: self.wave.settings.trigger_hysteresis,
-            trigger_edge: self.wave.settings.trigger_edge,
-            pre_trigger_percent: self.wave.settings.pre_trigger_percent,
-            prescaler: self.wave.settings.prescaler,
+            trigger_level: settings.trigger_level,
+            trigger_hysteresis: settings.trigger_hysteresis,
+            trigger_edge: settings.trigger_edge,
+            pre_trigger_percent: settings.pre_trigger_percent,
+            prescaler: settings.prescaler,
             record_points: if mode == ScopeMode::CaptureArmed {
-                self.wave.settings.record_points
+                settings.record_points
             } else {
                 0
             },
@@ -295,7 +298,7 @@ impl ScopeApp {
     pub(in crate::app) fn current_scope_record_limit(&self) -> Option<u16> {
         let pane_vars = self.collect_time_series_vars();
         let binding = self.resolve_scope_binding(&pane_vars);
-        max_record_points_for_binding(&binding)
+        self.max_record_points_for_scope_binding(&binding)
     }
 
     fn collect_time_series_vars(&self) -> Vec<String> {
@@ -321,9 +324,16 @@ impl ScopeApp {
             .iter()
             .filter_map(|name| self.inspector.descriptor_by_name(name))
             .filter(|descriptor| descriptor.is_scope())
-            .take(8)
+            .take(scope_channel_limit(self.hardware.info.as_ref()))
             .cloned()
             .collect()
+    }
+
+    fn max_record_points_for_scope_binding(&self, binding: &[VarDescriptor]) -> Option<u16> {
+        self.hardware
+            .info
+            .as_ref()
+            .and_then(|info| max_record_points_for_binding(binding, info))
     }
 }
 

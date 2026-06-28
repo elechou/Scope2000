@@ -5,7 +5,7 @@ use crate::source::{
     VarRef, VarType,
 };
 
-pub const WIRE_VERSION: u8 = 6;
+pub const WIRE_VERSION: u8 = 7;
 pub const VERSION_MAGIC: u8 = 0x50 | WIRE_VERSION;
 pub const MAX_PAYLOAD: usize = 1024;
 
@@ -204,7 +204,7 @@ impl FrameDecoder {
 }
 
 pub fn parse_hello(payload: &[u8]) -> Result<DeviceInfo, CodecError> {
-    if payload.len() < 28 {
+    if payload.len() < 84 {
         return Err(CodecError::MalformedPayload(
             "HELLO is shorter than current layout",
         ));
@@ -218,33 +218,21 @@ pub fn parse_hello(payload: &[u8]) -> Result<DeviceInfo, CodecError> {
     }
 
     let firmware_name = fixed_string(&payload[12..28]);
-    let project_name = if payload.len() >= 68 {
-        fixed_string(&payload[36..68])
-    } else {
-        String::new()
-    };
+    let project_name = fixed_string(&payload[36..68]);
     Ok(DeviceInfo {
         protocol_version: read_u16(payload, 0)?,
         contract_version: read_u16(payload, 2)?,
         build_hash: read_u32(payload, 4)?,
         descriptor_count: read_u16(payload, 8)?,
         firmware_name,
-        tick_hz: if payload.len() >= 32 {
-            read_u32(payload, 28)?
-        } else {
-            0
-        },
-        capabilities: if payload.len() >= 36 {
-            read_u32(payload, 32)?
-        } else {
-            0
-        },
+        tick_hz: read_u32(payload, 28)?,
+        capabilities: read_u32(payload, 32)?,
         project_name,
-        build_time_utc: if payload.len() >= 72 {
-            read_u32(payload, 68)?
-        } else {
-            0
-        },
+        build_time_utc: read_u32(payload, 68)?,
+        mcu_model: read_u16(payload, 72)?,
+        scope_max_ch: read_u16(payload, 74)?,
+        scope_block_ticks: read_u16(payload, 76)?,
+        scope_ring_words: read_u32(payload, 80)?,
     })
 }
 
@@ -694,27 +682,17 @@ mod tests {
         assert_eq!(info.tick_hz, 20_000);
         assert_eq!(info.project_name, "phase4-demo");
         assert_eq!(info.build_time_utc, 1_781_913_600);
+        assert_eq!(info.mcu_model, 1);
+        assert_eq!(info.scope_max_ch, 16);
+        assert_eq!(info.scope_block_ticks, 10);
+        assert_eq!(info.scope_ring_words, 0x7000);
     }
 
     #[test]
-    fn hello_parser_accepts_missing_project_tail() {
-        let mut payload = Vec::new();
-        payload.extend_from_slice(&u16::from(WIRE_VERSION).to_le_bytes());
-        payload.extend_from_slice(&13_u16.to_le_bytes());
-        payload.extend_from_slice(&0x1234_5678_u32.to_le_bytes());
-        payload.extend_from_slice(&2_u16.to_le_bytes());
-        payload.extend_from_slice(&0_u16.to_le_bytes());
-        let mut firmware = [0_u8; 16];
-        firmware[..10].copy_from_slice(b"viewer2000");
-        payload.extend_from_slice(&firmware);
-        payload.extend_from_slice(&20_000_u32.to_le_bytes());
-        payload.extend_from_slice(&0x7F_u32.to_le_bytes());
+    fn hello_parser_rejects_missing_scope_resource_tail() {
+        let payload = vec![0_u8; 72];
 
-        let info = parse_hello(&payload).expect("parse short HELLO");
-
-        assert_eq!(info.firmware_name, "viewer2000");
-        assert_eq!(info.project_name, "");
-        assert_eq!(info.build_time_utc, 0);
+        assert!(parse_hello(&payload).is_err());
     }
 
     #[test]

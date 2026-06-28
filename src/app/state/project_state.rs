@@ -669,7 +669,7 @@ mod tests {
 
     fn device(name: &str) -> DeviceInfo {
         DeviceInfo {
-            protocol_version: 6,
+            protocol_version: 7,
             contract_version: 13,
             build_hash: 1,
             descriptor_count: 0,
@@ -678,6 +678,10 @@ mod tests {
             capabilities: 0,
             project_name: name.to_owned(),
             build_time_utc: 0,
+            mcu_model: 1,
+            scope_max_ch: 16,
+            scope_block_ticks: 10,
+            scope_ring_words: 0x7000,
         }
     }
 

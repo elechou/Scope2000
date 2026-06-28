@@ -4,7 +4,7 @@ use crate::app::ScopeApp;
 use crate::console::LogLevel;
 use crate::source::{ScopeBlock, ScopeMode, SourceEvent, VarDescriptor, command_result_text};
 use crate::variable::InspectorState;
-use crate::wave::{WaveState, data::PlotData};
+use crate::wave::{AcquisitionSettings, WaveState, data::PlotData};
 
 impl ScopeApp {
     pub(in crate::app) fn poll_events(&mut self) {
@@ -20,15 +20,19 @@ impl ScopeApp {
                     self.log.push(
                         LogLevel::Info,
                         format!(
-                            "HELLO: project={} built={} firmware={} wire={} contract={} tick={}Hz caps=0x{:08X}",
+                            "HELLO: project={} built={} firmware={} mcu={} wire={} contract={} tick={}Hz caps=0x{:08X} scope={}ch/{}ticks/0x{:X}words",
                             info.project_display_name(),
                             info.build_time_local_text()
                                 .unwrap_or_else(|| "not reported".to_owned()),
                             info.firmware_name,
+                            info.mcu_model_label(),
                             info.protocol_version,
                             info.contract_version,
                             info.tick_hz,
-                            info.capabilities
+                            info.capabilities,
+                            info.scope_max_ch,
+                            info.scope_block_ticks,
+                            info.scope_ring_words
                         ),
                     );
                     self.hardware.info = Some(info);
@@ -221,7 +225,7 @@ impl ScopeApp {
                                     &mut frame_blocks,
                                     &self.wave.binding,
                                     tick_hz,
-                                    self.wave.settings_snapshot.prescaler,
+                                    &self.wave.settings_snapshot,
                                     trigger_tick,
                                     &mut self.log,
                                 );
@@ -284,7 +288,7 @@ fn redraw_capture_frame(
     blocks: &mut [ScopeBlock],
     binding: &[VarDescriptor],
     tick_hz: u32,
-    prescaler: u16,
+    settings: &AcquisitionSettings,
     trigger_tick: Option<u32>,
     log: &mut crate::console::LogBuffer,
 ) {
@@ -294,8 +298,27 @@ fn redraw_capture_frame(
         plot_data.set_trigger_tick(trigger_tick, tick_hz);
     }
     plot_data.ensure_series(binding);
+    if let Some(trigger_tick) = trigger_tick {
+        match append_requested_capture_window(
+            plot_data,
+            blocks,
+            binding,
+            tick_hz,
+            settings,
+            trigger_tick,
+        ) {
+            Ok(count) => {
+                log.push(
+                    LogLevel::Info,
+                    format!("Capture frame complete: {count} sample(s)"),
+                );
+                return;
+            }
+            Err(error) => log.push(LogLevel::Warn, error),
+        }
+    }
     for block in blocks.iter() {
-        if let Err(error) = plot_data.append_block(block, binding, tick_hz, prescaler) {
+        if let Err(error) = plot_data.append_block(block, binding, tick_hz, settings.prescaler) {
             log.push(LogLevel::Warn, error);
         }
     }
@@ -307,6 +330,106 @@ fn redraw_capture_frame(
 
 fn sort_blocks_by_start_tick(blocks: &mut [ScopeBlock]) {
     blocks.sort_by(|left, right| compare_wrapped_tick(left.start_tick, right.start_tick));
+}
+
+struct CaptureRow {
+    tick: u32,
+    values: Vec<f64>,
+}
+
+fn append_requested_capture_window(
+    plot_data: &mut PlotData,
+    blocks: &[ScopeBlock],
+    binding: &[VarDescriptor],
+    tick_hz: u32,
+    settings: &AcquisitionSettings,
+    trigger_tick: u32,
+) -> Result<usize, String> {
+    let rows = decode_capture_rows(blocks, binding, settings.prescaler)?;
+    let Some(trigger_index) = rows.iter().position(|row| row.tick == trigger_tick) else {
+        return Err("capture trigger tick was not present in drained blocks".to_owned());
+    };
+    let requested = usize::from(settings.record_points);
+    if requested == 0 {
+        return Err("capture record point count is zero".to_owned());
+    }
+    let pre = capture_pre_samples(requested, settings.pre_trigger_percent);
+    if trigger_index < pre {
+        return Err(format!(
+            "capture frame has only {trigger_index} pre-trigger sample(s), expected {pre}"
+        ));
+    }
+    let start = trigger_index - pre;
+    let end = start.saturating_add(requested);
+    if end > rows.len() {
+        return Err(format!(
+            "capture frame has {} sample(s) after trimming start, expected {requested}",
+            rows.len().saturating_sub(start)
+        ));
+    }
+
+    let tick_hz = f64::from(tick_hz.max(1));
+    for row in &rows[start..end] {
+        let time = f64::from(row.tick) / tick_hz;
+        for (descriptor, value) in binding.iter().zip(row.values.iter()) {
+            plot_data.push(&descriptor.name, time, *value);
+        }
+    }
+    Ok(requested)
+}
+
+fn capture_pre_samples(record_points: usize, pre_trigger_percent: u8) -> usize {
+    let pre = record_points * usize::from(pre_trigger_percent.min(100)) / 100;
+    let post = record_points.saturating_sub(pre);
+    if post == 0 {
+        record_points.saturating_sub(1)
+    } else {
+        pre
+    }
+}
+
+fn decode_capture_rows(
+    blocks: &[ScopeBlock],
+    binding: &[VarDescriptor],
+    prescaler: u16,
+) -> Result<Vec<CaptureRow>, String> {
+    let expected_stride: usize = binding
+        .iter()
+        .map(|descriptor| descriptor.var.ty.wire_width())
+        .sum();
+    let tick_step = u32::from(prescaler.max(1));
+    let mut rows = Vec::new();
+    for block in blocks {
+        if binding.len() != usize::from(block.channel_count) {
+            return Err("block channel count does not match active binding".to_owned());
+        }
+        if expected_stride != usize::from(block.stride_octets) {
+            return Err("block stride does not match active binding".to_owned());
+        }
+        if block.samples.len() != expected_stride * usize::from(block.sample_count) {
+            return Err("block payload length is invalid".to_owned());
+        }
+
+        for sample_index in 0..usize::from(block.sample_count) {
+            let mut offset = sample_index * expected_stride;
+            let tick = block
+                .start_tick
+                .wrapping_add((sample_index as u32).wrapping_mul(tick_step));
+            let mut values = Vec::with_capacity(binding.len());
+            for descriptor in binding {
+                let width = descriptor.var.ty.wire_width();
+                let value = descriptor
+                    .var
+                    .ty
+                    .decode(&block.samples[offset..offset + width])
+                    .ok_or_else(|| "sample type decode failed".to_owned())?;
+                values.push(value);
+                offset += width;
+            }
+            rows.push(CaptureRow { tick, values });
+        }
+    }
+    Ok(rows)
 }
 
 fn compare_wrapped_tick(left: u32, right: u32) -> Ordering {
@@ -364,6 +487,28 @@ mod tests {
         }
     }
 
+    fn f32_block_samples(
+        start_tick: u32,
+        block_seq: u16,
+        bind_seq: u16,
+        values: &[f32],
+    ) -> ScopeBlock {
+        let mut samples = Vec::new();
+        for value in values {
+            samples.extend_from_slice(&value.to_le_bytes());
+        }
+        ScopeBlock {
+            start_tick,
+            block_seq,
+            flags: 0,
+            sample_count: values.len() as u16,
+            channel_count: 1,
+            bind_seq,
+            stride_octets: 4,
+            samples,
+        }
+    }
+
     #[test]
     fn stale_bind_sequence_is_discarded() {
         assert!(block_matches_binding(Some(7), 7));
@@ -404,7 +549,7 @@ mod tests {
             &mut blocks,
             &binding,
             10,
-            1,
+            &AcquisitionSettings::default(),
             Some(15),
             &mut log,
         );
@@ -419,6 +564,46 @@ mod tests {
             series.values.iter().copied().collect::<Vec<_>>(),
             vec![1.0, 2.0]
         );
+    }
+
+    #[test]
+    fn capture_frame_redraw_trims_to_requested_points_around_trigger() {
+        let descriptor = descriptor("signal");
+        let binding = vec![descriptor.clone()];
+        let mut plot_data = PlotData::new(100);
+        let mut blocks = vec![
+            f32_block_samples(0, 1, 3, &[0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, 8.0, 9.0]),
+            f32_block_samples(
+                10,
+                2,
+                3,
+                &[10.0, 11.0, 12.0, 13.0, 14.0, 15.0, 16.0, 17.0, 18.0, 19.0],
+            ),
+            f32_block_samples(20, 3, 3, &[20.0, 21.0, 22.0, 23.0, 24.0]),
+        ];
+        let settings = AcquisitionSettings {
+            record_points: 20,
+            pre_trigger_percent: 50,
+            ..AcquisitionSettings::default()
+        };
+        let mut log = crate::console::LogBuffer::default();
+
+        redraw_capture_frame(
+            &mut plot_data,
+            &mut blocks,
+            &binding,
+            1,
+            &settings,
+            Some(15),
+            &mut log,
+        );
+
+        let series = &plot_data.series["signal"];
+        assert_eq!(series.times.len(), 20);
+        assert_eq!(series.times.front().copied(), Some(5.0));
+        assert_eq!(series.times.back().copied(), Some(24.0));
+        assert_eq!(series.values.front().copied(), Some(5.0));
+        assert_eq!(series.values.back().copied(), Some(24.0));
     }
 
     #[test]

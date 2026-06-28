@@ -106,6 +106,10 @@ pub struct DeviceInfo {
     pub capabilities: u32,
     pub project_name: String,
     pub build_time_utc: u32,
+    pub mcu_model: u16,
+    pub scope_max_ch: u16,
+    pub scope_block_ticks: u16,
+    pub scope_ring_words: u32,
 }
 
 impl DeviceInfo {
@@ -136,7 +140,20 @@ impl DeviceInfo {
             .unwrap_or_else(|| "unknown".to_owned());
         format!("Built Time {built}")
     }
+
+    pub fn mcu_model_label(&self) -> &'static str {
+        match self.mcu_model {
+            MCU_MODEL_UNKNOWN => "unknown",
+            MCU_MODEL_F28P65X => "F28P65x",
+            MCU_MODEL_F28379D => "F28379D",
+            _ => "unknown",
+        }
+    }
 }
+
+pub const MCU_MODEL_UNKNOWN: u16 = 0;
+pub const MCU_MODEL_F28P65X: u16 = 1;
+pub const MCU_MODEL_F28379D: u16 = 2;
 
 pub const CAP_ENUM: u32 = 1 << 0;
 pub const CAP_CAL: u32 = 1 << 1;

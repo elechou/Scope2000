@@ -9,16 +9,14 @@ pub mod viewer_panel;
 
 use serde::{Deserialize, Serialize};
 
-use crate::source::{ScopeBlock, ScopeMode, TriggerEdge, VarDescriptor};
+use crate::source::{DeviceInfo, ScopeBlock, ScopeMode, TriggerEdge, VarDescriptor};
 
 pub const DEFAULT_TICK_HZ: u32 = 20_000;
 pub const MIN_PRESCALER: u16 = 1;
 pub const MAX_PRESCALER: u16 = 10_000;
 pub const DEFAULT_RECORD_POINTS: u16 = 1_000;
 pub const MIN_RECORD_POINTS: u16 = 1;
-pub const MAX_RECORD_POINTS_ABSOLUTE: u16 = 0x7000;
-pub const DEVICE_BLOCK_TICKS: u16 = 10;
-pub const SCOPE_RING_WORDS: u32 = 0x7000;
+pub const MAX_RECORD_POINTS_ABSOLUTE: u16 = u16::MAX;
 const BLOCK_HEADER_WORDS: u32 = 8;
 pub const PLOT_MAX_POINTS: usize = 50_000;
 
@@ -129,20 +127,30 @@ pub(crate) fn nearest_sampling_prescaler(tick_hz: u32, interval_us: f64, steps: 
         .unwrap_or(MIN_PRESCALER)
 }
 
-pub fn max_record_points_for_binding(binding: &[VarDescriptor]) -> Option<u16> {
+pub fn scope_channel_limit(info: Option<&DeviceInfo>) -> usize {
+    info.and_then(|info| (info.scope_max_ch != 0).then_some(usize::from(info.scope_max_ch)))
+        .unwrap_or(0)
+}
+
+pub fn max_record_points_for_binding(binding: &[VarDescriptor], info: &DeviceInfo) -> Option<u16> {
     let stride_words: u32 = binding
         .iter()
         .map(|descriptor| (descriptor.var.ty.wire_width() / 2) as u32)
         .sum();
-    if stride_words == 0 {
+    if stride_words == 0 || info.scope_block_ticks == 0 || info.scope_ring_words == 0 {
         return None;
     }
-    let mut slot_words = BLOCK_HEADER_WORDS + u32::from(DEVICE_BLOCK_TICKS) * stride_words;
+    let mut slot_words = BLOCK_HEADER_WORDS + u32::from(info.scope_block_ticks) * stride_words;
     if slot_words & 1 != 0 {
         slot_words += 1;
     }
-    let block_capacity = floor_pow2(SCOPE_RING_WORDS / slot_words);
-    let points = block_capacity.saturating_mul(u32::from(DEVICE_BLOCK_TICKS));
+    let block_capacity = floor_pow2(info.scope_ring_words / slot_words);
+    let points = block_capacity
+        .saturating_sub(1)
+        .saturating_mul(u32::from(info.scope_block_ticks));
+    if points == 0 {
+        return None;
+    }
     Some(points.min(u32::from(MAX_RECORD_POINTS_ABSOLUTE)) as u16)
 }
 
@@ -241,6 +249,21 @@ mod tests {
 
     #[test]
     fn max_record_points_accounts_for_native_width_and_block_headers() {
+        let info = DeviceInfo {
+            protocol_version: 7,
+            contract_version: 13,
+            build_hash: 0,
+            descriptor_count: 0,
+            firmware_name: "viewer2000".to_owned(),
+            tick_hz: 20_000,
+            capabilities: 0,
+            project_name: "phase4-demo".to_owned(),
+            build_time_utc: 0,
+            mcu_model: 1,
+            scope_max_ch: 16,
+            scope_block_ticks: 10,
+            scope_ring_words: 0x7000,
+        };
         let one_f32 = vec![descriptor("f32", VarType::F32)];
         let eight_f32 = (0..8)
             .map(|index| descriptor(&format!("f32_{index}"), VarType::F32))
@@ -251,10 +274,51 @@ mod tests {
             descriptor("f32", VarType::F32),
         ];
 
-        assert_eq!(max_record_points_for_binding(&one_f32), Some(10_240));
-        assert_eq!(max_record_points_for_binding(&eight_f32), Some(1_280));
-        assert_eq!(max_record_points_for_binding(&mixed), Some(2_560));
-        assert_eq!(max_record_points_for_binding(&[]), None);
+        assert_eq!(max_record_points_for_binding(&one_f32, &info), Some(10_230));
+        assert_eq!(
+            max_record_points_for_binding(&eight_f32, &info),
+            Some(1_270)
+        );
+        assert_eq!(max_record_points_for_binding(&mixed, &info), Some(2_550));
+        assert_eq!(max_record_points_for_binding(&[], &info), None);
+    }
+
+    #[test]
+    fn max_record_points_uses_hello_scope_resources() {
+        let mut info = DeviceInfo {
+            protocol_version: 7,
+            contract_version: 13,
+            build_hash: 0,
+            descriptor_count: 0,
+            firmware_name: "viewer2000".to_owned(),
+            tick_hz: 20_000,
+            capabilities: 0,
+            project_name: "phase4-demo".to_owned(),
+            build_time_utc: 0,
+            mcu_model: 2,
+            scope_max_ch: 16,
+            scope_block_ticks: 10,
+            scope_ring_words: 0xAFF8,
+        };
+        let eight_f32 = (0..8)
+            .map(|index| descriptor(&format!("f32_{index}"), VarType::F32))
+            .collect::<Vec<_>>();
+        let sixteen_f32 = (0..16)
+            .map(|index| descriptor(&format!("f32_{index}"), VarType::F32))
+            .collect::<Vec<_>>();
+
+        assert_eq!(scope_channel_limit(Some(&info)), 16);
+        assert_eq!(
+            max_record_points_for_binding(&eight_f32, &info),
+            Some(2_550)
+        );
+        assert_eq!(
+            max_record_points_for_binding(&sixteen_f32, &info),
+            Some(1_270)
+        );
+
+        info.scope_block_ticks = 0;
+        assert_eq!(max_record_points_for_binding(&eight_f32, &info), None);
     }
 
     #[test]
