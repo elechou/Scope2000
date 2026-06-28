@@ -448,13 +448,21 @@ pub enum SourceEvent {
     ScopeConfigured {
         mode: ScopeMode,
     },
+    CaptureDrainStarted {
+        frozen_count: u16,
+    },
+    CaptureDrainEnded {
+        trigger_tick: Option<u32>,
+    },
     Blocks {
         mode: ScopeMode,
-        remaining_hint: u16,
-        trigger_tick: Option<u32>,
         blocks: Vec<ScopeBlock>,
     },
     StreamGap {
+        expected: u16,
+        received: u16,
+    },
+    PushFrameGap {
         expected: u16,
         received: u16,
     },

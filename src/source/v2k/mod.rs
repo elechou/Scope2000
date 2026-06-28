@@ -20,8 +20,6 @@ const ENUM_PAGE_SIZE: u8 = 8;
 const REQUEST_TIMEOUT: Duration = Duration::from_millis(150);
 #[cfg(test)]
 const REQUEST_TIMEOUT: Duration = Duration::from_millis(5);
-const STATUS_PERIOD: Duration = Duration::from_millis(250);
-const BLOCK_POLL_PERIOD: Duration = Duration::from_millis(8);
 const MAX_RETRIES: usize = 2;
 
 #[derive(Default)]
@@ -46,15 +44,15 @@ struct Session {
     info: DeviceInfo,
     scope_active: bool,
     expected_block_sequence: Option<u16>,
-    next_status: Instant,
-    next_block_poll: Instant,
+    expected_push_sequence: Option<u16>,
+    capture_trigger_tick: Option<u32>,
+    pending_build_hash: Option<u32>,
 }
 
 impl Session {
     fn connect(endpoint: &TransportEndpoint, events: &mpsc::Sender<SourceEvent>) -> Result<Self> {
         let transport = transport::open(endpoint)?;
         let label = transport.label().to_owned();
-        let now = Instant::now();
         let mut session = Self {
             transport,
             decoder: FrameDecoder::default(),
@@ -76,10 +74,13 @@ impl Session {
             },
             scope_active: false,
             expected_block_sequence: None,
-            next_status: now,
-            next_block_poll: now,
+            expected_push_sequence: None,
+            capture_trigger_tick: None,
+            pending_build_hash: None,
         };
-        let hello = session.request(codec::message::HELLO, &codec::hello_request(), events)?;
+        let hello = session
+            .request(codec::message::HELLO, &codec::hello_request(), events)
+            .context("firmware/Scope2000 wire version mismatch; reflash v8 firmware or use a v7 Scope2000 build")?;
         let info = codec::parse_hello(&hello.payload)?;
         validate_device_info(&info)?;
         session.info = info;
@@ -120,13 +121,7 @@ impl Session {
                         {
                             return Ok(frame);
                         }
-                        Ok(frame) => send_event(
-                            events,
-                            SourceEvent::Log(format!(
-                                "discarded unmatched response type=0x{:02X} seq={}",
-                                frame.message_type, frame.sequence
-                            )),
-                        ),
+                        Ok(frame) => self.handle_frame(frame, events)?,
                         Err(error) => send_event(
                             events,
                             SourceEvent::Log(format!("discarded malformed frame: {error}")),
@@ -330,50 +325,100 @@ impl Session {
         Ok(())
     }
 
-    fn poll_status(&mut self, events: &mpsc::Sender<SourceEvent>) -> Result<()> {
-        let response = self.request(codec::message::STATUS, &codec::status_request(), events)?;
-        let status = codec::parse_status(&response.payload)?;
-        if status.build_hash != self.info.build_hash {
-            let old_hash = self.info.build_hash;
-            self.scope_active = false;
-            self.expected_block_sequence = None;
-            let hello = self.request(codec::message::HELLO, &codec::hello_request(), events)?;
-            let info = codec::parse_hello(&hello.payload)?;
-            validate_device_info(&info)?;
-            if info.build_hash != status.build_hash {
-                bail!(
-                    "firmware changed while refreshing device information: STATUS=0x{:08X}, HELLO=0x{:08X}",
-                    status.build_hash,
-                    info.build_hash
-                );
-            }
-            self.info = info.clone();
-            send_event(events, SourceEvent::DeviceChanged { old_hash, info });
-            if self.info.has(CAP_ENUM) {
-                self.enumerate(events)?;
+    fn service_rx(&mut self, events: &mpsc::Sender<SourceEvent>) -> Result<()> {
+        let mut read_buffer = [0_u8; 1024];
+        let count = self.transport.read(&mut read_buffer)?;
+        if count == 0 {
+            return Ok(());
+        }
+        for result in self.decoder.push(&read_buffer[..count]) {
+            match result {
+                Ok(frame) => self.handle_frame(frame, events)?,
+                Err(error) => send_event(
+                    events,
+                    SourceEvent::Log(format!("discarded malformed frame: {error}")),
+                ),
             }
         }
-        send_event(events, SourceEvent::Status(status));
-        self.next_status = Instant::now() + STATUS_PERIOD;
         Ok(())
     }
 
-    fn poll_blocks(&mut self, events: &mpsc::Sender<SourceEvent>) -> Result<()> {
-        if !self.scope_active {
-            self.next_block_poll = Instant::now() + BLOCK_POLL_PERIOD;
+    fn handle_frame(&mut self, frame: Frame, events: &mpsc::Sender<SourceEvent>) -> Result<()> {
+        if self.info.protocol_version == 0 {
             return Ok(());
         }
+        match frame.message_type {
+            codec::message::STATUS_PUSH => self.handle_status_payload(&frame.payload, events),
+            codec::message::SCOPE_BLOCK_PUSH => {
+                if let Some(expected) = self.expected_push_sequence
+                    && frame.sequence != expected
+                {
+                    send_event(
+                        events,
+                        SourceEvent::PushFrameGap {
+                            expected,
+                            received: frame.sequence,
+                        },
+                    );
+                }
+                self.expected_push_sequence = Some(frame.sequence.wrapping_add(1));
+                let batch = codec::parse_block_batch(&frame.payload)?;
+                self.handle_block_batch(batch, events)
+            }
+            codec::message::DRAIN_START => {
+                let frozen_count = codec::parse_drain_start(&frame.payload)?;
+                self.capture_trigger_tick = None;
+                self.expected_block_sequence = None;
+                send_event(events, SourceEvent::CaptureDrainStarted { frozen_count });
+                Ok(())
+            }
+            codec::message::DRAIN_END => {
+                if !frame.payload.is_empty() {
+                    bail!("DRAIN_END payload is not empty");
+                }
+                let trigger_tick = self.capture_trigger_tick.take();
+                self.expected_block_sequence = None;
+                send_event(events, SourceEvent::CaptureDrainEnded { trigger_tick });
+                Ok(())
+            }
+            _ => {
+                send_event(
+                    events,
+                    SourceEvent::Log(format!(
+                        "discarded unmatched frame type=0x{:02X} seq={}",
+                        frame.message_type, frame.sequence
+                    )),
+                );
+                Ok(())
+            }
+        }
+    }
 
-        let response = self.request(
-            codec::message::BLOCK_REQUEST,
-            &codec::block_request(2),
-            events,
-        )?;
-        let batch = codec::parse_block_batch(&response.payload)?;
+    fn handle_status_payload(
+        &mut self,
+        payload: &[u8],
+        events: &mpsc::Sender<SourceEvent>,
+    ) -> Result<()> {
+        let status = codec::parse_status(payload)?;
+        if status.build_hash != self.info.build_hash && self.pending_build_hash.is_none() {
+            self.scope_active = false;
+            self.expected_block_sequence = None;
+            self.expected_push_sequence = None;
+            self.pending_build_hash = Some(status.build_hash);
+        }
+        send_event(events, SourceEvent::Status(status));
+        Ok(())
+    }
+
+    fn handle_block_batch(
+        &mut self,
+        batch: codec::BlockBatch,
+        events: &mpsc::Sender<SourceEvent>,
+    ) -> Result<()> {
         if batch.mode == ScopeMode::Off {
             self.scope_active = false;
         }
-        if batch.mode == ScopeMode::Stream {
+        if matches!(batch.mode, ScopeMode::Stream | ScopeMode::CaptureFrozen) {
             for block in &batch.blocks {
                 if let Some(expected) = self.expected_block_sequence
                     && block.block_seq != expected
@@ -391,6 +436,9 @@ impl Session {
         } else {
             self.expected_block_sequence = None;
         }
+        if batch.mode == ScopeMode::CaptureFrozen {
+            self.capture_trigger_tick = batch.trigger_tick.or(self.capture_trigger_tick);
+        }
         if batch.overrun_count != 0 {
             send_event(
                 events,
@@ -402,17 +450,33 @@ impl Session {
                 events,
                 SourceEvent::Blocks {
                     mode: batch.mode,
-                    remaining_hint: batch.remaining_hint,
-                    trigger_tick: batch.trigger_tick,
                     blocks: batch.blocks,
                 },
             );
         }
-        self.next_block_poll = if batch.remaining_hint != 0 {
-            Instant::now()
-        } else {
-            Instant::now() + BLOCK_POLL_PERIOD
+        Ok(())
+    }
+
+    fn refresh_device_if_needed(&mut self, events: &mpsc::Sender<SourceEvent>) -> Result<()> {
+        let Some(status_hash) = self.pending_build_hash.take() else {
+            return Ok(());
         };
+        let old_hash = self.info.build_hash;
+        let hello = self.request(codec::message::HELLO, &codec::hello_request(), events)?;
+        let info = codec::parse_hello(&hello.payload)?;
+        validate_device_info(&info)?;
+        if info.build_hash != status_hash {
+            bail!(
+                "firmware changed while refreshing device information: STATUS=0x{status_hash:08X}, HELLO=0x{:08X}",
+                info.build_hash
+            );
+        }
+        self.info = info.clone();
+        self.pending_build_hash = None;
+        send_event(events, SourceEvent::DeviceChanged { old_hash, info });
+        if self.info.has(CAP_ENUM) {
+            self.enumerate(events)?;
+        }
         Ok(())
     }
 }
@@ -460,15 +524,12 @@ fn worker(commands: mpsc::Receiver<SourceCommand>, events: mpsc::Sender<SourceEv
             }),
             Err(mpsc::TryRecvError::Disconnected) => break,
             Err(mpsc::TryRecvError::Empty) => {
-                let now = Instant::now();
-                if now >= connected.next_status {
-                    connected.poll_status(&events).map(|_| WorkerStep::Continue)
-                } else if now >= connected.next_block_poll {
-                    connected.poll_blocks(&events).map(|_| WorkerStep::Continue)
-                } else {
-                    thread::sleep(Duration::from_millis(1));
-                    Ok(WorkerStep::Continue)
-                }
+                let result = connected
+                    .service_rx(&events)
+                    .and_then(|_| connected.refresh_device_if_needed(&events))
+                    .map(|_| WorkerStep::Continue);
+                thread::sleep(Duration::from_millis(1));
+                result
             }
         };
         match result {
@@ -510,7 +571,7 @@ fn require_ack(frame: &Frame, request_type: u8) -> Result<codec::Ack> {
 fn validate_device_info(info: &DeviceInfo) -> Result<()> {
     if info.protocol_version != u16::from(codec::WIRE_VERSION) {
         bail!(
-            "wire version mismatch: device={}, host={}",
+            "firmware/Scope2000 wire version mismatch; reflash v8 firmware or use a v7 Scope2000 build (device={}, host={})",
             info.protocol_version,
             codec::WIRE_VERSION
         );
@@ -643,7 +704,6 @@ mod tests {
     }
 
     fn session(reads: Vec<Vec<u8>>, info: DeviceInfo) -> Session {
-        let now = Instant::now();
         Session {
             transport: Box::new(ScriptedTransport {
                 reads,
@@ -654,8 +714,9 @@ mod tests {
             info,
             scope_active: false,
             expected_block_sequence: None,
-            next_status: now,
-            next_block_poll: now,
+            expected_push_sequence: None,
+            capture_trigger_tick: None,
+            pending_build_hash: None,
         }
     }
 
@@ -809,15 +870,15 @@ mod tests {
         let old_hash = 0x1111_1111;
         let new_info = device_info(0x2222_2222, 1, CAP_ENUM);
         let status = codec::encode_frame(
-            codec::message::STATUS | 0x80,
-            1,
+            codec::message::STATUS_PUSH,
+            0,
             &status_payload(new_info.build_hash),
         );
-        let hello = codec::encode_frame(codec::message::HELLO | 0x80, 2, &hello_payload(&new_info));
+        let hello = codec::encode_frame(codec::message::HELLO | 0x80, 1, &hello_payload(&new_info));
         let enumeration =
-            codec::encode_frame(codec::message::ENUMERATE | 0x80, 3, &enum_payload(1, 0, 1));
+            codec::encode_frame(codec::message::ENUMERATE | 0x80, 2, &enum_payload(1, 0, 1));
         let confirmation =
-            codec::encode_frame(codec::message::HELLO | 0x80, 4, &hello_payload(&new_info));
+            codec::encode_frame(codec::message::HELLO | 0x80, 3, &hello_payload(&new_info));
         let (event_tx, event_rx) = mpsc::channel();
         let mut session = session(
             vec![status, hello, enumeration, confirmation],
@@ -826,11 +887,18 @@ mod tests {
         session.scope_active = true;
         session.expected_block_sequence = Some(7);
 
-        session.poll_status(&event_tx).expect("refresh session");
+        session.service_rx(&event_tx).expect("receive status push");
+        session
+            .refresh_device_if_needed(&event_tx)
+            .expect("refresh session");
 
         assert_eq!(session.info.build_hash, new_info.build_hash);
         assert!(!session.scope_active);
         assert_eq!(session.expected_block_sequence, None);
+        assert!(matches!(
+            event_rx.recv().expect("status event"),
+            SourceEvent::Status(_)
+        ));
         let SourceEvent::DeviceChanged {
             old_hash: event_old_hash,
             info,
@@ -846,10 +914,6 @@ mod tests {
         };
         assert_eq!(descriptors.len(), 1);
         assert_eq!(descriptors[0].name, "var000");
-        assert!(matches!(
-            event_rx.recv().expect("status event"),
-            SourceEvent::Status(_)
-        ));
     }
 
     #[test]
@@ -913,7 +977,7 @@ mod tests {
         let mut session = session(Vec::new(), device_info(0, 0, 0));
         assert!(
             session
-                .request(codec::message::STATUS, &[], &event_tx)
+                .request(codec::message::HELLO, &[], &event_tx)
                 .is_err()
         );
     }

@@ -5,21 +5,23 @@ use crate::source::{
     VarRef, VarType,
 };
 
-pub const WIRE_VERSION: u8 = 7;
+pub const WIRE_VERSION: u8 = 8;
 pub const VERSION_MAGIC: u8 = 0x50 | WIRE_VERSION;
 pub const MAX_PAYLOAD: usize = 1024;
 
 pub mod message {
     pub const HELLO: u8 = 0x01;
-    pub const STATUS: u8 = 0x02;
     pub const ENUMERATE: u8 = 0x03;
     pub const CAL_WRITE: u8 = 0x10;
     pub const CAL_COMMIT: u8 = 0x11;
     pub const CAL_READ: u8 = 0x12;
     pub const DAQ_CONTROL: u8 = 0x20;
-    pub const BLOCK_REQUEST: u8 = 0x21;
     pub const DAQ_BIND: u8 = 0x22;
     pub const SYSTEM_COMMAND: u8 = 0x30;
+    pub const STATUS_PUSH: u8 = 0x41;
+    pub const SCOPE_BLOCK_PUSH: u8 = 0x42;
+    pub const DRAIN_START: u8 = 0x43;
+    pub const DRAIN_END: u8 = 0x44;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -349,14 +351,13 @@ pub fn parse_ack(payload: &[u8]) -> Result<Ack, CodecError> {
 pub struct BlockBatch {
     pub mode: ScopeMode,
     pub overrun_count: u16,
-    pub remaining_hint: u16,
     pub trigger_tick: Option<u32>,
     pub blocks: Vec<ScopeBlock>,
 }
 
 pub fn parse_block_batch(payload: &[u8]) -> Result<BlockBatch, CodecError> {
     if payload.len() < 12 {
-        return Err(CodecError::MalformedPayload("BLOCK_DATA header"));
+        return Err(CodecError::MalformedPayload("SCOPE_BLOCK_PUSH header"));
     }
     let count = usize::from(payload[0]);
     let mode = ScopeMode::from_wire(payload[1]);
@@ -393,17 +394,19 @@ pub fn parse_block_batch(payload: &[u8]) -> Result<BlockBatch, CodecError> {
     Ok(BlockBatch {
         mode,
         overrun_count: read_u16(payload, 4)?,
-        remaining_hint: read_u16(payload, 6)?,
         trigger_tick: (mode == ScopeMode::CaptureFrozen).then_some(trigger_tick),
         blocks,
     })
 }
 
-pub fn hello_request() -> Vec<u8> {
-    Vec::new()
+pub fn parse_drain_start(payload: &[u8]) -> Result<u16, CodecError> {
+    if payload.len() != 4 {
+        return Err(CodecError::MalformedPayload("DRAIN_START"));
+    }
+    Ok(read_u16(payload, 0)?)
 }
 
-pub fn status_request() -> Vec<u8> {
+pub fn hello_request() -> Vec<u8> {
     Vec::new()
 }
 
@@ -469,10 +472,6 @@ pub fn daq_control_request(config: &crate::source::ScopeConfig) -> Vec<u8> {
     put_u16(&mut payload, config.prescaler);
     put_u16(&mut payload, config.record_points);
     payload
-}
-
-pub fn block_request(max_blocks: u8) -> Vec<u8> {
-    vec![max_blocks, 0]
 }
 
 pub fn system_command_request(command: crate::source::SystemCommand) -> Vec<u8> {
@@ -598,13 +597,13 @@ mod tests {
                 );
             }
         }
-        assert_eq!(count, 25);
+        assert_eq!(count, 28);
     }
 
     #[test]
     fn decoder_handles_split_and_joined_frames() {
         let first = encode_frame(message::HELLO, 1, &[]);
-        let second = encode_frame(message::STATUS, 2, &[]);
+        let second = encode_frame(message::STATUS_PUSH, 2, &[]);
         let mut decoder = FrameDecoder::default();
         assert!(decoder.push(&first[..3]).is_empty());
         let mut tail = first[3..].to_vec();
@@ -620,7 +619,7 @@ mod tests {
         let mut decoder = FrameDecoder::default();
         let mut garbage = vec![0x55; MAX_PAYLOAD + 32];
         garbage.push(0);
-        garbage.extend_from_slice(&encode_frame(message::STATUS, 7, &[]));
+        garbage.extend_from_slice(&encode_frame(message::STATUS_PUSH, 7, &[]));
         let frames = decoder.push(&garbage);
         assert_eq!(frames.len(), 1);
         assert_eq!(frames[0].as_ref().expect("resynchronized").sequence, 7);

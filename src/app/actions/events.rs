@@ -172,12 +172,29 @@ impl ScopeApp {
                         self.start_acquisition(restart_mode);
                     }
                 }
-                SourceEvent::Blocks {
-                    mode,
-                    remaining_hint,
-                    trigger_tick,
-                    blocks,
-                } => {
+                SourceEvent::CaptureDrainStarted { frozen_count } => {
+                    self.wave.mode = ScopeMode::CaptureFrozen;
+                    self.wave.capture_frame_blocks.clear();
+                    self.log.push(
+                        LogLevel::Info,
+                        format!("Capture drain started: {frozen_count} block(s)"),
+                    );
+                }
+                SourceEvent::CaptureDrainEnded { trigger_tick } => {
+                    let tick_hz = self.hardware.info.as_ref().map_or(1, |info| info.tick_hz);
+                    let mut frame_blocks = std::mem::take(&mut self.wave.capture_frame_blocks);
+                    redraw_capture_frame(
+                        &mut self.plot_data,
+                        &mut frame_blocks,
+                        &self.wave.binding,
+                        tick_hz,
+                        &self.wave.settings_snapshot,
+                        trigger_tick,
+                        &mut self.log,
+                    );
+                    self.rearm_capture();
+                }
+                SourceEvent::Blocks { mode, blocks } => {
                     let tick_hz = self.hardware.info.as_ref().map_or(1, |info| info.tick_hz);
                     self.wave.mode = mode;
                     match mode {
@@ -217,20 +234,6 @@ impl ScopeApp {
                                 }
                                 self.wave.capture_frame_blocks.push(block);
                             }
-                            if remaining_hint == 0 {
-                                let mut frame_blocks =
-                                    std::mem::take(&mut self.wave.capture_frame_blocks);
-                                redraw_capture_frame(
-                                    &mut self.plot_data,
-                                    &mut frame_blocks,
-                                    &self.wave.binding,
-                                    tick_hz,
-                                    &self.wave.settings_snapshot,
-                                    trigger_tick,
-                                    &mut self.log,
-                                );
-                                self.rearm_capture();
-                            }
                         }
                         ScopeMode::CaptureArmed | ScopeMode::CapturePost => {}
                         ScopeMode::Off | ScopeMode::Unknown(_) => {}
@@ -243,6 +246,12 @@ impl ScopeApp {
                     self.log.push(
                         LogLevel::Warn,
                         format!("Scope block gap: expected {expected}, received {received}"),
+                    );
+                }
+                SourceEvent::PushFrameGap { expected, received } => {
+                    self.log.push(
+                        LogLevel::Warn,
+                        format!("SCI push frame gap: expected {expected}, received {received}"),
                     );
                 }
                 SourceEvent::DeviceChanged { old_hash, info } => {
