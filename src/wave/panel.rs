@@ -221,8 +221,12 @@ pub fn show_wave_section(
     wave.settings.clamp();
 
     if can_start && wave.active && action.is_none() && !any_dragging {
-        let settings_changed =
-            settings_changed_for_mode(wave.mode, &wave.settings, &wave.settings_snapshot);
+        let settings_changed = settings_changed_for_mode(
+            wave.mode,
+            &wave.settings,
+            &wave.settings_snapshot,
+            normalized_record_max_points(record_max_points),
+        );
         let channels_changed = pane_vars != wave.pane_vars_snapshot;
         if settings_changed || channels_changed {
             action = Some(WaveAction::Restart(restart_entry_mode(wave.mode)));
@@ -254,16 +258,16 @@ fn settings_changed_for_mode(
     mode: ScopeMode,
     settings: &super::AcquisitionSettings,
     snapshot: &super::AcquisitionSettings,
+    record_max_points: Option<u16>,
 ) -> bool {
+    let mut settings = settings.with_record_point_fallback(record_max_points);
+    let mut snapshot = snapshot.clone();
+    snapshot.clamp();
     if mode == ScopeMode::Stream {
-        let mut settings = settings.clone();
-        let mut snapshot = snapshot.clone();
         settings.record_points = 0;
         snapshot.record_points = 0;
-        settings != snapshot
-    } else {
-        settings != snapshot
     }
+    settings != snapshot
 }
 
 fn restart_entry_mode(mode: ScopeMode) -> ScopeMode {
@@ -283,10 +287,7 @@ fn show_sampling_controls(
     record_max_points: Option<u16>,
     any_dragging: &mut bool,
 ) {
-    let record_max_points = record_max_points
-        .unwrap_or(MAX_RECORD_POINTS_ABSOLUTE)
-        .clamp(MIN_RECORD_POINTS, MAX_RECORD_POINTS_ABSOLUTE);
-    wave.settings.clamp_record_points(Some(record_max_points));
+    let record_max_points = normalized_record_max_points(record_max_points);
     ui.horizontal(|ui| {
         ui.label("Sampling");
         let steps = sampling_steps_for_ui(tick_hz, wave.settings.prescaler);
@@ -340,16 +341,32 @@ fn show_sampling_controls(
         ui.label("Record");
         let response = ui.add(
             egui::DragValue::new(&mut wave.settings.record_points)
-                .range(MIN_RECORD_POINTS..=record_max_points)
+                .range(MIN_RECORD_POINTS..=MAX_RECORD_POINTS_ABSOLUTE)
                 .speed(10.0)
                 .update_while_editing(false)
                 .suffix(" pts"),
         );
         *any_dragging |= response.dragged();
+        let effective_settings = wave.settings.with_record_point_fallback(record_max_points);
         ui.weak(format_record_duration(
-            wave.settings.record_duration_seconds(tick_hz),
+            effective_settings.record_duration_seconds(tick_hz),
         ));
     });
+    if let Some(record_max_points) = record_max_points
+        && wave.settings.record_points > record_max_points
+    {
+        ui.colored_label(
+            theme::YELLOW,
+            format!(
+                "Record fallback: requested {} pts; using {record_max_points} pts for current channels",
+                wave.settings.record_points
+            ),
+        );
+    }
+}
+
+fn normalized_record_max_points(record_max_points: Option<u16>) -> Option<u16> {
+    record_max_points.map(|value| value.clamp(MIN_RECORD_POINTS, MAX_RECORD_POINTS_ABSOLUTE))
 }
 
 fn sampling_steps_for_ui(tick_hz: u32, current_prescaler: u16) -> Vec<u16> {

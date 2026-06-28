@@ -180,14 +180,25 @@ impl ScopeApp {
             );
             return;
         }
-        self.wave
-            .settings
-            .clamp_record_points(self.max_record_points_for_scope_binding(&binding));
+        let settings_snapshot = self.scope_effective_settings(&binding);
+        if mode == ScopeMode::CaptureArmed
+            && settings_snapshot.record_points != self.wave.settings.record_points
+        {
+            self.log.push(
+                LogLevel::Warn,
+                format!(
+                    "Wave record fallback: requested {} pts, using {} pts for {} channel(s)",
+                    self.wave.settings.record_points,
+                    settings_snapshot.record_points,
+                    binding.len()
+                ),
+            );
+        }
 
         self.plot_data.clear();
         self.wave.capture_frame_blocks.clear();
         self.wave.pending_binding = binding.clone();
-        self.wave.settings_snapshot = self.wave.settings.clone();
+        self.wave.settings_snapshot = settings_snapshot;
         self.wave.pane_vars_snapshot = pane_vars;
 
         self.send_catalog(CatalogCommand::ConfigureScope(ScopeConfig {
@@ -253,9 +264,7 @@ impl ScopeApp {
             return;
         }
         self.wave.capture_frame_blocks.clear();
-        let max_record_points = self.max_record_points_for_scope_binding(&self.wave.binding);
-        self.wave.settings.clamp_record_points(max_record_points);
-        self.wave.settings_snapshot = self.wave.settings.clone();
+        self.wave.settings_snapshot = self.scope_effective_settings(&self.wave.binding);
         self.send_catalog(CatalogCommand::ConfigureScope(
             self.scope_config(ScopeMode::CaptureArmed, &self.wave.binding),
         ));
@@ -264,9 +273,7 @@ impl ScopeApp {
     }
 
     fn scope_config(&self, mode: ScopeMode, binding: &[VarDescriptor]) -> ScopeConfig {
-        let mut settings = self.wave.settings.clone();
-        settings.clamp();
-        settings.clamp_record_points(self.max_record_points_for_scope_binding(binding));
+        let settings = self.scope_effective_settings(binding);
         let trigger_slot = self
             .wave
             .settings
@@ -293,6 +300,15 @@ impl ScopeApp {
                 0
             },
         }
+    }
+
+    fn scope_effective_settings(
+        &self,
+        binding: &[VarDescriptor],
+    ) -> crate::wave::AcquisitionSettings {
+        self.wave
+            .settings
+            .with_record_point_fallback(self.max_record_points_for_scope_binding(binding))
     }
 
     pub(in crate::app) fn current_scope_record_limit(&self) -> Option<u16> {

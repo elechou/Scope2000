@@ -152,6 +152,7 @@ pub fn show_device_info_window(
                 ui.monospace(format!("project {}", info.project_display_name()));
                 ui.monospace(info.build_time_display_text());
                 ui.monospace(format!("firmware {}", info.firmware_name));
+                ui.monospace(format!("mcu {}", info.mcu_model_label()));
                 ui.monospace(format!(
                     "wire {} contract {}",
                     info.protocol_version, info.contract_version

@@ -65,6 +65,13 @@ impl AcquisitionSettings {
         self.record_points = self.record_points.clamp(MIN_RECORD_POINTS, max_points);
     }
 
+    pub fn with_record_point_fallback(&self, max_points: Option<u16>) -> Self {
+        let mut settings = self.clone();
+        settings.clamp();
+        settings.clamp_record_points(max_points);
+        settings
+    }
+
     pub fn sample_rate_hz(&self, tick_hz: u32) -> f64 {
         f64::from(effective_tick_hz(tick_hz)) / f64::from(self.prescaler.max(1))
     }
@@ -348,5 +355,18 @@ mod tests {
         settings.clamp_record_points(Some(1_280));
 
         assert_eq!(settings.record_points, 1_280);
+    }
+
+    #[test]
+    fn record_points_fallback_preserves_requested_value() {
+        let settings = AcquisitionSettings {
+            record_points: 10_000,
+            ..AcquisitionSettings::default()
+        };
+
+        let effective = settings.with_record_point_fallback(Some(1_280));
+
+        assert_eq!(settings.record_points, 10_000);
+        assert_eq!(effective.record_points, 1_280);
     }
 }
