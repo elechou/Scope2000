@@ -10,8 +10,8 @@ use anyhow::{Context, Result, bail};
 use self::codec::{Frame, FrameDecoder};
 use self::transport::ByteTransport;
 use crate::source::{
-    CAP_ENUM, CatalogCommand, DataSource, DeviceInfo, ParamWrite, ScopeMode, SourceCommand,
-    SourceEvent, SourceHandle, TransportEndpoint,
+    CAP_ENUM, CatalogCommand, DataSource, DeviceInfo, DeviceStatus, ParamWrite, ScopeBlock,
+    ScopeMode, SourceCommand, SourceEvent, SourceHandle, TransportEndpoint,
 };
 
 const EXPECTED_CONTRACT_VERSION: u16 = 13;
@@ -21,6 +21,8 @@ const REQUEST_TIMEOUT: Duration = Duration::from_millis(150);
 #[cfg(test)]
 const REQUEST_TIMEOUT: Duration = Duration::from_millis(5);
 const MAX_RETRIES: usize = 2;
+const CAPTURE_REPLAY_IDLE_DELAY: Duration = Duration::from_millis(20);
+const CAPTURE_REPLAY_MAX_BLOCKS: u8 = 8;
 
 #[derive(Default)]
 pub struct V2kSource;
@@ -45,8 +47,102 @@ struct Session {
     scope_active: bool,
     expected_block_sequence: Option<u16>,
     expected_push_sequence: Option<u16>,
-    capture_trigger_tick: Option<u32>,
+    active_bind_sequence: Option<u16>,
+    capture: Option<CaptureAssembly>,
+    completed_capture_id: Option<u16>,
     pending_build_hash: Option<u32>,
+}
+
+struct CaptureAssembly {
+    capture_id: u16,
+    total_blocks: u16,
+    trigger_tick: u32,
+    bind_sequence: Option<u16>,
+    blocks: Vec<Option<ScopeBlock>>,
+    received: usize,
+    last_progress: Instant,
+}
+
+impl CaptureAssembly {
+    fn new(
+        capture_id: u16,
+        total_blocks: u16,
+        trigger_tick: u32,
+        bind_sequence: Option<u16>,
+    ) -> Self {
+        Self {
+            capture_id,
+            total_blocks,
+            trigger_tick,
+            bind_sequence,
+            blocks: vec![None; usize::from(total_blocks)],
+            received: 0,
+            last_progress: Instant::now(),
+        }
+    }
+
+    fn update_metadata(&mut self, trigger_tick: u32, bind_sequence: Option<u16>) {
+        self.trigger_tick = trigger_tick;
+        if bind_sequence.is_some() {
+            self.bind_sequence = bind_sequence;
+        }
+    }
+
+    fn insert_batch(&mut self, batch: codec::CaptureBatch) -> Result<bool> {
+        if batch.capture_id != self.capture_id || batch.total_blocks != self.total_blocks {
+            bail!("capture batch metadata mismatch");
+        }
+        if usize::from(batch.first_block_index) + batch.blocks.len() > self.blocks.len() {
+            bail!("capture batch extends past total_blocks");
+        }
+        if let Some(bind_sequence) = self.bind_sequence {
+            for block in &batch.blocks {
+                if block.bind_seq != bind_sequence {
+                    bail!(
+                        "capture batch bind sequence mismatch: expected {bind_sequence}, received {}",
+                        block.bind_seq
+                    );
+                }
+            }
+        }
+        self.trigger_tick = batch.trigger_tick;
+        let mut progressed = false;
+        for (offset, block) in batch.blocks.into_iter().enumerate() {
+            let index = usize::from(batch.first_block_index) + offset;
+            if self.blocks[index].is_none() {
+                self.blocks[index] = Some(block);
+                self.received += 1;
+                progressed = true;
+            }
+        }
+        if progressed || batch.remaining_hint == 0 {
+            self.last_progress = Instant::now();
+        }
+        Ok(progressed)
+    }
+
+    fn is_complete(&self) -> bool {
+        self.received == self.blocks.len()
+    }
+
+    fn first_missing_range(&self) -> Option<(u16, u8)> {
+        let start = self.blocks.iter().position(Option::is_none)?;
+        let mut count = 0_usize;
+        for block in &self.blocks[start..] {
+            if block.is_some() || count == usize::from(CAPTURE_REPLAY_MAX_BLOCKS) {
+                break;
+            }
+            count += 1;
+        }
+        Some((start as u16, count as u8))
+    }
+
+    fn finish(mut self) -> Vec<ScopeBlock> {
+        self.blocks
+            .drain(..)
+            .map(|block| block.expect("capture completion bitmap is full"))
+            .collect()
+    }
 }
 
 impl Session {
@@ -75,12 +171,14 @@ impl Session {
             scope_active: false,
             expected_block_sequence: None,
             expected_push_sequence: None,
-            capture_trigger_tick: None,
+            active_bind_sequence: None,
+            capture: None,
+            completed_capture_id: None,
             pending_build_hash: None,
         };
         let hello = session
             .request(codec::message::HELLO, &codec::hello_request(), events)
-            .context("firmware/Scope2000 wire version mismatch; reflash v8 firmware or use a v7 Scope2000 build")?;
+            .context("firmware/Scope2000 wire version mismatch; reflash v9 firmware or use a matching Scope2000 build")?;
         let info = codec::parse_hello(&hello.payload)?;
         validate_device_info(&info)?;
         session.info = info;
@@ -303,6 +401,7 @@ impl Session {
                 )?;
                 let ack = require_ack(&response, codec::message::DAQ_BIND)?;
                 self.expected_block_sequence = None;
+                self.active_bind_sequence = Some(ack.data as u16);
                 send_event(
                     events,
                     SourceEvent::ChannelsBound {
@@ -319,6 +418,10 @@ impl Session {
                 require_ack(&response, codec::message::DAQ_CONTROL)?;
                 self.expected_block_sequence = None;
                 self.scope_active = config.mode != ScopeMode::Off;
+                if config.mode != ScopeMode::CaptureArmed {
+                    self.capture = None;
+                    self.completed_capture_id = None;
+                }
                 send_event(events, SourceEvent::ScopeConfigured { mode: config.mode });
             }
         }
@@ -365,21 +468,21 @@ impl Session {
                 let batch = codec::parse_block_batch(&frame.payload)?;
                 self.handle_block_batch(batch, events)
             }
-            codec::message::DRAIN_START => {
-                let frozen_count = codec::parse_drain_start(&frame.payload)?;
-                self.capture_trigger_tick = None;
-                self.expected_block_sequence = None;
-                send_event(events, SourceEvent::CaptureDrainStarted { frozen_count });
-                Ok(())
-            }
-            codec::message::DRAIN_END => {
-                if !frame.payload.is_empty() {
-                    bail!("DRAIN_END payload is not empty");
+            codec::message::CAPTURE_BATCH_PUSH => {
+                if let Some(expected) = self.expected_push_sequence
+                    && frame.sequence != expected
+                {
+                    send_event(
+                        events,
+                        SourceEvent::PushFrameGap {
+                            expected,
+                            received: frame.sequence,
+                        },
+                    );
                 }
-                let trigger_tick = self.capture_trigger_tick.take();
-                self.expected_block_sequence = None;
-                send_event(events, SourceEvent::CaptureDrainEnded { trigger_tick });
-                Ok(())
+                self.expected_push_sequence = Some(frame.sequence.wrapping_add(1));
+                let batch = codec::parse_capture_batch(&frame.payload)?;
+                self.handle_capture_batch(batch, events)
             }
             _ => {
                 send_event(
@@ -404,10 +507,36 @@ impl Session {
             self.scope_active = false;
             self.expected_block_sequence = None;
             self.expected_push_sequence = None;
+            self.capture = None;
+            self.completed_capture_id = None;
             self.pending_build_hash = Some(status.build_hash);
         }
+        self.update_capture_from_status(&status);
         send_event(events, SourceEvent::Status(status));
         Ok(())
+    }
+
+    fn update_capture_from_status(&mut self, status: &DeviceStatus) {
+        if status.scope_mode != ScopeMode::CaptureFrozen || status.scope_frozen_count == 0 {
+            return;
+        }
+        if self.completed_capture_id == Some(status.scope_state_seq) {
+            return;
+        }
+        let bind_sequence = Some(status.scope_bind_seq);
+        match &mut self.capture {
+            Some(capture) if capture.capture_id == status.scope_state_seq => {
+                capture.update_metadata(status.scope_trigger_tick, bind_sequence);
+            }
+            _ => {
+                self.capture = Some(CaptureAssembly::new(
+                    status.scope_state_seq,
+                    status.scope_frozen_count,
+                    status.scope_trigger_tick,
+                    bind_sequence,
+                ));
+            }
+        }
     }
 
     fn handle_block_batch(
@@ -415,29 +544,19 @@ impl Session {
         batch: codec::BlockBatch,
         events: &mpsc::Sender<SourceEvent>,
     ) -> Result<()> {
-        if batch.mode == ScopeMode::Off {
-            self.scope_active = false;
-        }
-        if matches!(batch.mode, ScopeMode::Stream | ScopeMode::CaptureFrozen) {
-            for block in &batch.blocks {
-                if let Some(expected) = self.expected_block_sequence
-                    && block.block_seq != expected
-                {
-                    send_event(
-                        events,
-                        SourceEvent::StreamGap {
-                            expected,
-                            received: block.block_seq,
-                        },
-                    );
-                }
-                self.expected_block_sequence = Some(block.block_seq.wrapping_add(1));
+        for block in &batch.blocks {
+            if let Some(expected) = self.expected_block_sequence
+                && block.block_seq != expected
+            {
+                send_event(
+                    events,
+                    SourceEvent::StreamGap {
+                        expected,
+                        received: block.block_seq,
+                    },
+                );
             }
-        } else {
-            self.expected_block_sequence = None;
-        }
-        if batch.mode == ScopeMode::CaptureFrozen {
-            self.capture_trigger_tick = batch.trigger_tick.or(self.capture_trigger_tick);
+            self.expected_block_sequence = Some(block.block_seq.wrapping_add(1));
         }
         if batch.overrun_count != 0 {
             send_event(
@@ -449,11 +568,91 @@ impl Session {
             send_event(
                 events,
                 SourceEvent::Blocks {
-                    mode: batch.mode,
+                    mode: ScopeMode::Stream,
                     blocks: batch.blocks,
                 },
             );
         }
+        Ok(())
+    }
+
+    fn handle_capture_batch(
+        &mut self,
+        batch: codec::CaptureBatch,
+        events: &mpsc::Sender<SourceEvent>,
+    ) -> Result<()> {
+        if batch.total_blocks == 0 {
+            return Ok(());
+        }
+        if self.completed_capture_id == Some(batch.capture_id) {
+            return Ok(());
+        }
+        let bind_sequence = self
+            .active_bind_sequence
+            .or_else(|| batch.blocks.first().map(|block| block.bind_seq));
+        let capture_id = batch.capture_id;
+        match &mut self.capture {
+            Some(capture) if capture.capture_id == capture_id => {
+                capture.update_metadata(batch.trigger_tick, bind_sequence);
+            }
+            _ => {
+                self.capture = Some(CaptureAssembly::new(
+                    capture_id,
+                    batch.total_blocks,
+                    batch.trigger_tick,
+                    bind_sequence,
+                ));
+            }
+        }
+        let capture = self.capture.as_mut().expect("capture assembly exists");
+        let is_replay = batch.is_replay;
+        let progressed = capture.insert_batch(batch)?;
+        if is_replay && progressed {
+            send_event(
+                events,
+                SourceEvent::Log("capture replay filled missing block(s)".to_owned()),
+            );
+        }
+        if capture.is_complete() {
+            let capture = self.capture.take().expect("capture complete");
+            self.completed_capture_id = Some(capture.capture_id);
+            send_event(
+                events,
+                SourceEvent::CaptureFrame {
+                    capture_id: capture.capture_id,
+                    trigger_tick: capture.trigger_tick,
+                    blocks: capture.finish(),
+                },
+            );
+        }
+        Ok(())
+    }
+
+    fn service_capture_replay(&mut self, events: &mpsc::Sender<SourceEvent>) -> Result<()> {
+        let request = self.capture.as_mut().and_then(|capture| {
+            if capture.is_complete() || capture.last_progress.elapsed() < CAPTURE_REPLAY_IDLE_DELAY
+            {
+                return None;
+            }
+            let (first, max_blocks) = capture.first_missing_range()?;
+            capture.last_progress = Instant::now();
+            Some((capture.capture_id, first, max_blocks))
+        });
+        let Some((capture_id, first_block_index, max_blocks)) = request else {
+            return Ok(());
+        };
+        let response = self.request(
+            codec::message::CAPTURE_REPLAY,
+            &codec::capture_replay_request(capture_id, first_block_index, max_blocks),
+            events,
+        )?;
+        require_ack(&response, codec::message::CAPTURE_REPLAY)?;
+        send_event(
+            events,
+            SourceEvent::Log(format!(
+                "requested capture replay: id={capture_id} first={first_block_index} max={max_blocks}"
+            )),
+        );
         Ok(())
     }
 
@@ -527,6 +726,7 @@ fn worker(commands: mpsc::Receiver<SourceCommand>, events: mpsc::Sender<SourceEv
                 let result = connected
                     .service_rx(&events)
                     .and_then(|_| connected.refresh_device_if_needed(&events))
+                    .and_then(|_| connected.service_capture_replay(&events))
                     .map(|_| WorkerStep::Continue);
                 thread::sleep(Duration::from_millis(1));
                 result
@@ -571,7 +771,7 @@ fn require_ack(frame: &Frame, request_type: u8) -> Result<codec::Ack> {
 fn validate_device_info(info: &DeviceInfo) -> Result<()> {
     if info.protocol_version != u16::from(codec::WIRE_VERSION) {
         bail!(
-            "firmware/Scope2000 wire version mismatch; reflash v8 firmware or use a v7 Scope2000 build (device={}, host={})",
+            "firmware/Scope2000 wire version mismatch; reflash v9 firmware or use a matching Scope2000 build (device={}, host={})",
             info.protocol_version,
             codec::WIRE_VERSION
         );
@@ -715,7 +915,9 @@ mod tests {
             scope_active: false,
             expected_block_sequence: None,
             expected_push_sequence: None,
-            capture_trigger_tick: None,
+            active_bind_sequence: None,
+            capture: None,
+            completed_capture_id: None,
             pending_build_hash: None,
         }
     }
@@ -765,7 +967,7 @@ mod tests {
     }
 
     fn status_payload(build_hash: u32) -> Vec<u8> {
-        let mut payload = vec![0_u8; 84];
+        let mut payload = vec![0_u8; 96];
         payload[..2].copy_from_slice(&1_u16.to_le_bytes());
         payload[26..30].copy_from_slice(&build_hash.to_le_bytes());
         payload
@@ -775,6 +977,116 @@ mod tests {
         let mut payload = vec![0_u8, echoed_type, 0, 0];
         payload.extend_from_slice(&data.to_le_bytes());
         payload
+    }
+
+    fn scope_block(block_seq: u16, bind_seq: u16) -> ScopeBlock {
+        ScopeBlock {
+            start_tick: u32::from(block_seq) * 10,
+            block_seq,
+            flags: 0,
+            sample_count: 1,
+            channel_count: 1,
+            bind_seq,
+            stride_octets: 4,
+            samples: (block_seq as f32).to_le_bytes().to_vec(),
+        }
+    }
+
+    fn capture_batch(
+        capture_id: u16,
+        total_blocks: u16,
+        first_block_index: u16,
+        blocks: Vec<ScopeBlock>,
+        is_replay: bool,
+        remaining_hint: u16,
+    ) -> codec::CaptureBatch {
+        codec::CaptureBatch {
+            capture_id,
+            total_blocks,
+            first_block_index,
+            is_replay,
+            remaining_hint,
+            trigger_tick: 1234,
+            blocks,
+        }
+    }
+
+    fn frozen_status(capture_id: u16, total_blocks: u16) -> DeviceStatus {
+        DeviceStatus {
+            system_state: crate::source::SystemState::Running,
+            fault_code: 0,
+            status_flags: 0,
+            tick: 0,
+            cpu1_heartbeat: 0,
+            cpu2_heartbeat: 0,
+            applied_seq: 0,
+            calibration_result: 0,
+            calibration_fail_index: 0,
+            build_hash: 0,
+            scope_mode: ScopeMode::CaptureFrozen,
+            scope_flags: 0,
+            command_ack_seq: None,
+            command_result: None,
+            performance: None,
+            scope_state_seq: capture_id,
+            scope_frozen_count: total_blocks,
+            scope_trigger_tick: 1234,
+            scope_bind_seq: 3,
+        }
+    }
+
+    #[test]
+    fn capture_assembly_completes_out_of_order_and_ignores_duplicates() {
+        let mut capture = CaptureAssembly::new(22, 3, 1234, Some(3));
+
+        assert!(
+            capture
+                .insert_batch(capture_batch(22, 3, 2, vec![scope_block(12, 3)], false, 0))
+                .expect("insert last")
+        );
+        assert!(
+            capture
+                .insert_batch(capture_batch(22, 3, 0, vec![scope_block(10, 3)], false, 1))
+                .expect("insert first")
+        );
+        assert_eq!(capture.first_missing_range(), Some((1, 1)));
+        assert!(
+            !capture
+                .insert_batch(capture_batch(22, 3, 2, vec![scope_block(12, 3)], true, 0))
+                .expect("duplicate replay")
+        );
+        assert!(
+            capture
+                .insert_batch(capture_batch(22, 3, 1, vec![scope_block(11, 3)], true, 0))
+                .expect("insert replay")
+        );
+
+        assert!(capture.is_complete());
+        let blocks = capture.finish();
+        assert_eq!(
+            blocks
+                .iter()
+                .map(|block| block.block_seq)
+                .collect::<Vec<_>>(),
+            vec![10, 11, 12]
+        );
+    }
+
+    #[test]
+    fn missing_first_capture_batch_recovers_from_status_metadata() {
+        let mut session = session(Vec::new(), device_info(0, 0, 0));
+
+        session.update_capture_from_status(&frozen_status(22, 4));
+
+        let capture = session.capture.as_ref().expect("capture from status");
+        assert_eq!(capture.capture_id, 22);
+        assert_eq!(capture.total_blocks, 4);
+        assert_eq!(capture.first_missing_range(), Some((0, 4)));
+
+        session.capture = None;
+        session.completed_capture_id = Some(22);
+        session.update_capture_from_status(&frozen_status(22, 4));
+        assert!(session.capture.is_none());
     }
 
     #[test]

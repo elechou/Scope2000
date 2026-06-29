@@ -163,6 +163,7 @@ pub const CAP_PRE_TRIGGER: u32 = 1 << 4;
 pub const CAP_SYSTEM_CMD: u32 = 1 << 5;
 pub const CAP_NATIVE_BLOCK: u32 = 1 << 6;
 pub const CAL_READ_MAX: usize = 32;
+pub const NO_CAPTURE_ACK: u16 = 0xFFFF;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ScopeMode {
@@ -310,6 +311,10 @@ pub struct DeviceStatus {
     pub command_ack_seq: Option<u32>,
     pub command_result: Option<u16>,
     pub performance: Option<PerformanceSample>,
+    pub scope_state_seq: u16,
+    pub scope_frozen_count: u16,
+    pub scope_trigger_tick: u32,
+    pub scope_bind_seq: u16,
 }
 
 #[derive(Debug, Clone)]
@@ -340,6 +345,8 @@ pub struct ScopeConfig {
     pub pre_trigger_percent: u8,
     pub prescaler: u16,
     pub record_points: u16,
+    pub ack_capture_id: u16,
+    pub flags: u16,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -448,11 +455,10 @@ pub enum SourceEvent {
     ScopeConfigured {
         mode: ScopeMode,
     },
-    CaptureDrainStarted {
-        frozen_count: u16,
-    },
-    CaptureDrainEnded {
-        trigger_tick: Option<u32>,
+    CaptureFrame {
+        capture_id: u16,
+        trigger_tick: u32,
+        blocks: Vec<ScopeBlock>,
     },
     Blocks {
         mode: ScopeMode,

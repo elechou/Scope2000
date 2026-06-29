@@ -5,7 +5,7 @@ use crate::source::{
     VarRef, VarType,
 };
 
-pub const WIRE_VERSION: u8 = 8;
+pub const WIRE_VERSION: u8 = 9;
 pub const VERSION_MAGIC: u8 = 0x50 | WIRE_VERSION;
 pub const MAX_PAYLOAD: usize = 1024;
 
@@ -16,12 +16,12 @@ pub mod message {
     pub const CAL_COMMIT: u8 = 0x11;
     pub const CAL_READ: u8 = 0x12;
     pub const DAQ_CONTROL: u8 = 0x20;
+    pub const CAPTURE_REPLAY: u8 = 0x21;
     pub const DAQ_BIND: u8 = 0x22;
     pub const SYSTEM_COMMAND: u8 = 0x30;
     pub const STATUS_PUSH: u8 = 0x41;
     pub const SCOPE_BLOCK_PUSH: u8 = 0x42;
-    pub const DRAIN_START: u8 = 0x43;
-    pub const DRAIN_END: u8 = 0x44;
+    pub const CAPTURE_BATCH_PUSH: u8 = 0x45;
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -239,7 +239,7 @@ pub fn parse_hello(payload: &[u8]) -> Result<DeviceInfo, CodecError> {
 }
 
 pub fn parse_status(payload: &[u8]) -> Result<DeviceStatus, CodecError> {
-    if payload.len() < 84 {
+    if payload.len() < 96 {
         return Err(CodecError::MalformedPayload(
             "STATUS is shorter than current layout",
         ));
@@ -265,6 +265,10 @@ pub fn parse_status(payload: &[u8]) -> Result<DeviceStatus, CodecError> {
         command_ack_seq: Some(read_u32(payload, 34)?),
         command_result: Some(read_u16(payload, 38)?),
         performance,
+        scope_state_seq: read_u16(payload, 84)?,
+        scope_frozen_count: read_u16(payload, 86)?,
+        scope_trigger_tick: read_u32(payload, 88)?,
+        scope_bind_seq: read_u16(payload, 92)?,
     })
 }
 
@@ -349,20 +353,26 @@ pub fn parse_ack(payload: &[u8]) -> Result<Ack, CodecError> {
 
 #[derive(Debug)]
 pub struct BlockBatch {
-    pub mode: ScopeMode,
     pub overrun_count: u16,
-    pub trigger_tick: Option<u32>,
     pub blocks: Vec<ScopeBlock>,
 }
 
-pub fn parse_block_batch(payload: &[u8]) -> Result<BlockBatch, CodecError> {
-    if payload.len() < 12 {
-        return Err(CodecError::MalformedPayload("SCOPE_BLOCK_PUSH header"));
-    }
-    let count = usize::from(payload[0]);
-    let mode = ScopeMode::from_wire(payload[1]);
-    let trigger_tick = read_u32(payload, 8)?;
-    let mut offset = 12;
+#[derive(Debug)]
+pub struct CaptureBatch {
+    pub capture_id: u16,
+    pub total_blocks: u16,
+    pub first_block_index: u16,
+    pub is_replay: bool,
+    pub remaining_hint: u16,
+    pub trigger_tick: u32,
+    pub blocks: Vec<ScopeBlock>,
+}
+
+fn parse_scope_blocks(
+    payload: &[u8],
+    count: usize,
+    mut offset: usize,
+) -> Result<Vec<ScopeBlock>, CodecError> {
     let mut blocks = Vec::with_capacity(count);
     for _ in 0..count {
         if payload.len() < offset + 16 {
@@ -391,19 +401,44 @@ pub fn parse_block_batch(payload: &[u8]) -> Result<BlockBatch, CodecError> {
     if offset != payload.len() {
         return Err(CodecError::MalformedPayload("trailing block data"));
     }
+    Ok(blocks)
+}
+
+pub fn parse_block_batch(payload: &[u8]) -> Result<BlockBatch, CodecError> {
+    if payload.len() < 8 {
+        return Err(CodecError::MalformedPayload("SCOPE_BLOCK_PUSH header"));
+    }
+    let count = usize::from(payload[0]);
+    if payload[1] != 0 || read_u16(payload, 6)? != 0 {
+        return Err(CodecError::MalformedPayload("SCOPE_BLOCK_PUSH reserved"));
+    }
+    let _remaining_hint = read_u16(payload, 4)?;
+    let blocks = parse_scope_blocks(payload, count, 8)?;
     Ok(BlockBatch {
-        mode,
-        overrun_count: read_u16(payload, 4)?,
-        trigger_tick: (mode == ScopeMode::CaptureFrozen).then_some(trigger_tick),
+        overrun_count: read_u16(payload, 2)?,
         blocks,
     })
 }
 
-pub fn parse_drain_start(payload: &[u8]) -> Result<u16, CodecError> {
-    if payload.len() != 4 {
-        return Err(CodecError::MalformedPayload("DRAIN_START"));
+pub fn parse_capture_batch(payload: &[u8]) -> Result<CaptureBatch, CodecError> {
+    if payload.len() < 16 {
+        return Err(CodecError::MalformedPayload("CAPTURE_BATCH_PUSH header"));
     }
-    Ok(read_u16(payload, 0)?)
+    let count = usize::from(payload[6]);
+    let flags = payload[7];
+    if flags & !0x01 != 0 || read_u16(payload, 10)? != 0 {
+        return Err(CodecError::MalformedPayload("CAPTURE_BATCH_PUSH reserved"));
+    }
+    let blocks = parse_scope_blocks(payload, count, 16)?;
+    Ok(CaptureBatch {
+        capture_id: read_u16(payload, 0)?,
+        total_blocks: read_u16(payload, 2)?,
+        first_block_index: read_u16(payload, 4)?,
+        is_replay: flags & 0x01 != 0,
+        remaining_hint: read_u16(payload, 8)?,
+        trigger_tick: read_u32(payload, 12)?,
+        blocks,
+    })
 }
 
 pub fn hello_request() -> Vec<u8> {
@@ -456,7 +491,7 @@ pub fn daq_bind_request(channels: &[VarRef]) -> Vec<u8> {
 }
 
 pub fn daq_control_request(config: &crate::source::ScopeConfig) -> Vec<u8> {
-    let mut payload = Vec::with_capacity(20);
+    let mut payload = Vec::with_capacity(24);
     put_u16(&mut payload, u16::from(config.mode.wire_value()));
     put_u16(&mut payload, config.trigger_slot);
     put_u32(&mut payload, config.trigger_level.to_bits());
@@ -471,6 +506,17 @@ pub fn daq_control_request(config: &crate::source::ScopeConfig) -> Vec<u8> {
     put_u16(&mut payload, u16::from(config.pre_trigger_percent));
     put_u16(&mut payload, config.prescaler);
     put_u16(&mut payload, config.record_points);
+    put_u16(&mut payload, config.ack_capture_id);
+    put_u16(&mut payload, config.flags);
+    payload
+}
+
+pub fn capture_replay_request(capture_id: u16, first_block_index: u16, max_blocks: u8) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(8);
+    put_u16(&mut payload, capture_id);
+    put_u16(&mut payload, first_block_index);
+    payload.push(max_blocks);
+    payload.extend_from_slice(&[0, 0, 0]);
     payload
 }
 
@@ -597,7 +643,7 @@ mod tests {
                 );
             }
         }
-        assert_eq!(count, 28);
+        assert_eq!(count, 27);
     }
 
     #[test]
@@ -626,26 +672,52 @@ mod tests {
     }
 
     #[test]
-    fn block_batch_parses_capture_trigger_tick() {
-        let mut payload = vec![1, ScopeMode::CaptureFrozen.wire_value(), 0, 0];
-        payload.extend_from_slice(&0_u16.to_le_bytes());
-        payload.extend_from_slice(&0_u16.to_le_bytes());
-        payload.extend_from_slice(&1234_u32.to_le_bytes());
-        payload.extend_from_slice(&1200_u32.to_le_bytes());
-        payload.extend_from_slice(&9_u16.to_le_bytes());
-        payload.extend_from_slice(&0_u16.to_le_bytes());
-        payload.extend_from_slice(&1_u16.to_le_bytes());
-        payload.extend_from_slice(&1_u16.to_le_bytes());
-        payload.extend_from_slice(&2_u16.to_le_bytes());
-        payload.extend_from_slice(&4_u16.to_le_bytes());
-        payload.extend_from_slice(&0.5_f32.to_le_bytes());
+    fn stream_and_capture_batches_parse_v9_headers() {
+        let mut stream_payload = vec![1, 0];
+        stream_payload.extend_from_slice(&7_u16.to_le_bytes());
+        stream_payload.extend_from_slice(&5_u16.to_le_bytes());
+        stream_payload.extend_from_slice(&0_u16.to_le_bytes());
+        stream_payload.extend_from_slice(&1200_u32.to_le_bytes());
+        stream_payload.extend_from_slice(&9_u16.to_le_bytes());
+        stream_payload.extend_from_slice(&0_u16.to_le_bytes());
+        stream_payload.extend_from_slice(&1_u16.to_le_bytes());
+        stream_payload.extend_from_slice(&1_u16.to_le_bytes());
+        stream_payload.extend_from_slice(&2_u16.to_le_bytes());
+        stream_payload.extend_from_slice(&4_u16.to_le_bytes());
+        stream_payload.extend_from_slice(&0.5_f32.to_le_bytes());
 
-        let batch = parse_block_batch(&payload).expect("parse block batch");
+        let stream = parse_block_batch(&stream_payload).expect("parse stream batch");
 
-        assert_eq!(batch.mode, ScopeMode::CaptureFrozen);
-        assert_eq!(batch.trigger_tick, Some(1234));
-        assert_eq!(batch.blocks.len(), 1);
-        assert_eq!(batch.blocks[0].start_tick, 1200);
+        assert_eq!(stream.overrun_count, 7);
+        assert_eq!(stream.blocks.len(), 1);
+        assert_eq!(stream.blocks[0].start_tick, 1200);
+
+        let mut capture_payload = Vec::new();
+        capture_payload.extend_from_slice(&22_u16.to_le_bytes());
+        capture_payload.extend_from_slice(&4_u16.to_le_bytes());
+        capture_payload.extend_from_slice(&2_u16.to_le_bytes());
+        capture_payload.extend_from_slice(&[1, 1]);
+        capture_payload.extend_from_slice(&0_u16.to_le_bytes());
+        capture_payload.extend_from_slice(&0_u16.to_le_bytes());
+        capture_payload.extend_from_slice(&1234_u32.to_le_bytes());
+        capture_payload.extend_from_slice(&1200_u32.to_le_bytes());
+        capture_payload.extend_from_slice(&9_u16.to_le_bytes());
+        capture_payload.extend_from_slice(&0_u16.to_le_bytes());
+        capture_payload.extend_from_slice(&1_u16.to_le_bytes());
+        capture_payload.extend_from_slice(&1_u16.to_le_bytes());
+        capture_payload.extend_from_slice(&2_u16.to_le_bytes());
+        capture_payload.extend_from_slice(&4_u16.to_le_bytes());
+        capture_payload.extend_from_slice(&0.5_f32.to_le_bytes());
+
+        let capture = parse_capture_batch(&capture_payload).expect("parse capture batch");
+
+        assert_eq!(capture.capture_id, 22);
+        assert_eq!(capture.total_blocks, 4);
+        assert_eq!(capture.first_block_index, 2);
+        assert!(capture.is_replay);
+        assert_eq!(capture.trigger_tick, 1234);
+        assert_eq!(capture.blocks.len(), 1);
+        assert_eq!(capture.blocks[0].start_tick, 1200);
     }
 
     #[test]
@@ -664,6 +736,10 @@ mod tests {
         assert_eq!(performance.scope_at_peak, 900);
         assert_eq!(performance.latency_at_peak, 40);
         assert_eq!(performance.runtime_at_peak(), 4_760);
+        assert_eq!(status.scope_state_seq, 22);
+        assert_eq!(status.scope_frozen_count, 4);
+        assert_eq!(status.scope_trigger_tick, 1234);
+        assert_eq!(status.scope_bind_seq, 3);
     }
 
     #[test]
@@ -745,13 +821,21 @@ mod tests {
             pre_trigger_percent: 30,
             prescaler: 1,
             record_points: 1_000,
+            ack_capture_id: crate::source::NO_CAPTURE_ACK,
+            flags: 0,
         });
 
-        assert_eq!(payload.len(), 20);
+        assert_eq!(payload.len(), 24);
         assert_eq!(
             read_u32(&payload, 8).expect("hysteresis bits"),
             0.05_f32.to_bits()
         );
         assert_eq!(read_u16(&payload, 18).expect("record points"), 1_000);
+        assert_eq!(read_u16(&payload, 20).expect("ack capture id"), 0xFFFF);
+
+        assert_eq!(
+            capture_replay_request(22, 2, 4),
+            vec![22, 0, 2, 0, 4, 0, 0, 0]
+        );
     }
 }

@@ -172,27 +172,23 @@ impl ScopeApp {
                         self.start_acquisition(restart_mode);
                     }
                 }
-                SourceEvent::CaptureDrainStarted { frozen_count } => {
-                    self.wave.mode = ScopeMode::CaptureFrozen;
-                    self.wave.capture_frame_blocks.clear();
-                    self.log.push(
-                        LogLevel::Info,
-                        format!("Capture drain started: {frozen_count} block(s)"),
-                    );
-                }
-                SourceEvent::CaptureDrainEnded { trigger_tick } => {
+                SourceEvent::CaptureFrame {
+                    capture_id,
+                    trigger_tick,
+                    blocks,
+                } => {
                     let tick_hz = self.hardware.info.as_ref().map_or(1, |info| info.tick_hz);
-                    let mut frame_blocks = std::mem::take(&mut self.wave.capture_frame_blocks);
+                    let mut frame_blocks = blocks;
                     redraw_capture_frame(
                         &mut self.plot_data,
                         &mut frame_blocks,
                         &self.wave.binding,
                         tick_hz,
                         &self.wave.settings_snapshot,
-                        trigger_tick,
+                        Some(trigger_tick),
                         &mut self.log,
                     );
-                    self.rearm_capture();
+                    self.rearm_capture(capture_id);
                 }
                 SourceEvent::Blocks { mode, blocks } => {
                     let tick_hz = self.hardware.info.as_ref().map_or(1, |info| info.tick_hz);
@@ -220,22 +216,8 @@ impl ScopeApp {
                                 }
                             }
                         }
-                        ScopeMode::CaptureFrozen => {
-                            for block in blocks {
-                                if !block_matches_binding(self.wave.bind_sequence, block.bind_seq) {
-                                    self.log.push(
-                                        LogLevel::Warn,
-                                        format!(
-                                            "Discarded block {} with stale bind sequence {}",
-                                            block.block_seq, block.bind_seq
-                                        ),
-                                    );
-                                    continue;
-                                }
-                                self.wave.capture_frame_blocks.push(block);
-                            }
-                        }
                         ScopeMode::CaptureArmed | ScopeMode::CapturePost => {}
+                        ScopeMode::CaptureFrozen => {}
                         ScopeMode::Off | ScopeMode::Unknown(_) => {}
                     }
                 }
@@ -623,7 +605,6 @@ mod tests {
             binding: vec![descriptor.clone()],
             pending_binding: vec![descriptor.clone()],
             bind_sequence: Some(3),
-            capture_frame_blocks: vec![f32_block(1, 1, 3, 1.0)],
             ..WaveState::default()
         };
         let mut plot_data = PlotData::new(100);
@@ -639,7 +620,6 @@ mod tests {
         assert!(wave.binding.is_empty());
         assert!(wave.pending_binding.is_empty());
         assert_eq!(wave.bind_sequence, None);
-        assert!(wave.capture_frame_blocks.is_empty());
         assert!(plot_data.series.is_empty());
         assert_eq!(plot_data.trigger_time, None);
         assert!(inspector.descriptors.is_empty());

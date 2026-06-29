@@ -9,7 +9,7 @@ pub mod viewer_panel;
 
 use serde::{Deserialize, Serialize};
 
-use crate::source::{DeviceInfo, ScopeBlock, ScopeMode, TriggerEdge, VarDescriptor};
+use crate::source::{DeviceInfo, ScopeMode, TriggerEdge, VarDescriptor};
 
 pub const DEFAULT_TICK_HZ: u32 = 20_000;
 pub const MIN_PRESCALER: u16 = 1;
@@ -192,7 +192,6 @@ pub struct WaveState {
     pub settings: AcquisitionSettings,
     pub settings_snapshot: AcquisitionSettings,
     pub pane_vars_snapshot: Vec<String>,
-    pub capture_frame_blocks: Vec<ScopeBlock>,
     pub mode: ScopeMode,
 }
 
@@ -207,7 +206,6 @@ impl Default for WaveState {
             settings: AcquisitionSettings::default(),
             settings_snapshot: AcquisitionSettings::default(),
             pane_vars_snapshot: Vec::new(),
-            capture_frame_blocks: Vec::new(),
             mode: ScopeMode::Off,
         }
     }
@@ -220,7 +218,6 @@ impl WaveState {
         self.binding.clear();
         self.pending_binding.clear();
         self.bind_sequence = None;
-        self.capture_frame_blocks.clear();
         self.mode = ScopeMode::Off;
     }
 }

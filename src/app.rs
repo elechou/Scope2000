@@ -531,7 +531,6 @@ impl eframe::App for ScopeApp {
                 ) {
                     use crate::wave::panel::WaveAction;
                     match action {
-                        WaveAction::StartStream => self.start_acquisition(ScopeMode::Stream),
                         WaveAction::ArmCapture => {
                             self.start_acquisition(ScopeMode::CaptureArmed);
                         }

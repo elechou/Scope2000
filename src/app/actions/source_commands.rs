@@ -4,8 +4,8 @@ use crate::app::ScopeApp;
 use crate::console::LogLevel;
 use crate::source::{
     CAP_CAL, CAP_NATIVE_BLOCK, CAP_PRE_TRIGGER, CAP_SCOPE_CAPTURE, CAP_SCOPE_STREAM,
-    CAP_SYSTEM_CMD, CatalogCommand, ParamWrite, ScopeConfig, ScopeMode, SourceCommand,
-    SystemCommand, TriggerEdge, VarDescriptor,
+    CAP_SYSTEM_CMD, CatalogCommand, NO_CAPTURE_ACK, ParamWrite, ScopeConfig, ScopeMode,
+    SourceCommand, SystemCommand, TriggerEdge, VarDescriptor,
 };
 use crate::wave::{max_record_points_for_binding, pane::PaneKind, scope_channel_limit};
 
@@ -196,7 +196,6 @@ impl ScopeApp {
         }
 
         self.plot_data.clear();
-        self.wave.capture_frame_blocks.clear();
         self.wave.pending_binding = binding.clone();
         self.wave.settings_snapshot = settings_snapshot;
         self.wave.pane_vars_snapshot = pane_vars;
@@ -210,6 +209,8 @@ impl ScopeApp {
             pre_trigger_percent: 0,
             prescaler: self.wave.settings.prescaler,
             record_points: 0,
+            ack_capture_id: NO_CAPTURE_ACK,
+            flags: 0,
         }));
         self.send_catalog(CatalogCommand::BindChannels {
             channels: binding.iter().map(|descriptor| descriptor.var).collect(),
@@ -237,6 +238,8 @@ impl ScopeApp {
             pre_trigger_percent: 0,
             prescaler: self.wave.settings.prescaler,
             record_points: 0,
+            ack_capture_id: NO_CAPTURE_ACK,
+            flags: 0,
         }));
         self.wave.active = false;
         self.wave.restart_pending = None;
@@ -254,7 +257,7 @@ impl ScopeApp {
         self.wave.restart_pending = Some(mode);
     }
 
-    pub(in crate::app) fn rearm_capture(&mut self) {
+    pub(in crate::app) fn rearm_capture(&mut self, capture_id: u16) {
         if !self.project_policy().wave_start
             || !self.hardware.connected
             || !self.wave.active
@@ -263,11 +266,10 @@ impl ScopeApp {
         {
             return;
         }
-        self.wave.capture_frame_blocks.clear();
         self.wave.settings_snapshot = self.scope_effective_settings(&self.wave.binding);
-        self.send_catalog(CatalogCommand::ConfigureScope(
-            self.scope_config(ScopeMode::CaptureArmed, &self.wave.binding),
-        ));
+        let mut config = self.scope_config(ScopeMode::CaptureArmed, &self.wave.binding);
+        config.ack_capture_id = capture_id;
+        self.send_catalog(CatalogCommand::ConfigureScope(config));
         self.log
             .push(LogLevel::Debug, "Capture re-armed".to_owned());
     }
@@ -299,6 +301,8 @@ impl ScopeApp {
             } else {
                 0
             },
+            ack_capture_id: NO_CAPTURE_ACK,
+            flags: 0,
         }
     }
 

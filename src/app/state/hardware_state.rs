@@ -240,6 +240,10 @@ mod tests {
             command_ack_seq,
             command_result,
             performance: None,
+            scope_state_seq: 0,
+            scope_frozen_count: 0,
+            scope_trigger_tick: 0,
+            scope_bind_seq: 0,
         }
     }
 

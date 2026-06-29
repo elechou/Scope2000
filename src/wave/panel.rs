@@ -22,7 +22,6 @@ use super::{
 
 /// Actions produced by the wave panel that the caller must handle.
 pub enum WaveAction {
-    StartStream,
     ArmCapture,
     Stop,
     Restart(ScopeMode),
@@ -73,16 +72,7 @@ pub fn show_wave_section(
     ui.add_space(4.0);
 
     ui.horizontal(|ui| {
-        let w = (ui.available_width() - ui.spacing().item_spacing.x * 2.0) / 3.0;
-        if theme::action_button_w(
-            ui,
-            "Stream",
-            theme::GREEN,
-            connected && can_start && !wave.active,
-            w,
-        ) {
-            action = Some(WaveAction::StartStream);
-        }
+        let w = (ui.available_width() - ui.spacing().item_spacing.x) / 2.0;
         if theme::action_button_w(
             ui,
             "Capture",
