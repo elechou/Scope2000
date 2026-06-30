@@ -211,13 +211,14 @@ impl Session {
                 if count == 0 {
                     continue;
                 }
+                let mut response = None;
                 for result in self.decoder.push(&read_buffer[..count]) {
                     match result {
                         Ok(frame)
                             if frame.sequence == sequence
                                 && frame.message_type == expected_type =>
                         {
-                            return Ok(frame);
+                            response = Some(frame);
                         }
                         Ok(frame) => self.handle_frame(frame, events)?,
                         Err(error) => send_event(
@@ -225,6 +226,9 @@ impl Session {
                             SourceEvent::Log(format!("discarded malformed frame: {error}")),
                         ),
                     }
+                }
+                if let Some(frame) = response {
+                    return Ok(frame);
                 }
             }
             if attempt < MAX_RETRIES {
@@ -1070,6 +1074,111 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![10, 11, 12]
         );
+    }
+
+    #[test]
+    fn capture_assembly_accepts_wrapped_block_sequence() {
+        let mut capture = CaptureAssembly::new(22, 4, 1234, Some(3));
+
+        assert!(
+            capture
+                .insert_batch(capture_batch(
+                    22,
+                    4,
+                    0,
+                    vec![
+                        scope_block(0xFFFE, 3),
+                        scope_block(0xFFFF, 3),
+                        scope_block(0, 3),
+                        scope_block(1, 3),
+                    ],
+                    false,
+                    0,
+                ))
+                .expect("insert wrapped block sequence")
+        );
+
+        assert!(capture.is_complete());
+        let blocks = capture.finish();
+        assert_eq!(
+            blocks
+                .iter()
+                .map(|block| block.block_seq)
+                .collect::<Vec<_>>(),
+            vec![0xFFFE, 0xFFFF, 0, 1]
+        );
+    }
+
+    fn capture_push_payload(
+        capture_id: u16,
+        total_blocks: u16,
+        first_block_index: u16,
+        block: &ScopeBlock,
+        is_replay: bool,
+        remaining_hint: u16,
+    ) -> Vec<u8> {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&capture_id.to_le_bytes());
+        payload.extend_from_slice(&total_blocks.to_le_bytes());
+        payload.extend_from_slice(&first_block_index.to_le_bytes());
+        payload.push(1);
+        payload.push(if is_replay { 1 } else { 0 });
+        payload.extend_from_slice(&remaining_hint.to_le_bytes());
+        payload.extend_from_slice(&0_u16.to_le_bytes());
+        payload.extend_from_slice(&1234_u32.to_le_bytes());
+        payload.extend_from_slice(&block.start_tick.to_le_bytes());
+        payload.extend_from_slice(&block.block_seq.to_le_bytes());
+        payload.extend_from_slice(&block.flags.to_le_bytes());
+        payload.extend_from_slice(&block.sample_count.to_le_bytes());
+        payload.extend_from_slice(&block.channel_count.to_le_bytes());
+        payload.extend_from_slice(&block.bind_seq.to_le_bytes());
+        payload.extend_from_slice(&block.stride_octets.to_le_bytes());
+        payload.extend_from_slice(&block.samples);
+        payload
+    }
+
+    #[test]
+    fn request_drains_push_frames_after_matching_response() {
+        let ack = codec::encode_frame(
+            codec::message::CAPTURE_REPLAY | 0x80,
+            1,
+            &ack_payload(codec::message::CAPTURE_REPLAY, 22),
+        );
+        let push = codec::encode_frame(
+            codec::message::CAPTURE_BATCH_PUSH,
+            7,
+            &capture_push_payload(22, 1, 0, &scope_block(99, 3), true, 0),
+        );
+        let mut read = ack;
+        read.extend_from_slice(&push);
+        let (event_tx, event_rx) = mpsc::channel();
+        let mut session = session(vec![read], device_info(0, 0, 0));
+        session.capture = Some(CaptureAssembly::new(22, 1, 1234, Some(3)));
+
+        let response = session
+            .request(
+                codec::message::CAPTURE_REPLAY,
+                &codec::capture_replay_request(22, 0, 1),
+                &event_tx,
+            )
+            .expect("replay ACK");
+        let ack = require_ack(&response, codec::message::CAPTURE_REPLAY).expect("ACK payload");
+
+        assert_eq!(ack.data, 22);
+        assert!(session.capture.is_none());
+        let mut saw_capture = false;
+        while let Ok(event) = event_rx.try_recv() {
+            if let SourceEvent::CaptureFrame {
+                capture_id, blocks, ..
+            } = event
+            {
+                assert_eq!(capture_id, 22);
+                assert_eq!(blocks.len(), 1);
+                assert_eq!(blocks[0].block_seq, 99);
+                saw_capture = true;
+            }
+        }
+        assert!(saw_capture);
     }
 
     #[test]
