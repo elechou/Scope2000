@@ -5,9 +5,10 @@ use crate::source::{
     VarRef, VarType,
 };
 
-pub const WIRE_VERSION: u8 = 9;
+pub const WIRE_VERSION: u8 = 10;
 pub const VERSION_MAGIC: u8 = 0x50 | WIRE_VERSION;
 pub const MAX_PAYLOAD: usize = 1024;
+pub const ENUM_MAX_NAME_LEN: usize = 128;
 
 pub mod message {
     pub const HELLO: u8 = 0x01;
@@ -308,27 +309,46 @@ pub fn parse_descriptors(payload: &[u8]) -> Result<(u16, u16, Vec<VarDescriptor>
     let total = read_u16(payload, 0)?;
     let start = read_u16(payload, 2)?;
     let count = usize::from(payload[4]);
-    if payload.len() != 6 + count * 28 {
-        return Err(CodecError::MalformedPayload("ENUM entry count"));
+    if payload[5] != 0 {
+        return Err(CodecError::MalformedPayload("ENUM reserved"));
     }
     let mut descriptors = Vec::with_capacity(count);
-    for index in 0..count {
-        let entry = &payload[6 + index * 28..6 + (index + 1) * 28];
-        let name_len = entry[..16]
-            .iter()
-            .position(|&value| value == 0)
-            .unwrap_or(16);
-        let ty = VarType::from_wire(read_u16(entry, 16)?)
+    let mut offset = 6;
+    for _ in 0..count {
+        if payload.len() < offset + 12 {
+            return Err(CodecError::MalformedPayload("ENUM entry header"));
+        }
+        let addr = read_u32(payload, offset)?;
+        let ty = VarType::from_wire(read_u16(payload, offset + 4)?)
             .ok_or(CodecError::MalformedPayload("unknown variable type"))?;
+        let kind = read_u16(payload, offset + 6)?;
+        let prescaler = read_u16(payload, offset + 8)?;
+        let name_len = usize::from(payload[offset + 10]);
+        if payload[offset + 11] != 0 {
+            return Err(CodecError::MalformedPayload("ENUM entry reserved"));
+        }
+        if name_len == 0 || name_len > ENUM_MAX_NAME_LEN {
+            return Err(CodecError::MalformedPayload("ENUM name length"));
+        }
+        offset += 12;
+        let name = payload
+            .get(offset..offset + name_len)
+            .ok_or(CodecError::MalformedPayload("ENUM name"))?;
+        if !name.iter().all(|value| (0x20..=0x7e).contains(value)) {
+            return Err(CodecError::MalformedPayload("ENUM name ASCII"));
+        }
         descriptors.push(VarDescriptor {
-            name: String::from_utf8_lossy(&entry[..name_len]).into_owned(),
-            var: VarRef {
-                addr: read_u32(entry, 20)?,
-                ty,
-            },
-            kind: read_u16(entry, 18)?,
-            prescaler: read_u16(entry, 24)?,
+            name: std::str::from_utf8(name)
+                .map_err(|_| CodecError::MalformedPayload("ENUM name UTF-8"))?
+                .to_owned(),
+            var: VarRef { addr, ty },
+            kind,
+            prescaler,
         });
+        offset += name_len;
+    }
+    if offset != payload.len() {
+        return Err(CodecError::MalformedPayload("trailing ENUM data"));
     }
     Ok((total, start, descriptors))
 }
@@ -580,14 +600,16 @@ mod tests {
     }
 
     fn descriptor_entry(name: &str, ty: VarType, kind: u16, addr: u32) -> Vec<u8> {
-        assert!(name.len() < 16);
-        let mut entry = vec![0_u8; 16];
-        entry[..name.len()].copy_from_slice(name.as_bytes());
+        assert!(!name.is_empty());
+        assert!(name.len() <= ENUM_MAX_NAME_LEN);
+        let mut entry = Vec::new();
+        put_u32(&mut entry, addr);
         put_u16(&mut entry, ty as u16);
         put_u16(&mut entry, kind);
-        put_u32(&mut entry, addr);
         put_u16(&mut entry, 1);
-        put_u16(&mut entry, 0);
+        entry.push(name.len() as u8);
+        entry.push(0);
+        entry.extend_from_slice(name.as_bytes());
         entry
     }
 
@@ -672,7 +694,7 @@ mod tests {
     }
 
     #[test]
-    fn stream_and_capture_batches_parse_v9_headers() {
+    fn stream_and_capture_batches_parse_current_headers() {
         let mut stream_payload = vec![1, 0];
         stream_payload.extend_from_slice(&7_u16.to_le_bytes());
         stream_payload.extend_from_slice(&5_u16.to_le_bytes());

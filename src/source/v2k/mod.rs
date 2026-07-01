@@ -14,7 +14,7 @@ use crate::source::{
     ScopeMode, SourceCommand, SourceEvent, SourceHandle, TransportEndpoint,
 };
 
-const EXPECTED_CONTRACT_VERSION: u16 = 13;
+const EXPECTED_CONTRACT_VERSION: u16 = 14;
 const ENUM_PAGE_SIZE: u8 = 8;
 #[cfg(not(test))]
 const REQUEST_TIMEOUT: Duration = Duration::from_millis(150);
@@ -178,7 +178,7 @@ impl Session {
         };
         let hello = session
             .request(codec::message::HELLO, &codec::hello_request(), events)
-            .context("firmware/Scope2000 wire version mismatch; reflash v9 firmware or use a matching Scope2000 build")?;
+            .context("firmware/Scope2000 wire version mismatch; reflash v10 firmware or use a matching Scope2000 build")?;
         let info = codec::parse_hello(&hello.payload)?;
         validate_device_info(&info)?;
         session.info = info;
@@ -775,7 +775,7 @@ fn require_ack(frame: &Frame, request_type: u8) -> Result<codec::Ack> {
 fn validate_device_info(info: &DeviceInfo) -> Result<()> {
     if info.protocol_version != u16::from(codec::WIRE_VERSION) {
         bail!(
-            "firmware/Scope2000 wire version mismatch; reflash v9 firmware or use a matching Scope2000 build (device={}, host={})",
+            "firmware/Scope2000 wire version mismatch; reflash v10 firmware or use a matching Scope2000 build (device={}, host={})",
             info.protocol_version,
             codec::WIRE_VERSION
         );
@@ -933,13 +933,13 @@ mod tests {
         payload.extend_from_slice(&[count, 0]);
         for index in start..start + u16::from(count) {
             let name = format!("var{index:03}");
-            let mut entry = [0_u8; 28];
-            entry[..name.len()].copy_from_slice(name.as_bytes());
-            entry[16..18].copy_from_slice(&(VarType::F32 as u16).to_le_bytes());
-            entry[18..20].copy_from_slice(&0x0003_u16.to_le_bytes());
-            entry[20..24].copy_from_slice(&(0xB000_u32 + u32::from(index) * 2).to_le_bytes());
-            entry[24..26].copy_from_slice(&1_u16.to_le_bytes());
-            payload.extend_from_slice(&entry);
+            payload.extend_from_slice(&(0xB000_u32 + u32::from(index) * 2).to_le_bytes());
+            payload.extend_from_slice(&(VarType::F32 as u16).to_le_bytes());
+            payload.extend_from_slice(&0x0003_u16.to_le_bytes());
+            payload.extend_from_slice(&1_u16.to_le_bytes());
+            payload.push(name.len() as u8);
+            payload.push(0);
+            payload.extend_from_slice(name.as_bytes());
         }
         payload
     }
