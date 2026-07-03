@@ -230,15 +230,16 @@ fn show_summary(
 }
 
 fn show_channel_table(ui: &mut egui::Ui, inspector: &InspectorState) {
-    ui.label(egui::RichText::new("CT Raw Diagnostics").strong());
+    ui.label(egui::RichText::new("CT Offset Diagnostics").strong());
     ui.add_space(2.0);
     egui::Grid::new("current_sensor_calibration_channels")
-        .num_columns(3)
+        .num_columns(4)
         .spacing(egui::vec2(24.0, 4.0))
         .striped(true)
         .show(ui, |ui| {
             ui.strong("Channel");
-            ui.strong("Zero");
+            ui.strong("Measured");
+            ui.strong("Golden (CPU2 Flash)");
             ui.strong("Noise p-p");
             ui.end_row();
             for channel in 1..=6 {
@@ -249,11 +250,25 @@ fn show_channel_table(ui: &mut egui::Ui, inspector: &InspectorState) {
                 ));
                 ui.monospace(value_u16_text(
                     inspector,
+                    &format!("v2k_cal.zero_stored.ct{channel}"),
+                ));
+                ui.monospace(value_u16_text(
+                    inspector,
                     &format!("v2k_cal.noise_pp.ct{channel}"),
                 ));
                 ui.end_row();
             }
         });
+
+    if inspector.index_by_name("v2k_cal.zero_stored.ct1").is_none() {
+        ui.add_space(4.0);
+        ui.label(
+            egui::RichText::new(
+                "Stored Golden offsets are not exposed by this Viewer2000 catalog.",
+            )
+            .color(theme::TEXT_SUBDUED),
+        );
+    }
 }
 
 fn summary_row(ui: &mut egui::Ui, label: &str, value: String, color: egui::Color32) {

@@ -101,34 +101,6 @@ pub fn show(
 
                 ui.separator();
 
-                let calibration_health = calibration.health();
-                let calibration_color = match calibration_health.level {
-                    CalibrationHealthLevel::Normal => theme::TEXT_SUBDUED,
-                    CalibrationHealthLevel::Warning => theme::YELLOW,
-                    CalibrationHealthLevel::Error => theme::RED,
-                };
-                let calibration_text = if calibration_health.level == CalibrationHealthLevel::Normal
-                {
-                    "Current Sensor"
-                } else {
-                    "⚠ Current Sensor"
-                };
-                let calibration_status = ui.add(
-                    egui::Button::new(
-                        egui::RichText::new(calibration_text).color(calibration_color),
-                    )
-                    .frame(false),
-                );
-                if calibration_status.clicked() {
-                    ui_state.show_device_info_window = true;
-                }
-                calibration_status.on_hover_text(format!(
-                    "{}\n{}",
-                    calibration_health.label, calibration_health.detail
-                ));
-
-                ui.separator();
-
                 // Status message (latest Warn/Error from console)
                 if let Some(ref msg) = log.status_message {
                     let color = match msg.level {
@@ -148,6 +120,34 @@ pub fn show(
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let calibration_health = calibration.health();
+                    let calibration_color = match calibration_health.level {
+                        CalibrationHealthLevel::Normal => theme::TEXT_SUBDUED,
+                        CalibrationHealthLevel::Warning => theme::YELLOW,
+                        CalibrationHealthLevel::Error => theme::RED,
+                    };
+                    let calibration_text =
+                        if calibration_health.level == CalibrationHealthLevel::Normal {
+                            "Current Sensor"
+                        } else {
+                            "⚠ Current Sensor"
+                        };
+                    let calibration_status = ui.add(
+                        egui::Button::new(
+                            egui::RichText::new(calibration_text).color(calibration_color),
+                        )
+                        .frame(false),
+                    );
+                    if calibration_status.clicked() {
+                        ui_state.show_device_info_window = true;
+                    }
+                    calibration_status.on_hover_text(format!(
+                        "{}\n{}",
+                        calibration_health.label, calibration_health.detail
+                    ));
+
+                    ui.separator();
+
                     if let Some(ref info) = hardware.device_summary {
                         let device_info = ui.add(
                             egui::Button::new(egui::RichText::new(info).color(theme::TEXT_SUBDUED))
