@@ -226,8 +226,12 @@ pub fn show_about_window(ui: &egui::Ui, ui_state: &mut UiState) {
                         .color(theme::TEXT_SUBDUED),
                 );
                 ui.add_space(8.0);
-                ui.label("Native host UI for Viewer2000,");
-                ui.label("built with Rust + egui.");
+                ui.label("Native host UI for Viewer2000.");
+                ui.label("Author: Shou Qiu");
+                ui.add_space(8.0);
+                ui.label(egui::RichText::new("GitHub").color(theme::TEXT_SUBDUED));
+                ui.hyperlink_to("elechou/Scope2000", "https://github.com/elechou/Scope2000");
+                ui.hyperlink_to("elechou/Viewer2000", "https://github.com/elechou/Viewer2000");
                 ui.add_space(12.0);
                 if theme::modal_button(ui, "OK", theme::WIDGET_BG) {
                     ui_state.show_about_window = false;

@@ -24,6 +24,39 @@ const MAX_RETRIES: usize = 2;
 const CAPTURE_REPLAY_IDLE_DELAY: Duration = Duration::from_millis(20);
 const CAPTURE_REPLAY_MAX_BLOCKS: u8 = 8;
 
+/// The device answered with a non-zero ACK status. The link itself is
+/// healthy, so callers must not tear down the session for this.
+#[derive(Debug)]
+struct DeviceNak {
+    request_type: u8,
+    status: u8,
+}
+
+impl std::fmt::Display for DeviceNak {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "device rejected message 0x{:02X}: status={} ({})",
+            self.request_type,
+            self.status,
+            ack_status_label(self.status)
+        )
+    }
+}
+
+impl std::error::Error for DeviceNak {}
+
+fn ack_status_label(status: u8) -> &'static str {
+    match status {
+        1 => "bad parameter",
+        2 => "busy",
+        3 => "bad state",
+        4 => "unsupported",
+        5 => "internal error",
+        _ => "unknown",
+    }
+}
+
 #[derive(Default)]
 pub struct V2kSource;
 
@@ -384,6 +417,20 @@ impl Session {
                     &codec::cal_read_request(&vars),
                     events,
                 )?;
+                // A rejected CAL_READ answers with an 8-octet ACK payload
+                // instead of CAL_VALUES; a successful reply for a non-empty
+                // read list is always longer than 8 octets.
+                if response.payload.len() == 8
+                    && let Ok(ack) = codec::parse_ack(&response.payload)
+                    && ack.echoed_type == codec::message::CAL_READ
+                    && ack.status != 0
+                {
+                    return Err(DeviceNak {
+                        request_type: codec::message::CAL_READ,
+                        status: ack.status,
+                    }
+                    .into());
+                }
                 let (read_sequence, values) = codec::parse_cal_values(&response.payload)?;
                 if values.len() != reads.len() {
                     bail!("CAL_READ response count mismatch");
@@ -521,6 +568,12 @@ impl Session {
     }
 
     fn update_capture_from_status(&mut self, status: &DeviceStatus) {
+        // After the host turns the scope off, status frames generated before
+        // the device applied the mode change can still report CaptureFrozen;
+        // they must not resurrect an abandoned capture assembly.
+        if !self.scope_active {
+            return;
+        }
         if status.scope_mode != ScopeMode::CaptureFrozen || status.scope_frozen_count == 0 {
             return;
         }
@@ -585,7 +638,7 @@ impl Session {
         batch: codec::CaptureBatch,
         events: &mpsc::Sender<SourceEvent>,
     ) -> Result<()> {
-        if batch.total_blocks == 0 {
+        if !self.scope_active || batch.total_blocks == 0 {
             return Ok(());
         }
         if self.completed_capture_id == Some(batch.capture_id) {
@@ -650,13 +703,28 @@ impl Session {
             &codec::capture_replay_request(capture_id, first_block_index, max_blocks),
             events,
         )?;
-        require_ack(&response, codec::message::CAPTURE_REPLAY)?;
-        send_event(
-            events,
-            SourceEvent::Log(format!(
-                "requested capture replay: id={capture_id} first={first_block_index} max={max_blocks}"
-            )),
-        );
+        match require_ack(&response, codec::message::CAPTURE_REPLAY) {
+            Ok(_) => send_event(
+                events,
+                SourceEvent::Log(format!(
+                    "requested capture replay: id={capture_id} first={first_block_index} max={max_blocks}"
+                )),
+            ),
+            // The device no longer holds this capture (scope stopped,
+            // re-armed, or superseded); drop the partial assembly and mark
+            // the id as done so stale status frames cannot recreate it.
+            Err(error) if error.is::<DeviceNak>() => {
+                self.capture = None;
+                self.completed_capture_id = Some(capture_id);
+                send_event(
+                    events,
+                    SourceEvent::Log(format!(
+                        "abandoned incomplete capture {capture_id}: {error}"
+                    )),
+                );
+            }
+            Err(error) => return Err(error),
+        }
         Ok(())
     }
 
@@ -743,6 +811,11 @@ fn worker(commands: mpsc::Receiver<SourceCommand>, events: mpsc::Sender<SourceEv
                 send_event(&events, SourceEvent::Disconnected);
             }
             Ok(WorkerStep::Shutdown) => break,
+            // A NAK is a well-formed answer over a healthy link; report it
+            // and keep the session instead of forcing a reconnect.
+            Err(error) if error.is::<DeviceNak>() => {
+                send_event(&events, SourceEvent::Error(error.to_string()));
+            }
             Err(error) => {
                 send_event(&events, SourceEvent::Error(error.to_string()));
                 session = None;
@@ -764,10 +837,11 @@ fn require_ack(frame: &Frame, request_type: u8) -> Result<codec::Ack> {
         bail!("ACK type mismatch");
     }
     if ack.status != 0 {
-        bail!(
-            "device rejected message 0x{request_type:02X}: status={}",
-            ack.status
-        );
+        return Err(DeviceNak {
+            request_type,
+            status: ack.status,
+        }
+        .into());
     }
     Ok(ack)
 }
@@ -983,6 +1057,12 @@ mod tests {
         payload
     }
 
+    fn nak_payload(echoed_type: u8, status: u8) -> Vec<u8> {
+        let mut payload = ack_payload(echoed_type, 0);
+        payload[0] = status;
+        payload
+    }
+
     fn scope_block(block_seq: u16, bind_seq: u16) -> ScopeBlock {
         ScopeBlock {
             start_tick: u32::from(block_seq) * 10,
@@ -1153,6 +1233,7 @@ mod tests {
         read.extend_from_slice(&push);
         let (event_tx, event_rx) = mpsc::channel();
         let mut session = session(vec![read], device_info(0, 0, 0));
+        session.scope_active = true;
         session.capture = Some(CaptureAssembly::new(22, 1, 1234, Some(3)));
 
         let response = session
@@ -1184,6 +1265,7 @@ mod tests {
     #[test]
     fn missing_first_capture_batch_recovers_from_status_metadata() {
         let mut session = session(Vec::new(), device_info(0, 0, 0));
+        session.scope_active = true;
 
         session.update_capture_from_status(&frozen_status(22, 4));
 
@@ -1196,6 +1278,98 @@ mod tests {
         session.completed_capture_id = Some(22);
         session.update_capture_from_status(&frozen_status(22, 4));
         assert!(session.capture.is_none());
+    }
+
+    #[test]
+    fn stale_frozen_status_after_scope_off_is_ignored() {
+        let (event_tx, _event_rx) = mpsc::channel();
+        let mut session = session(Vec::new(), device_info(0, 0, 0));
+        assert!(!session.scope_active);
+
+        session.update_capture_from_status(&frozen_status(22, 4));
+        assert!(session.capture.is_none());
+
+        session
+            .handle_capture_batch(
+                capture_batch(22, 4, 0, vec![scope_block(10, 3)], false, 3),
+                &event_tx,
+            )
+            .expect("ignore capture batch while scope is off");
+        assert!(session.capture.is_none());
+    }
+
+    #[test]
+    fn capture_replay_nak_abandons_capture_without_error() {
+        let nak = codec::encode_frame(
+            codec::message::CAPTURE_REPLAY | 0x80,
+            1,
+            &nak_payload(codec::message::CAPTURE_REPLAY, 3),
+        );
+        let (event_tx, event_rx) = mpsc::channel();
+        let mut session = session(vec![nak], device_info(0, 0, 0));
+        session.scope_active = true;
+        let mut capture = CaptureAssembly::new(22, 2, 1234, Some(3));
+        capture.last_progress = Instant::now() - CAPTURE_REPLAY_IDLE_DELAY;
+        session.capture = Some(capture);
+
+        session
+            .service_capture_replay(&event_tx)
+            .expect("replay NAK is recoverable");
+
+        assert!(session.capture.is_none());
+        assert_eq!(session.completed_capture_id, Some(22));
+        let mut saw_abandon = false;
+        while let Ok(event) = event_rx.try_recv() {
+            if let SourceEvent::Log(message) = event
+                && message.contains("abandoned incomplete capture 22")
+            {
+                saw_abandon = true;
+            }
+        }
+        assert!(saw_abandon);
+    }
+
+    #[test]
+    fn cal_read_nak_is_reported_as_device_nak() {
+        let response = codec::encode_frame(
+            codec::message::CAL_READ | 0x80,
+            1,
+            &nak_payload(codec::message::CAL_READ, 5),
+        );
+        let (event_tx, _event_rx) = mpsc::channel();
+        let mut session = session(vec![response], device_info(0, 1, CAP_ENUM));
+        let command = SourceCommand::Catalog {
+            build_hash: 0,
+            command: CatalogCommand::ReadValues(vec![ValueRead {
+                descriptor_index: 0,
+                var: VarRef {
+                    addr: 0xB000,
+                    ty: VarType::F32,
+                },
+            }]),
+        };
+
+        let error = session
+            .handle_command(command, &event_tx)
+            .expect_err("CAL_READ NAK surfaces as an error");
+        assert!(error.is::<DeviceNak>());
+    }
+
+    #[test]
+    fn require_ack_rejection_is_downcastable_to_device_nak() {
+        let frame = Frame {
+            message_type: codec::message::DAQ_CONTROL | 0x80,
+            sequence: 1,
+            payload: nak_payload(codec::message::DAQ_CONTROL, 2),
+        };
+
+        let error = require_ack(&frame, codec::message::DAQ_CONTROL).expect_err("NAK");
+
+        assert!(error.is::<DeviceNak>());
+        assert_eq!(
+            error.to_string(),
+            "device rejected message 0x20: status=2 (busy)"
+        );
     }
 
     #[test]
