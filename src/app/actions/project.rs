@@ -893,7 +893,6 @@ impl ScopeApp {
 
         match action {
             Some(ProjectManagerAction::IndexNew) => self.begin_project_index(),
-            Some(ProjectManagerAction::Open(name)) => self.open_recent_project(&name),
             Some(ProjectManagerAction::SetIndex(name)) => {
                 self.begin_project_index_for(Some(name));
             }
@@ -1032,7 +1031,6 @@ impl ScopeApp {
 
 enum ProjectManagerAction {
     IndexNew,
-    Open(String),
     SetIndex(String),
     Unbind(String),
     Delete(String),
@@ -1042,17 +1040,15 @@ const PROJECT_MANAGER_HEADER_HEIGHT: f32 = 24.0;
 const PROJECT_MANAGER_ROW_HEIGHT: f32 = 40.0;
 const PROJECT_MANAGER_ACTION_BUTTON_HEIGHT: f32 = 22.0;
 const PROJECT_MANAGER_ACTION_GAP: f32 = 4.0;
-const PROJECT_MANAGER_OPEN_W: f32 = 44.0;
 const PROJECT_MANAGER_SET_INDEX_W: f32 = 104.0;
 const PROJECT_MANAGER_UNBIND_W: f32 = 58.0;
 const PROJECT_MANAGER_DELETE_W: f32 = 88.0;
 
 fn project_manager_action_width() -> f32 {
-    PROJECT_MANAGER_OPEN_W
-        + PROJECT_MANAGER_SET_INDEX_W
+    PROJECT_MANAGER_SET_INDEX_W
         + PROJECT_MANAGER_UNBIND_W
         + PROJECT_MANAGER_DELETE_W
-        + PROJECT_MANAGER_ACTION_GAP * 3.0
+        + PROJECT_MANAGER_ACTION_GAP * 2.0
 }
 
 fn project_manager_min_project_width(adjustable_w: f32) -> f32 {
@@ -1113,12 +1109,6 @@ fn show_project_manager_actions(
     ui.spacing_mut().item_spacing.x = PROJECT_MANAGER_ACTION_GAP;
     let size = |width| egui::vec2(width, PROJECT_MANAGER_ACTION_BUTTON_HEIGHT);
 
-    if ui
-        .add_sized(size(PROJECT_MANAGER_OPEN_W), egui::Button::new("Open"))
-        .clicked()
-    {
-        *action = Some(ProjectManagerAction::Open(name.to_owned()));
-    }
     if ui
         .add_sized(
             size(PROJECT_MANAGER_SET_INDEX_W),

@@ -1,6 +1,9 @@
 use eframe::egui;
 
-use crate::app::state::{HardwareState, UiState};
+use crate::app::state::{
+    CalibrationHealthLevel, CalibrationSnapshot, HardwareState, UiState, applied_source_label,
+    cal_result_label, cal_state_label, store_result_label,
+};
 use crate::source::v2k::transport;
 use crate::source::{command_result_text, fault_code_text};
 use crate::theme;
@@ -123,6 +126,7 @@ pub fn show_device_info_window(
     ui: &egui::Ui,
     hardware: &HardwareState,
     descriptor_count: usize,
+    calibration: CalibrationSnapshot,
     ui_state: &mut UiState,
 ) {
     if !ui_state.show_device_info_window {
@@ -168,6 +172,9 @@ pub fn show_device_info_window(
                 ui.monospace("No Viewer2000 session");
             }
 
+            ui.separator();
+            show_current_sensor_status(ui, calibration);
+
             if let Some(status) = &hardware.status {
                 ui.separator();
                 ui.monospace(format!(
@@ -206,6 +213,49 @@ pub fn show_device_info_window(
                 }
             }
         });
+}
+
+fn show_current_sensor_status(ui: &mut egui::Ui, calibration: CalibrationSnapshot) {
+    let health = calibration.health();
+    let color = match health.level {
+        CalibrationHealthLevel::Normal => theme::TEXT_SUBDUED,
+        CalibrationHealthLevel::Warning => theme::YELLOW,
+        CalibrationHealthLevel::Error => theme::RED,
+    };
+    let heading = if health.level == CalibrationHealthLevel::Normal {
+        "Current Sensor"
+    } else {
+        "⚠ Current Sensor"
+    };
+
+    ui.label(egui::RichText::new(heading).strong().color(color));
+    ui.monospace(egui::RichText::new(format!("status {}", health.label)).color(color));
+    ui.monospace(format!(
+        "measurement {} / {}",
+        cal_state_label(calibration.state),
+        cal_result_label(calibration.result)
+    ));
+    ui.monospace(format!(
+        "active offset {}",
+        applied_source_label(calibration.applied_source)
+    ));
+    let golden = match calibration.store_valid {
+        Some(1) => format!(
+            "valid seq {}",
+            calibration
+                .store_sequence
+                .map_or("-".to_owned(), |sequence| sequence.to_string())
+        ),
+        Some(0) => "none".to_owned(),
+        Some(value) => format!("valid={value}"),
+        None => "unknown".to_owned(),
+    };
+    ui.monospace(format!("Golden record {golden}"));
+    ui.monospace(format!(
+        "flash result {}",
+        store_result_label(calibration.store_result)
+    ));
+    ui.label(egui::RichText::new(health.detail).color(color));
 }
 
 /// "About Scope2000" modal (triggered from the menu bar).

@@ -456,9 +456,14 @@ impl eframe::App for ScopeApp {
         ) {
             self.handle_menu_action(action);
         }
-        if let Some(action) =
-            crate::ui::status_bar::show(ui, &mut self.hardware, &mut self.ui, &mut self.log)
-        {
+        let calibration_snapshot = self.current_sensor_calibration_snapshot();
+        if let Some(action) = crate::ui::status_bar::show(
+            ui,
+            &mut self.hardware,
+            &mut self.ui,
+            &mut self.log,
+            calibration_snapshot,
+        ) {
             use crate::ui::status_bar::StatusBarAction;
             match action {
                 StatusBarAction::Connect => self.connect(),
@@ -470,6 +475,7 @@ impl eframe::App for ScopeApp {
             ui,
             &self.hardware,
             self.inspector.descriptors.len(),
+            calibration_snapshot,
             &mut self.ui,
         );
         let calibration_gate = self.current_sensor_calibration_gate();
@@ -478,6 +484,7 @@ impl eframe::App for ScopeApp {
             &mut self.ui,
             &mut self.calibration,
             calibration_gate,
+            calibration_snapshot,
             &self.inspector,
         ) {
             use crate::ui::current_sensor_calibration::CurrentSensorCalibrationAction;

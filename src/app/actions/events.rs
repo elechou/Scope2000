@@ -4,7 +4,8 @@ use crate::app::ScopeApp;
 use crate::app::state::CalibrationCommandResult;
 use crate::console::LogLevel;
 use crate::source::{
-    ScopeBlock, ScopeMode, SourceEvent, SystemState, VarDescriptor, command_result_text,
+    ScopeBlock, ScopeMode, SourceEvent, SystemCommand, SystemState, VarDescriptor,
+    command_result_text,
 };
 use crate::variable::InspectorState;
 use crate::wave::{
@@ -42,7 +43,7 @@ impl ScopeApp {
                         ),
                     );
                     self.hardware.info = Some(info);
-                    self.hardware.version = self.hardware.version_text();
+                    self.hardware.device_summary = self.hardware.device_summary_text();
                     self.hardware.performance.set_available(true);
                     self.calibration.reset_session();
                     self.handle_firmware_project();
@@ -115,6 +116,15 @@ impl ScopeApp {
                                 completed.sequence
                             ),
                         );
+                        if completed.command == SystemCommand::Start && completed.result == 5 {
+                            // CAL_FAILED: the firmware refused to start on an
+                            // untrusted current-sensor zero.
+                            self.log.push(
+                                LogLevel::Warn,
+                                "Start refused: the current-sensor zero is not trusted. Open Current Sensor Calibration and run Measure (Commit a new Golden reference first if the drift is legitimate).".to_owned(),
+                            );
+                            self.ui.show_current_sensor_calibration = true;
+                        }
                     }
                     if let Some(result) = completed_calibration {
                         log_calibration_result(&result, &mut self.log);
@@ -300,7 +310,7 @@ impl ScopeApp {
                     self.hardware.performance.clear();
                     self.hardware.clear_system_command_state();
                     self.calibration.reset_session();
-                    self.hardware.version = self.hardware.version_text();
+                    self.hardware.device_summary = self.hardware.device_summary_text();
                     self.workspace_watch_restored = false;
                     self.descriptor_catalog_ready = false;
                     self.handle_firmware_project();

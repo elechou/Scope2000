@@ -46,7 +46,7 @@ pub(crate) struct HardwareState {
     pub connecting: bool,
     pub info: Option<DeviceInfo>,
     pub status: Option<DeviceStatus>,
-    pub version: Option<String>,
+    pub device_summary: Option<String>,
     pub performance: PerformanceState,
     pub pending_system_command: Option<PendingSystemCommand>,
     pub last_system_command: Option<CompletedSystemCommand>,
@@ -75,7 +75,7 @@ impl Default for HardwareState {
             connecting: false,
             info: None,
             status: None,
-            version: None,
+            device_summary: None,
             performance: PerformanceState::default(),
             pending_system_command: None,
             last_system_command: None,
@@ -109,19 +109,17 @@ impl HardwareState {
             .is_some_and(|status| status.system_state.is_running())
     }
 
-    pub fn version_text(&self) -> Option<String> {
-        self.info
-            .as_ref()
-            .map(|info| format!("Viewer2000 · {}", tick_rate_text(info.tick_hz)))
+    pub fn device_summary_text(&self) -> Option<String> {
+        self.info.as_ref().map(|info| {
+            format!(
+                "{} · {}",
+                info.mcu_model_label(),
+                tick_rate_text(info.tick_hz)
+            )
+        })
     }
 
-    pub fn dsp_model_text(&self) -> Option<String> {
-        self.info
-            .as_ref()
-            .map(|info| format!("DSP {}", info.mcu_model_label()))
-    }
-
-    pub fn version_hover_text(&self) -> Option<String> {
+    pub fn device_info_hover_text(&self) -> Option<String> {
         self.info.as_ref().map(|info| {
             format!(
                 "Viewer2000 Device\nfirmware {}\nwire={} contract={}\nbuild=0x{:08X}\ntick={}Hz",
@@ -267,7 +265,7 @@ mod tests {
     }
 
     #[test]
-    fn version_text_is_a_compact_viewer2000_rate_summary() {
+    fn device_summary_combines_mcu_model_and_tick_rate() {
         let hardware = HardwareState {
             info: Some(DeviceInfo {
                 protocol_version: 1,
@@ -279,7 +277,7 @@ mod tests {
                 capabilities: 0,
                 project_name: String::new(),
                 build_time_utc: 0,
-                mcu_model: 1,
+                mcu_model: 2,
                 scope_max_ch: 16,
                 scope_block_ticks: 10,
                 scope_ring_words: 0x7000,
@@ -288,13 +286,13 @@ mod tests {
         };
 
         assert_eq!(
-            hardware.version_text().as_deref(),
-            Some("Viewer2000 · 20kHz")
+            hardware.device_summary_text().as_deref(),
+            Some("F28379D · 20kHz")
         );
     }
 
     #[test]
-    fn version_text_does_not_repeat_project_identity() {
+    fn device_summary_does_not_repeat_project_identity() {
         let hardware = HardwareState {
             info: Some(DeviceInfo {
                 protocol_version: 1,
@@ -315,33 +313,9 @@ mod tests {
         };
 
         assert_eq!(
-            hardware.version_text().as_deref(),
-            Some("Viewer2000 · 20kHz")
+            hardware.device_summary_text().as_deref(),
+            Some("F28P65x · 20kHz")
         );
-    }
-
-    #[test]
-    fn dsp_model_text_uses_hello_mcu_model() {
-        let hardware = HardwareState {
-            info: Some(DeviceInfo {
-                protocol_version: 1,
-                contract_version: 14,
-                build_hash: 0x3C31_3C66,
-                descriptor_count: 0,
-                firmware_name: "viewer2000".to_owned(),
-                tick_hz: 20_000,
-                capabilities: 0,
-                project_name: "phase4-demo".to_owned(),
-                build_time_utc: 0,
-                mcu_model: 2,
-                scope_max_ch: 16,
-                scope_block_ticks: 10,
-                scope_ring_words: 0x7000,
-            }),
-            ..HardwareState::default()
-        };
-
-        assert_eq!(hardware.dsp_model_text().as_deref(), Some("DSP F28379D"));
     }
 
     #[test]

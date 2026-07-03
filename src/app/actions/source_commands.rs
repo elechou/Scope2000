@@ -2,7 +2,8 @@ use std::time::Instant;
 
 use crate::app::ScopeApp;
 use crate::app::state::{
-    CALIBRATION_READ_NAMES, CALIBRATION_READ_PERIOD, CalibrationGate, CalibrationGateInput,
+    CALIBRATION_READ_NAMES, CALIBRATION_READ_PERIOD, CALIBRATION_STATUS_READ_NAMES,
+    CALIBRATION_STATUS_READ_PERIOD, CalibrationGate, CalibrationGateInput, CalibrationSnapshot,
     calibration_gate,
 };
 use crate::console::LogLevel;
@@ -130,10 +131,10 @@ impl ScopeApp {
     }
 
     pub(in crate::app) fn poll_current_sensor_calibration_reads(&mut self) {
-        if !self.ui.show_current_sensor_calibration
-            || !self.hardware.connected
+        if !self.hardware.connected
             || !self.descriptor_catalog_ready
             || !self.has_capability(CAP_CAL)
+            || !self.has_capability(CAP_CT_ZERO_CAL)
         {
             return;
         }
@@ -142,7 +143,12 @@ impl ScopeApp {
             return;
         }
 
-        let reads: Vec<ValueRead> = CALIBRATION_READ_NAMES
+        let names = if self.ui.show_current_sensor_calibration {
+            CALIBRATION_READ_NAMES
+        } else {
+            CALIBRATION_STATUS_READ_NAMES
+        };
+        let reads: Vec<ValueRead> = names
             .iter()
             .filter_map(|name| {
                 let descriptor_index = self.inspector.index_by_name(name)?;
@@ -156,7 +162,23 @@ impl ScopeApp {
         if !reads.is_empty() {
             self.send_catalog(CatalogCommand::ReadValues(reads));
         }
-        self.calibration.next_read = now + CALIBRATION_READ_PERIOD;
+        let period = if self.ui.show_current_sensor_calibration {
+            CALIBRATION_READ_PERIOD
+        } else {
+            CALIBRATION_STATUS_READ_PERIOD
+        };
+        self.calibration.next_read = now + period;
+    }
+
+    pub(in crate::app) fn current_sensor_calibration_snapshot(&self) -> CalibrationSnapshot {
+        CalibrationSnapshot {
+            state: self.calibration_value_u16("v2k_cal.state"),
+            result: self.calibration_value_u16("v2k_cal.result"),
+            applied_source: self.calibration_value_u16("v2k_cal.applied_src"),
+            store_valid: self.calibration_value_u16("v2k_cal.store_valid"),
+            store_result: self.calibration_value_u16("v2k_cal.store_result"),
+            store_sequence: self.calibration_value_u32("v2k_cal.store_seq"),
+        }
     }
 
     pub(in crate::app) fn write_variables(&mut self, writes: Vec<(usize, f64)>) {
@@ -440,6 +462,20 @@ impl ScopeApp {
             .value_by_name("v2k_cal.result")
             .map(|value| value as u16);
         state == Some(2) && result == Some(1)
+    }
+
+    fn calibration_value_u16(&self, name: &str) -> Option<u16> {
+        self.inspector
+            .value_by_name(name)
+            .filter(|value| value.is_finite() && *value >= 0.0)
+            .map(|value| value as u16)
+    }
+
+    fn calibration_value_u32(&self, name: &str) -> Option<u32> {
+        self.inspector
+            .value_by_name(name)
+            .filter(|value| value.is_finite() && *value >= 0.0)
+            .map(|value| value as u32)
     }
 }
 

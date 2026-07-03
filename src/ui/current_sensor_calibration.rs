@@ -1,8 +1,9 @@
 use eframe::egui;
 
 use crate::app::state::{
-    CalibrationCommandResult, CalibrationGate, CalibrationState, UiState, applied_source_label,
-    cal_result_label, cal_state_label, store_result_label,
+    CalibrationCommandResult, CalibrationGate, CalibrationHealthLevel, CalibrationSnapshot,
+    CalibrationState, UiState, applied_source_label, cal_result_label, cal_state_label,
+    store_result_label,
 };
 use crate::source::command_result_text;
 use crate::theme;
@@ -18,6 +19,7 @@ pub fn show(
     ui_state: &mut UiState,
     calibration: &mut CalibrationState,
     gate: CalibrationGate,
+    snapshot: CalibrationSnapshot,
     inspector: &InspectorState,
 ) -> Option<CurrentSensorCalibrationAction> {
     if !ui_state.show_current_sensor_calibration {
@@ -36,9 +38,11 @@ pub fn show(
         .show(ui.ctx(), |ui| {
             ui.set_min_width(500.0);
             ui.add_space(2.0);
+            show_service_notice(ui, snapshot);
+            ui.separator();
             show_actions(ui, calibration, gate, &mut action);
             ui.separator();
-            show_summary(ui, calibration, gate, inspector);
+            show_summary(ui, calibration, gate, snapshot, inspector);
             ui.separator();
             show_channel_table(ui, inspector);
         });
@@ -49,7 +53,15 @@ pub fn show(
             ui.add_space(8.0);
             theme::modal_title(ui, "Commit Current Sensor Calibration?");
             ui.add_space(8.0);
-            ui.label("Persist the current passing CT zero measurement to CPU2 flash.");
+            ui.label(
+                "Write the latest passing CT zero measurement as the system Golden reference in CPU2 flash.",
+            );
+            ui.label(
+                egui::RichText::new(
+                    "Normal startup calibration does not require this operation.",
+                )
+                .color(theme::TEXT_SUBDUED),
+            );
             ui.add_space(12.0);
             ui.horizontal(|ui| {
                 if theme::modal_button(ui, "Commit", theme::YELLOW) {
@@ -67,6 +79,26 @@ pub fn show(
     }
 
     action
+}
+
+fn show_service_notice(ui: &mut egui::Ui, snapshot: CalibrationSnapshot) {
+    ui.label(
+        egui::RichText::new("Golden Reference Service")
+            .strong()
+            .color(theme::TEXT_STRONG),
+    );
+    ui.label(
+        "Viewer2000 automatically calibrates current-sensor zero at every boot. Use this one-time commissioning and service workflow only to establish or update the system Golden reference in flash after initial setup or a significant hardware change.",
+    );
+
+    let health = snapshot.health();
+    if health.level != CalibrationHealthLevel::Normal {
+        ui.add_space(4.0);
+        ui.colored_label(
+            health_color(health.level),
+            format!("⚠ {}: {}", health.label, health.detail),
+        );
+    }
 }
 
 fn show_actions(
@@ -109,14 +141,15 @@ fn show_summary(
     ui: &mut egui::Ui,
     calibration: &CalibrationState,
     gate: CalibrationGate,
+    snapshot: CalibrationSnapshot,
     inspector: &InspectorState,
 ) {
-    let state = value_u16(inspector, "v2k_cal.state");
-    let result = value_u16(inspector, "v2k_cal.result");
-    let applied_src = value_u16(inspector, "v2k_cal.applied_src");
-    let store_valid = value_u16(inspector, "v2k_cal.store_valid");
-    let store_result = value_u16(inspector, "v2k_cal.store_result");
-    let store_seq = value_u32(inspector, "v2k_cal.store_seq");
+    let state = snapshot.state;
+    let result = snapshot.result;
+    let applied_src = snapshot.applied_source;
+    let store_valid = snapshot.store_valid;
+    let store_result = snapshot.store_result;
+    let store_seq = snapshot.store_sequence;
     let settle_max = value_u16(inspector, "v2k_cal.settle_max");
     let settle_ch = value_u16(inspector, "v2k_cal.settle_ch");
 
@@ -131,16 +164,25 @@ fn show_summary(
                 cal_state_label(state),
                 state_color(state),
             );
-            summary_row(ui, "Result", cal_result_label(result), result_color(result));
+            summary_row(
+                ui,
+                "Measurement Result",
+                cal_result_label(result),
+                result_color(result),
+            );
             summary_row(
                 ui,
                 "Applied Source",
                 applied_source_label(applied_src),
-                theme::TEXT_DEFAULT,
+                if result == Some(1) && applied_src == Some(1) {
+                    theme::RED
+                } else {
+                    theme::TEXT_DEFAULT
+                },
             );
             summary_row(
                 ui,
-                "Stored Record",
+                "Golden Record",
                 match store_valid {
                     Some(1) => format!(
                         "valid seq {}",
@@ -158,7 +200,7 @@ fn show_summary(
             );
             summary_row(
                 ui,
-                "Store Result",
+                "Flash Result",
                 store_result_text(inspector, store_result),
                 store_result_color(inspector, store_result),
             );
@@ -227,13 +269,6 @@ fn value_u16(inspector: &InspectorState, name: &str) -> Option<u16> {
         .map(|value| value as u16)
 }
 
-fn value_u32(inspector: &InspectorState, name: &str) -> Option<u32> {
-    inspector
-        .value_by_name(name)
-        .filter(|value| value.is_finite() && *value >= 0.0)
-        .map(|value| value as u32)
-}
-
 fn value_u16_text(inspector: &InspectorState, name: &str) -> String {
     value_u16(inspector, name).map_or("-".to_owned(), |value| value.to_string())
 }
@@ -251,6 +286,14 @@ fn result_color(value: Option<u16>) -> egui::Color32 {
         Some(1) => theme::GREEN,
         Some(0) | None => theme::TEXT_SUBDUED,
         _ => theme::RED,
+    }
+}
+
+fn health_color(level: CalibrationHealthLevel) -> egui::Color32 {
+    match level {
+        CalibrationHealthLevel::Normal => theme::TEXT_SUBDUED,
+        CalibrationHealthLevel::Warning => theme::YELLOW,
+        CalibrationHealthLevel::Error => theme::RED,
     }
 }
 

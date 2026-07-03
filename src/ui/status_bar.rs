@@ -1,6 +1,6 @@
 use eframe::egui;
 
-use crate::app::state::{HardwareState, UiState};
+use crate::app::state::{CalibrationHealthLevel, CalibrationSnapshot, HardwareState, UiState};
 use crate::console::{LogBuffer, LogLevel};
 use crate::theme;
 
@@ -16,6 +16,7 @@ pub fn show(
     hardware: &mut HardwareState,
     ui_state: &mut UiState,
     log: &mut LogBuffer,
+    calibration: CalibrationSnapshot,
 ) -> Option<StatusBarAction> {
     // Auto-dismiss promoted status messages after 5 seconds.
     if let Some(ref msg) = log.status_message
@@ -100,6 +101,34 @@ pub fn show(
 
                 ui.separator();
 
+                let calibration_health = calibration.health();
+                let calibration_color = match calibration_health.level {
+                    CalibrationHealthLevel::Normal => theme::TEXT_SUBDUED,
+                    CalibrationHealthLevel::Warning => theme::YELLOW,
+                    CalibrationHealthLevel::Error => theme::RED,
+                };
+                let calibration_text = if calibration_health.level == CalibrationHealthLevel::Normal
+                {
+                    "Current Sensor"
+                } else {
+                    "⚠ Current Sensor"
+                };
+                let calibration_status = ui.add(
+                    egui::Button::new(
+                        egui::RichText::new(calibration_text).color(calibration_color),
+                    )
+                    .frame(false),
+                );
+                if calibration_status.clicked() {
+                    ui_state.show_device_info_window = true;
+                }
+                calibration_status.on_hover_text(format!(
+                    "{}\n{}",
+                    calibration_health.label, calibration_health.detail
+                ));
+
+                ui.separator();
+
                 // Status message (latest Warn/Error from console)
                 if let Some(ref msg) = log.status_message {
                     let color = match msg.level {
@@ -119,20 +148,7 @@ pub fn show(
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    if let Some(dsp_model) = hardware.dsp_model_text() {
-                        let dsp_info = ui.add(
-                            egui::Button::new(
-                                egui::RichText::new(dsp_model).color(theme::TEXT_SUBDUED),
-                            )
-                            .frame(false),
-                        );
-                        if dsp_info.clicked() {
-                            ui_state.show_device_info_window = !ui_state.show_device_info_window;
-                        }
-                        dsp_info.on_hover_text("DSP model from HELLO");
-                        ui.separator();
-                    }
-                    if let Some(ref info) = hardware.version {
+                    if let Some(ref info) = hardware.device_summary {
                         let device_info = ui.add(
                             egui::Button::new(egui::RichText::new(info).color(theme::TEXT_SUBDUED))
                                 .frame(false),
@@ -141,7 +157,7 @@ pub fn show(
                             ui_state.show_device_info_window = !ui_state.show_device_info_window;
                         }
                         let hover = hardware
-                            .version_hover_text()
+                            .device_info_hover_text()
                             .unwrap_or_else(|| "Device Information".to_owned());
                         device_info.on_hover_text(hover);
                         ui.separator();

@@ -3,6 +3,15 @@ use std::time::{Duration, Instant};
 use crate::source::{CalibrationCommand, DeviceStatus, SystemState};
 
 pub(crate) const CALIBRATION_READ_PERIOD: Duration = Duration::from_millis(250);
+pub(crate) const CALIBRATION_STATUS_READ_PERIOD: Duration = Duration::from_secs(1);
+pub(crate) const CALIBRATION_STATUS_READ_NAMES: &[&str] = &[
+    "v2k_cal.state",
+    "v2k_cal.result",
+    "v2k_cal.applied_src",
+    "v2k_cal.store_valid",
+    "v2k_cal.store_result",
+    "v2k_cal.store_seq",
+];
 pub(crate) const CALIBRATION_READ_NAMES: &[&str] = &[
     "v2k_cal.state",
     "v2k_cal.result",
@@ -25,6 +34,100 @@ pub(crate) const CALIBRATION_READ_NAMES: &[&str] = &[
     "v2k_cal.store_result",
     "v2k_cal.store_seq",
 ];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CalibrationHealthLevel {
+    Normal,
+    Warning,
+    Error,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct CalibrationHealth {
+    pub level: CalibrationHealthLevel,
+    pub label: &'static str,
+    pub detail: &'static str,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct CalibrationSnapshot {
+    pub state: Option<u16>,
+    pub result: Option<u16>,
+    pub applied_source: Option<u16>,
+    pub store_valid: Option<u16>,
+    pub store_result: Option<u16>,
+    pub store_sequence: Option<u32>,
+}
+
+impl CalibrationSnapshot {
+    pub fn health(self) -> CalibrationHealth {
+        if matches!(self.store_result, Some(2..)) {
+            return CalibrationHealth {
+                level: CalibrationHealthLevel::Error,
+                label: "Flash storage failed",
+                detail: "The Golden current-sensor reference could not be written to flash.",
+            };
+        }
+
+        match (self.state, self.result, self.applied_source) {
+            (None, _, _) => CalibrationHealth {
+                level: CalibrationHealthLevel::Normal,
+                label: "Unavailable",
+                detail: "Current-sensor calibration status is not available.",
+            },
+            (Some(0), _, _) => CalibrationHealth {
+                level: CalibrationHealthLevel::Normal,
+                label: "Pending",
+                detail: "Automatic current-sensor calibration has not completed yet. Start is refused until it passes.",
+            },
+            (Some(1), _, _) => CalibrationHealth {
+                level: CalibrationHealthLevel::Warning,
+                label: "Measuring",
+                detail: "Automatic current-sensor zero measurement is in progress. Start is refused until it passes.",
+            },
+            (Some(2), Some(1), Some(2)) if self.store_valid == Some(1) => CalibrationHealth {
+                level: CalibrationHealthLevel::Normal,
+                label: "Normal",
+                detail: "The automatic zero measurement is active and the Golden reference is available.",
+            },
+            (Some(2), Some(1), Some(2)) => CalibrationHealth {
+                level: CalibrationHealthLevel::Warning,
+                label: "Golden reference missing",
+                detail: "The automatic zero measurement is active, but no Golden flash reference is available.",
+            },
+            (Some(2), Some(1), Some(1)) => CalibrationHealth {
+                level: CalibrationHealthLevel::Error,
+                label: "Golden drift exceeded",
+                detail: "The fresh zero exceeded the Golden drift limit and start is refused. Inspect the hardware; if the drift is legitimate, Commit a new Golden reference and Measure again.",
+            },
+            (Some(2), Some(1), _) => CalibrationHealth {
+                level: CalibrationHealthLevel::Error,
+                label: "Offset not applied",
+                detail: "The zero measurement passed, but no measured or Golden offset is active. Start is refused.",
+            },
+            (Some(2), Some(2..), Some(1)) => CalibrationHealth {
+                level: CalibrationHealthLevel::Error,
+                label: "Measurement rejected",
+                detail: "The automatic zero measurement was rejected and start is refused. The Golden offset remains active for display; run Measure again once the cause is cleared.",
+            },
+            (Some(2), Some(2..), _) => CalibrationHealth {
+                level: CalibrationHealthLevel::Error,
+                label: "Calibration unavailable",
+                detail: "The automatic zero measurement was rejected and no Golden offset is active. Start is refused.",
+            },
+            (Some(2), _, _) => CalibrationHealth {
+                level: CalibrationHealthLevel::Warning,
+                label: "Result unavailable",
+                detail: "Current-sensor calibration completed without a recognized result.",
+            },
+            (Some(_), _, _) => CalibrationHealth {
+                level: CalibrationHealthLevel::Warning,
+                label: "Unknown state",
+                detail: "Viewer2000 reported an unknown current-sensor calibration state.",
+            },
+        }
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct PendingCalibrationCommand {
@@ -344,5 +447,58 @@ mod tests {
         assert_eq!(cal_result_label(Some(5)), "UNSTABLE");
         assert_eq!(applied_source_label(Some(2)), "MEASURED");
         assert_eq!(store_result_label(Some(3)), "PROG_FAIL");
+    }
+
+    #[test]
+    fn calibration_health_distinguishes_normal_fallback_and_failure() {
+        let normal = CalibrationSnapshot {
+            state: Some(2),
+            result: Some(1),
+            applied_source: Some(2),
+            store_valid: Some(1),
+            store_result: Some(0),
+            store_sequence: Some(3),
+        };
+        assert_eq!(normal.health().level, CalibrationHealthLevel::Normal);
+
+        let no_golden = CalibrationSnapshot {
+            store_valid: Some(0),
+            ..normal
+        };
+        assert_eq!(no_golden.health().level, CalibrationHealthLevel::Warning);
+
+        let drifted = CalibrationSnapshot {
+            applied_source: Some(1),
+            ..normal
+        };
+        assert_eq!(drifted.health().level, CalibrationHealthLevel::Error);
+        assert_eq!(drifted.health().label, "Golden drift exceeded");
+
+        let rejected_with_fallback = CalibrationSnapshot {
+            result: Some(5),
+            applied_source: Some(1),
+            ..normal
+        };
+        // The firmware refuses APP_START on a rejected measurement even with
+        // the Golden fallback active, so this is an error, not a warning.
+        assert_eq!(
+            rejected_with_fallback.health().level,
+            CalibrationHealthLevel::Error
+        );
+
+        let rejected_without_fallback = CalibrationSnapshot {
+            applied_source: Some(0),
+            ..rejected_with_fallback
+        };
+        assert_eq!(
+            rejected_without_fallback.health().level,
+            CalibrationHealthLevel::Error
+        );
+
+        let flash_failure = CalibrationSnapshot {
+            store_result: Some(4),
+            ..normal
+        };
+        assert_eq!(flash_failure.health().level, CalibrationHealthLevel::Error);
     }
 }
