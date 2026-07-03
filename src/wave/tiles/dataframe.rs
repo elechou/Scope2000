@@ -51,7 +51,24 @@ impl<'a> MyTilesDelegate<'a> {
                             ui.end_row();
 
                             for (name, value) in &display_data {
-                                ui.label(name);
+                                if self.is_system_variable_name(name) {
+                                    ui.horizontal(|ui| {
+                                        ui.spacing_mut().item_spacing.x =
+                                            theme::SYSTEM_VARIABLE_BADGE_GAP;
+                                        theme::system_variable_badge(ui, 1.0);
+                                        ui.label(
+                                            egui::RichText::new(name.as_str())
+                                                .monospace()
+                                                .color(theme::TEXT_DEFAULT),
+                                        );
+                                    });
+                                } else {
+                                    ui.label(
+                                        egui::RichText::new(name.as_str())
+                                            .monospace()
+                                            .color(theme::TEXT_DEFAULT),
+                                    );
+                                }
                                 ui.monospace(format!("{value:.2}"));
                                 ui.end_row();
                             }

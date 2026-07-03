@@ -24,6 +24,7 @@ pub fn show_viewport(
     let mut viewport_drop_feedback: Option<dnd::DropFeedback> = None;
     let var_names = inspector.var_names();
     let var_values = inspector.display_values();
+    let system_var_names = inspector.system_var_names();
     // Blueprint hover (same frame) takes priority over plot hover (prev frame)
     let highlight_var = vp.hovered_blueprint_var.or(*vp.hovered_plot_var);
     let time_axis_sync_group = time_axis_sync_group_id(vp, plot_data);
@@ -33,6 +34,7 @@ pub fn show_viewport(
             selection: vp.selection,
             var_names: &var_names,
             var_values: &var_values,
+            system_var_names: &system_var_names,
             drop_hover_tile: None,
             highlight_var,
             hovered_plot_var: None,

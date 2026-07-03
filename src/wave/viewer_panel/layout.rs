@@ -1,6 +1,7 @@
 use eframe::egui;
 
 use crate::theme;
+use crate::variable::InspectorState;
 use crate::wave::pane::{AxisRange, LegendCorner, PaneKind, TimeAxisMode};
 use crate::wave::selection::Selection;
 
@@ -40,6 +41,7 @@ fn section_heading(ui: &mut egui::Ui, title: &str) {
 pub fn show_selection_panel(
     ui: &mut egui::Ui,
     vp: &mut ViewportPanelState<'_>,
+    inspector: &InspectorState,
     can_edit_variable_refs: bool,
 ) {
     theme::section_header(ui, "Selection");
@@ -51,12 +53,12 @@ pub fn show_selection_panel(
         }
         Selection::Pane(tile_id) => {
             let tile_id = *tile_id;
-            show_pane_selection(ui, vp, tile_id, can_edit_variable_refs);
+            show_pane_selection(ui, vp, tile_id, inspector, can_edit_variable_refs);
         }
         Selection::Series(tile_id, idx) => {
             let tile_id = *tile_id;
             let idx = *idx;
-            show_series_selection(ui, vp, tile_id, idx);
+            show_series_selection(ui, vp, tile_id, idx, inspector);
         }
     }
 }
@@ -65,6 +67,7 @@ fn show_pane_selection(
     ui: &mut egui::Ui,
     vp: &mut ViewportPanelState<'_>,
     tile_id: egui_tiles::TileId,
+    inspector: &InspectorState,
     can_edit_variable_refs: bool,
 ) {
     let info = vp.tree.tiles.get(tile_id).and_then(|t| {
@@ -261,6 +264,7 @@ fn show_pane_selection(
 
                     theme::color_swatch_at(ui, swatch_rect, &swatch_resp, s.color);
 
+                    let is_system_variable = inspector.is_system_variable_name(&s.var_name);
                     let text_color = if is_selected {
                         theme::TEXT_STRONG
                     } else if !s.visible {
@@ -269,8 +273,16 @@ fn show_pane_selection(
                         theme::TEXT_DEFAULT
                     };
                     let font = egui::TextStyle::Monospace.resolve(ui.style());
+                    let mut text_x = 24.0;
+                    if is_system_variable {
+                        text_x += theme::paint_system_variable_badge(
+                            ui,
+                            rect.left_center() + egui::vec2(text_x, 0.0),
+                            if s.visible { 1.0 } else { 0.6 },
+                        );
+                    }
                     ui.painter().text(
-                        rect.left_center() + egui::vec2(24.0, 0.0),
+                        rect.left_center() + egui::vec2(text_x, 0.0),
                         egui::Align2::LEFT_CENTER,
                         s.label(),
                         font,
@@ -360,6 +372,7 @@ fn show_series_selection(
     vp: &mut ViewportPanelState<'_>,
     tile_id: egui_tiles::TileId,
     idx: usize,
+    inspector: &InspectorState,
 ) {
     let info = vp.tree.tiles.get(tile_id).and_then(|t| {
         if let egui_tiles::Tile::Pane(p) = t {
@@ -373,7 +386,18 @@ fn show_series_selection(
         return;
     };
 
-    ui.label(egui::RichText::new(sc.label()).strong());
+    let is_system_variable = inspector.is_system_variable_name(&sc.var_name);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = theme::SYSTEM_VARIABLE_BADGE_GAP;
+        if is_system_variable {
+            theme::system_variable_badge(ui, 1.0);
+        }
+        ui.label(
+            egui::RichText::new(sc.label())
+                .strong()
+                .color(theme::TEXT_DEFAULT),
+        );
+    });
 
     section_heading(ui, "Visualizer");
     ui.add_space(1.0);
@@ -382,7 +406,17 @@ fn show_series_selection(
         .spacing([8.0, 2.0])
         .show(ui, |ui| {
             prop_label(ui, "Name");
-            ui.monospace(&sc.var_name);
+            ui.horizontal(|ui| {
+                ui.spacing_mut().item_spacing.x = theme::SYSTEM_VARIABLE_BADGE_GAP;
+                if is_system_variable {
+                    theme::system_variable_badge(ui, 1.0);
+                }
+                ui.label(
+                    egui::RichText::new(&sc.var_name)
+                        .monospace()
+                        .color(theme::TEXT_DEFAULT),
+                );
+            });
             ui.end_row();
 
             prop_label(ui, "Color");

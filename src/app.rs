@@ -517,12 +517,14 @@ impl eframe::App for ScopeApp {
             .show_inside(ui, |ui| {
                 let project_policy = self.project_policy();
                 let record_limit = self.current_scope_record_limit();
+                let system_var_names = self.inspector.system_var_names();
                 if let Some(action) = crate::wave::panel::show_wave_section(
                     ui,
                     &mut self.wave,
                     self.hardware.connected,
                     self.hardware.info.as_ref().map(|info| info.tick_hz),
                     &self.viewport.tree.tiles,
+                    &system_var_names,
                     record_limit,
                     crate::wave::panel::WavePermissions {
                         can_start: project_policy.wave_start,
@@ -594,6 +596,7 @@ impl eframe::App for ScopeApp {
                     crate::wave::viewer_panel::show_blueprint(
                         ui,
                         &mut vp,
+                        &self.inspector,
                         project_policy.edit_variable_refs,
                     )
                 };
@@ -626,6 +629,7 @@ impl eframe::App for ScopeApp {
                 crate::wave::viewer_panel::show_selection_panel(
                     ui,
                     &mut vp,
+                    &self.inspector,
                     can_edit_variable_refs,
                 );
             });

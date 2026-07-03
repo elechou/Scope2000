@@ -29,6 +29,11 @@ pub const TEXT_SUBDUED: Color32 = Color32::from_rgb(128, 134, 138);
 pub const TEXT_DEFAULT: Color32 = Color32::from_rgb(195, 200, 204);
 pub const TEXT_STRONG: Color32 = Color32::from_rgb(255, 255, 255);
 
+/// Compact semantic marker for Viewer2000 system variables.
+pub const SYSTEM_VARIABLE_BADGE_FILL: Color32 = SELECT_BG;
+pub const SYSTEM_VARIABLE_BADGE_TEXT: Color32 = TEXT_STRONG;
+pub const SYSTEM_VARIABLE_BADGE_GAP: f32 = 5.0;
+
 /// Semantic colors.
 pub const GREEN: Color32 = Color32::from_rgb(40, 167, 69);
 pub const RED: Color32 = Color32::from_rgb(220, 53, 69);
@@ -549,6 +554,47 @@ pub fn collapsing_arrow_icon(ui: &mut egui::Ui, openness: f32, response: &egui::
 /// Large bold title for modal / popup headers (replaces native title bars).
 pub fn modal_title(ui: &mut egui::Ui, title: &str) {
     ui.label(egui::RichText::new(title).strong().size(16.0));
+}
+
+pub fn system_variable_badge_size() -> egui::Vec2 {
+    egui::vec2(25.0, 14.0)
+}
+
+pub fn paint_system_variable_badge(ui: &egui::Ui, left_center: egui::Pos2, alpha: f32) -> f32 {
+    let size = system_variable_badge_size();
+    let rect = egui::Rect::from_min_size(
+        egui::pos2(left_center.x, left_center.y - size.y * 0.5),
+        size,
+    );
+    if ui.is_rect_visible(rect) {
+        ui.painter()
+            .rect_filled(rect, 3.0, SYSTEM_VARIABLE_BADGE_FILL.gamma_multiply(alpha));
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "SYS",
+            egui::FontId::proportional(9.0),
+            SYSTEM_VARIABLE_BADGE_TEXT.gamma_multiply(alpha),
+        );
+    }
+    size.x + SYSTEM_VARIABLE_BADGE_GAP
+}
+
+pub fn system_variable_badge(ui: &mut egui::Ui, alpha: f32) -> egui::Response {
+    let (rect, response) =
+        ui.allocate_exact_size(system_variable_badge_size(), egui::Sense::hover());
+    if ui.is_rect_visible(rect) {
+        ui.painter()
+            .rect_filled(rect, 3.0, SYSTEM_VARIABLE_BADGE_FILL.gamma_multiply(alpha));
+        ui.painter().text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "SYS",
+            egui::FontId::proportional(9.0),
+            SYSTEM_VARIABLE_BADGE_TEXT.gamma_multiply(alpha),
+        );
+    }
+    response
 }
 
 /// Semantic action button for modal footers.

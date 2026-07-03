@@ -114,6 +114,25 @@ impl InspectorState {
             .find(|descriptor| descriptor.name == name)
     }
 
+    pub fn is_system_variable_index(&self, index: usize) -> bool {
+        self.descriptors
+            .get(index)
+            .is_some_and(|descriptor| !descriptor.is_user())
+    }
+
+    pub fn is_system_variable_name(&self, name: &str) -> bool {
+        self.descriptor_by_name(name)
+            .is_some_and(|descriptor| !descriptor.is_user())
+    }
+
+    pub fn system_var_names(&self) -> Vec<String> {
+        self.descriptors
+            .iter()
+            .filter(|descriptor| !descriptor.is_user())
+            .map(|descriptor| descriptor.name.clone())
+            .collect()
+    }
+
     pub fn value_by_name(&self, name: &str) -> Option<f64> {
         self.index_by_name(name)
             .and_then(|index| self.values.get(index).copied().flatten())
@@ -413,6 +432,10 @@ mod tests {
 
         assert_eq!(user_names, ["offset[0]", "offset[1]"]);
         assert_eq!(system_names, ["sys_state"]);
+        assert!(state.is_system_variable_name("sys_state"));
+        assert!(state.is_system_variable_index(0));
+        assert_eq!(state.system_var_names(), ["sys_state"]);
+        assert!(!state.is_system_variable_name("offset[0]"));
     }
 
     #[test]

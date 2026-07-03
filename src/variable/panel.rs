@@ -49,7 +49,12 @@ fn pin_button(ui: &mut egui::Ui, row_rect: egui::Rect, id_src: &str, pinned: boo
     resp.clicked()
 }
 
-fn pinned_item_ui(ui: &mut egui::Ui, name: &str, value: Option<f64>) -> (egui::Response, bool) {
+fn pinned_item_ui(
+    ui: &mut egui::Ui,
+    name: &str,
+    value: Option<f64>,
+    is_system_variable: bool,
+) -> (egui::Response, bool) {
     let desired = egui::vec2(ui.available_width(), 24.0);
     let (rect, resp) = ui.allocate_exact_size(desired, egui::Sense::click_and_drag());
     let mut unpin = false;
@@ -62,8 +67,16 @@ fn pinned_item_ui(ui: &mut egui::Ui, name: &str, value: Option<f64>) -> (egui::R
         ui.painter().rect_filled(rect, 4.0, bg);
 
         let font_mono = egui::TextStyle::Monospace.resolve(ui.style());
+        let mut name_offset = 0.0;
+        if is_system_variable {
+            name_offset = theme::paint_system_variable_badge(
+                ui,
+                rect.left_center() + egui::vec2(6.0, 0.0),
+                1.0,
+            );
+        }
         ui.painter().text(
-            rect.left_center() + egui::vec2(6.0, 0.0),
+            rect.left_center() + egui::vec2(6.0 + name_offset, 0.0),
             egui::Align2::LEFT_CENTER,
             name,
             font_mono.clone(),
@@ -88,6 +101,7 @@ fn map_item_ui(
     name: &str,
     type_label: &str,
     pinned: bool,
+    is_system_variable: bool,
 ) -> (egui::Response, bool) {
     let desired = egui::vec2(ui.available_width(), 24.0);
     let (rect, resp) = ui.allocate_exact_size(desired, egui::Sense::click_and_drag());
@@ -101,8 +115,16 @@ fn map_item_ui(
         ui.painter().rect_filled(rect, 4.0, bg);
 
         let font_mono = egui::TextStyle::Monospace.resolve(ui.style());
+        let mut name_offset = 0.0;
+        if is_system_variable {
+            name_offset = theme::paint_system_variable_badge(
+                ui,
+                rect.left_center() + egui::vec2(6.0, 0.0),
+                1.0,
+            );
+        }
         ui.painter().text(
-            rect.left_center() + egui::vec2(6.0, 0.0),
+            rect.left_center() + egui::vec2(6.0 + name_offset, 0.0),
             egui::Align2::LEFT_CENTER,
             name,
             font_mono.clone(),
@@ -166,7 +188,9 @@ pub fn show_variable_map(
                             continue;
                         };
                         let value = inspector.values.get(idx).copied().flatten();
-                        let (resp, unpin) = pinned_item_ui(ui, &descriptor.name, value);
+                        let is_system_variable = inspector.is_system_variable_index(idx);
+                        let (resp, unpin) =
+                            pinned_item_ui(ui, &descriptor.name, value, is_system_variable);
                         resp.dnd_set_drag_payload(VarDragPayload {
                             names: vec![descriptor.name.clone()],
                             source: DragSource::Copy,
@@ -282,7 +306,14 @@ fn show_map_entry(
                 return;
             };
             let is_pinned = inspector.pinned.contains(index);
-            let (resp, pin_clicked) = map_item_ui(ui, label, descriptor.var.ty.label(), is_pinned);
+            let is_system_variable = inspector.is_system_variable_index(*index);
+            let (resp, pin_clicked) = map_item_ui(
+                ui,
+                label,
+                descriptor.var.ty.label(),
+                is_pinned,
+                is_system_variable,
+            );
             resp.dnd_set_drag_payload(VarDragPayload {
                 names: vec![full_name.clone()],
                 source: DragSource::Copy,
@@ -313,6 +344,9 @@ fn show_map_entry(
 
             let all_pinned = !leaf_indexes.is_empty()
                 && leaf_indexes.iter().all(|i| inspector.pinned.contains(i));
+            let is_system_group = leaf_indexes
+                .iter()
+                .any(|index| inspector.is_system_variable_index(*index));
             let filtering = !filter.is_empty();
             let header_id = ui.make_persistent_id((full_name, filtering));
             let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(
@@ -337,8 +371,16 @@ fn show_map_entry(
                         egui::Color32::TRANSPARENT
                     };
                     ui.painter().rect_filled(rect, 4.0, bg);
+                    let mut text_offset = 0.0;
+                    if is_system_group {
+                        text_offset = theme::paint_system_variable_badge(
+                            ui,
+                            rect.left_center() + egui::vec2(2.0, 0.0),
+                            1.0,
+                        );
+                    }
                     ui.painter().text(
-                        rect.left_center() + egui::vec2(2.0, 0.0),
+                        rect.left_center() + egui::vec2(2.0 + text_offset, 0.0),
                         egui::Align2::LEFT_CENTER,
                         label,
                         egui::TextStyle::Monospace.resolve(ui.style()),
@@ -452,6 +494,8 @@ pub fn show_variables(
         .body(|body| {
             body.rows(row_h, num_rows, |mut row| {
                 let i = row.index();
+                let descriptor_index = inspector.watch_vars[i].descriptor_index;
+                let is_system_variable = inspector.is_system_variable_index(descriptor_index);
                 let watch = &mut inspector.watch_vars[i];
                 let value = inspector
                     .values
@@ -464,15 +508,32 @@ pub fn show_variables(
 
                 let name_resp = row
                     .col(|ui| {
-                        ui.add(
-                            egui::Label::new(
-                                egui::RichText::new(&watch.var_name)
-                                    .monospace()
-                                    .color(theme::TEXT_DEFAULT.gamma_multiply(row_alpha)),
-                            )
-                            .truncate()
-                            .selectable(false),
-                        );
+                        let name_color = theme::TEXT_DEFAULT.gamma_multiply(row_alpha);
+                        if is_system_variable {
+                            ui.horizontal(|ui| {
+                                ui.spacing_mut().item_spacing.x = theme::SYSTEM_VARIABLE_BADGE_GAP;
+                                theme::system_variable_badge(ui, row_alpha);
+                                ui.add(
+                                    egui::Label::new(
+                                        egui::RichText::new(&watch.var_name)
+                                            .monospace()
+                                            .color(name_color),
+                                    )
+                                    .truncate()
+                                    .selectable(false),
+                                );
+                            });
+                        } else {
+                            ui.add(
+                                egui::Label::new(
+                                    egui::RichText::new(&watch.var_name)
+                                        .monospace()
+                                        .color(name_color),
+                                )
+                                .truncate()
+                                .selectable(false),
+                            );
+                        }
                     })
                     .1;
                 let value_resp = row

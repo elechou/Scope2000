@@ -1,6 +1,7 @@
 use eframe::egui;
 
 use crate::theme::{self, GLYPH_EYE, GLYPH_EYE_SLASH, GLYPH_MINUS};
+use crate::variable::InspectorState;
 use crate::wave::dnd::{self, DragSource, VarDragPayload};
 use crate::wave::pane::{PaneKind, ViewPane};
 use crate::wave::selection::Selection;
@@ -95,6 +96,7 @@ fn collect_views(
 pub fn show_blueprint(
     ui: &mut egui::Ui,
     vp: &mut ViewportPanelState<'_>,
+    inspector: &InspectorState,
     can_edit_variable_refs: bool,
 ) -> (Option<PaneKind>, Option<dnd::DropFeedback>) {
     let mut wants_add_pane: Option<PaneKind> = None;
@@ -479,6 +481,7 @@ pub fn show_blueprint(
                                     );
                                 }
                                 let font = egui::TextStyle::Monospace.resolve(ui.style());
+                                let is_system_variable = inspector.is_system_variable_name(var);
                                 let text_color = if active {
                                     theme::TEXT_STRONG
                                 } else if !visible {
@@ -487,7 +490,7 @@ pub fn show_blueprint(
                                     theme::TEXT_DEFAULT
                                 };
                                 let text_color = text_color.gamma_multiply(row_alpha);
-                                let text_x = if show_dot {
+                                let mut text_x = if show_dot {
                                     let swatch_color = if visible {
                                         color.gamma_multiply(row_alpha)
                                     } else {
@@ -500,6 +503,14 @@ pub fn show_blueprint(
                                 } else {
                                     6.0
                                 };
+                                if is_system_variable {
+                                    let badge_alpha = row_alpha * if visible { 1.0 } else { 0.6 };
+                                    text_x += theme::paint_system_variable_badge(
+                                        ui,
+                                        rect.left_center() + egui::vec2(text_x, 0.0),
+                                        badge_alpha,
+                                    );
+                                }
                                 ui.painter().text(
                                     rect.left_center() + egui::vec2(text_x, 0.0),
                                     egui::Align2::LEFT_CENTER,

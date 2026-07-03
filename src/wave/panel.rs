@@ -52,12 +52,67 @@ fn collect_pane_vars(tiles: &egui_tiles::Tiles<crate::wave::pane::ViewPane>) -> 
     vars
 }
 
+fn is_system_var_name(name: &str, system_var_names: &[String]) -> bool {
+    system_var_names
+        .iter()
+        .any(|system_name| system_name == name)
+}
+
+fn trigger_source_label(name: &str, system_var_names: &[String]) -> String {
+    if is_system_var_name(name, system_var_names) {
+        format!("SYS {name}")
+    } else {
+        name.to_owned()
+    }
+}
+
+fn selectable_trigger_source(
+    ui: &mut egui::Ui,
+    selected: bool,
+    name: &str,
+    system_var_names: &[String],
+) -> egui::Response {
+    let height = ui.spacing().interact_size.y;
+    let (rect, response) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), height),
+        egui::Sense::click(),
+    );
+    if ui.is_rect_visible(rect) {
+        let visuals = ui.style().interact_selectable(&response, selected);
+        let bg_rect = rect.expand(visuals.expansion);
+        if selected || response.hovered() {
+            ui.painter()
+                .rect_filled(bg_rect, visuals.corner_radius, visuals.weak_bg_fill);
+        }
+
+        let is_system_variable = is_system_var_name(name, system_var_names);
+        let mut text_x = rect.left() + ui.spacing().button_padding.x;
+        if is_system_variable {
+            text_x +=
+                theme::paint_system_variable_badge(ui, egui::pos2(text_x, rect.center().y), 1.0);
+        }
+        ui.painter().text(
+            egui::pos2(text_x, rect.center().y),
+            egui::Align2::LEFT_CENTER,
+            name,
+            egui::TextStyle::Button.resolve(ui.style()),
+            if selected {
+                theme::TEXT_STRONG
+            } else {
+                theme::TEXT_DEFAULT
+            },
+        );
+    }
+    response
+}
+
 pub fn show_wave_section(
     ui: &mut egui::Ui,
     wave: &mut WaveState,
     connected: bool,
     tick_hz: Option<u32>,
     tiles: &egui_tiles::Tiles<crate::wave::pane::ViewPane>,
+    system_var_names: &[String],
     record_max_points: Option<u16>,
     permissions: WavePermissions,
 ) -> Option<WaveAction> {
@@ -116,9 +171,9 @@ pub fn show_wave_section(
     ui.add_enabled_ui(can_edit_variable_refs, |ui| {
         ui.horizontal(|ui| {
             ui.label("Trigger");
-            let ch_label = match &wave.settings.trigger_source {
-                None => "Auto".to_string(),
-                Some(name) => name.clone(),
+            let ch_label: egui::WidgetText = match &wave.settings.trigger_source {
+                None => "Auto".into(),
+                Some(name) => trigger_source_label(name, system_var_names).into(),
             };
             egui::ComboBox::from_id_salt("trg_ch")
                 .width(90.0)
@@ -129,11 +184,14 @@ pub fn show_wave_section(
                         if i > 15 {
                             break;
                         }
-                        ui.selectable_value(
-                            &mut wave.settings.trigger_source,
-                            Some(name.clone()),
-                            name.as_str(),
-                        );
+                        let selected = wave.settings.trigger_source.as_ref() == Some(name);
+                        let mut response =
+                            selectable_trigger_source(ui, selected, name, system_var_names);
+                        if response.clicked() && !selected {
+                            wave.settings.trigger_source = Some(name.clone());
+                            response.mark_changed();
+                            ui.close();
+                        }
                     }
                 });
             egui::ComboBox::from_id_salt("trg_edge")
