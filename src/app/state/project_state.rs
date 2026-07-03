@@ -8,6 +8,7 @@ use super::{AppConfig, WorkspaceState};
 use crate::source::DeviceInfo;
 
 pub(crate) const UNTITLED_PROJECT: &str = "untitled";
+pub(crate) const PROJECT_MANAGER_SPLIT_DEFAULT: f32 = 0.25;
 const FORMAT_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -501,6 +502,7 @@ pub(crate) struct ProjectContext {
     pub show_migration: bool,
     pub show_project_manager: bool,
     pub project_search: String,
+    pub project_manager_split: f32,
 }
 
 impl ProjectContext {
@@ -531,6 +533,7 @@ impl ProjectContext {
             show_migration: false,
             show_project_manager: false,
             project_search: String::new(),
+            project_manager_split: PROJECT_MANAGER_SPLIT_DEFAULT,
         }
     }
 
@@ -700,6 +703,7 @@ mod tests {
             show_migration: false,
             show_project_manager: false,
             project_search: String::new(),
+            project_manager_split: PROJECT_MANAGER_SPLIT_DEFAULT,
         }
     }
 

@@ -119,6 +119,19 @@ pub fn show(
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if let Some(dsp_model) = hardware.dsp_model_text() {
+                        let dsp_info = ui.add(
+                            egui::Button::new(
+                                egui::RichText::new(dsp_model).color(theme::TEXT_SUBDUED),
+                            )
+                            .frame(false),
+                        );
+                        if dsp_info.clicked() {
+                            ui_state.show_device_info_window = !ui_state.show_device_info_window;
+                        }
+                        dsp_info.on_hover_text("DSP model from HELLO");
+                        ui.separator();
+                    }
                     if let Some(ref info) = hardware.version {
                         let device_info = ui.add(
                             egui::Button::new(egui::RichText::new(info).color(theme::TEXT_SUBDUED))

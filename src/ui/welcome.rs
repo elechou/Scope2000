@@ -4,6 +4,9 @@ use crate::theme;
 
 /// Empty viewport shown before any descriptor table has been enumerated.
 pub fn show(ui: &mut egui::Ui) {
+    ui.painter()
+        .rect_filled(ui.max_rect(), 0.0, egui::Color32::BLACK);
+
     ui.vertical_centered(|ui| {
         ui.add_space(ui.available_height() * 0.25);
         ui.label(

@@ -49,6 +49,10 @@ pub fn show(
                             ui.close_kind(egui::UiKind::Menu);
                         }
                     });
+                    if ui.button("Project Manager").clicked() {
+                        action = Some(MenuAction::ManageProjects);
+                        ui.close_kind(egui::UiKind::Menu);
+                    }
                     ui.separator();
                     if ui.button("Save Workspace").clicked() {
                         action = Some(MenuAction::SaveWorkspace);

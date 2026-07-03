@@ -677,11 +677,13 @@ fn show_csv_settings_popup(ui: &egui::Ui, csv: &mut CsvState, anchor: egui::Rect
     }
 
     let popup_id = egui::Id::new("csv_settings_popup");
-    let pos = egui::pos2(anchor.right() + 4.0, anchor.top());
+    let pos = ui.ctx().content_rect().center();
 
     let resp = egui::Area::new(popup_id)
         .order(egui::Order::Foreground)
         .fixed_pos(pos)
+        .pivot(egui::Align2::CENTER_CENTER)
+        .default_width(400.0)
         .show(ui.ctx(), |ui| {
             egui::Frame::popup(ui.style())
                 .shadow(egui::Shadow {

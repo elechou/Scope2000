@@ -2,10 +2,11 @@ use std::sync::mpsc;
 use std::time::Instant;
 
 use eframe::egui;
+use egui_extras::{Column, TableBuilder};
 
 use crate::app::state::{
-    LocalProject, MutationPolicy, ProjectBinding, ProjectStatus, UNTITLED_PROJECT, UnresolvedRefs,
-    WorkspaceStore, refresh_local_build, scan_project_directory,
+    LocalProject, MutationPolicy, PROJECT_MANAGER_SPLIT_DEFAULT, ProjectBinding, ProjectStatus,
+    UNTITLED_PROJECT, UnresolvedRefs, WorkspaceStore, refresh_local_build, scan_project_directory,
 };
 use crate::app::{LOCAL_METADATA_REFRESH_PERIOD, ScopeApp};
 use crate::console::LogLevel;
@@ -478,7 +479,9 @@ impl ScopeApp {
         } else if build_matches {
             ui.horizontal_wrapped(|ui| {
                 ui.spacing_mut().item_spacing.x = 0.0;
-                ui.label(egui::RichText::new("Built binary matches the firmware on device.").small());
+                ui.label(
+                    egui::RichText::new("Built binary matches the firmware on device.").small(),
+                );
             });
         }
         let unresolved = self.project.unresolved.count();
@@ -762,6 +765,8 @@ impl ScopeApp {
         egui::Window::new("Projects")
             .id(egui::Id::new("project_manager_window"))
             .open(&mut open)
+            .pivot(egui::Align2::CENTER_CENTER)
+            .default_pos(ui.ctx().content_rect().center())
             .default_width(760.0)
             .default_height(460.0)
             .resizable(true)
@@ -783,66 +788,104 @@ impl ScopeApp {
                 ui.separator();
 
                 let filter = self.project.project_search.to_lowercase();
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    egui::Grid::new("project_manager_grid")
-                        .num_columns(3)
-                        .spacing([12.0, 8.0])
-                        .striped(true)
-                        .show(ui, |ui| {
-                            ui.strong("Project");
-                            ui.strong("CCS Index");
-                            ui.strong("Actions");
-                            ui.end_row();
+                let visible_records: Vec<_> = records
+                    .iter()
+                    .filter(|(name, project_file, _)| {
+                        if filter.is_empty() {
+                            return true;
+                        }
+                        let path_text = project_file
+                            .as_ref()
+                            .map(|path| path.display().to_string())
+                            .unwrap_or_else(|| "Not indexed".to_owned());
+                        name.to_lowercase().contains(&filter)
+                            || path_text.to_lowercase().contains(&filter)
+                    })
+                    .collect();
 
-                            for (name, project_file, verified) in &records {
+                let spacing_x = ui.spacing().item_spacing.x;
+                let scroll_w = ui.spacing().scroll.allocated_width();
+                let available_w = (ui.available_width() - scroll_w).max(0.0);
+                let action_w = project_manager_action_width();
+                let adjustable_w = (available_w - action_w - spacing_x * 2.0).max(0.0);
+                let split =
+                    project_manager_clamped_split(self.project.project_manager_split, adjustable_w);
+                let project_w = adjustable_w * split;
+                let ccs_index_w = adjustable_w - project_w;
+                self.project.project_manager_split = split;
+
+                let mut split_delta = 0.0;
+                TableBuilder::new(ui)
+                    .id_salt("project_manager_table")
+                    .striped(true)
+                    .max_scroll_height(330.0)
+                    .auto_shrink(egui::Vec2b::new(false, true))
+                    .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                    .column(Column::exact(project_w).clip(true))
+                    .column(Column::exact(ccs_index_w).clip(true))
+                    .column(Column::exact(action_w).clip(true).resizable(false))
+                    .header(PROJECT_MANAGER_HEADER_HEIGHT, |mut header| {
+                        header.col(|ui| {
+                            ui.strong("Project");
+                            split_delta = show_project_manager_splitter(ui);
+                        });
+                        header.col(|ui| {
+                            ui.strong("CCS Index");
+                        });
+                        header.col(|ui| {
+                            ui.strong("Actions");
+                        });
+                    })
+                    .body(|body| {
+                        body.rows(
+                            PROJECT_MANAGER_ROW_HEIGHT,
+                            visible_records.len(),
+                            |mut row| {
+                                let (name, project_file, verified) = visible_records[row.index()];
                                 let path_text = project_file
                                     .as_ref()
                                     .map(|path| path.display().to_string())
                                     .unwrap_or_else(|| "Not indexed".to_owned());
-                                if !filter.is_empty()
-                                    && !name.to_lowercase().contains(&filter)
-                                    && !path_text.to_lowercase().contains(&filter)
-                                {
-                                    continue;
-                                }
-                                ui.monospace(name);
-                                ui.vertical(|ui| {
-                                    ui.add(egui::Label::new(path_text).truncate());
-                                    if project_file.is_some() {
-                                        ui.weak(if *verified { "Verified" } else { "Unverified" });
-                                    }
+
+                                row.col(|ui| {
+                                    ui.add(
+                                        egui::Label::new(egui::RichText::new(name).monospace())
+                                            .truncate(),
+                                    );
                                 });
-                                ui.horizontal(|ui| {
-                                    if ui.small_button("Open").clicked() {
-                                        action = Some(ProjectManagerAction::Open(name.clone()));
-                                    }
-                                    if ui
-                                        .small_button(if project_file.is_some() {
-                                            "Change Index..."
-                                        } else {
-                                            "Set Index..."
-                                        })
-                                        .clicked()
-                                    {
-                                        action = Some(ProjectManagerAction::SetIndex(name.clone()));
-                                    }
-                                    if ui
-                                        .add_enabled(
-                                            project_file.is_some(),
-                                            egui::Button::new("Unbind"),
-                                        )
-                                        .clicked()
-                                    {
-                                        action = Some(ProjectManagerAction::Unbind(name.clone()));
-                                    }
-                                    if ui.small_button("Delete Cache").clicked() {
-                                        action = Some(ProjectManagerAction::Delete(name.clone()));
-                                    }
+                                row.col(|ui| {
+                                    ui.spacing_mut().item_spacing.y = 2.0;
+                                    ui.vertical(|ui| {
+                                        ui.add(egui::Label::new(path_text).truncate());
+                                        if project_file.is_some() {
+                                            ui.weak(if *verified {
+                                                "Verified"
+                                            } else {
+                                                "Unverified"
+                                            });
+                                        }
+                                    });
                                 });
-                                ui.end_row();
-                            }
-                        });
-                });
+                                row.col(|ui| {
+                                    show_project_manager_actions(
+                                        ui,
+                                        name,
+                                        project_file.is_some(),
+                                        &mut action,
+                                    );
+                                });
+                            },
+                        );
+                    });
+
+                if split_delta != 0.0 && adjustable_w > 0.0 {
+                    let next_project_w = (project_w + split_delta).clamp(
+                        project_manager_min_project_width(adjustable_w),
+                        adjustable_w - project_manager_min_index_width(adjustable_w),
+                    );
+                    self.project.project_manager_split = next_project_w / adjustable_w;
+                    ui.ctx().request_repaint();
+                }
                 ui.separator();
                 ui.weak(format!("{} / 100 cached projects", records.len()));
             });
@@ -993,6 +1036,120 @@ enum ProjectManagerAction {
     SetIndex(String),
     Unbind(String),
     Delete(String),
+}
+
+const PROJECT_MANAGER_HEADER_HEIGHT: f32 = 24.0;
+const PROJECT_MANAGER_ROW_HEIGHT: f32 = 40.0;
+const PROJECT_MANAGER_ACTION_BUTTON_HEIGHT: f32 = 22.0;
+const PROJECT_MANAGER_ACTION_GAP: f32 = 4.0;
+const PROJECT_MANAGER_OPEN_W: f32 = 44.0;
+const PROJECT_MANAGER_SET_INDEX_W: f32 = 104.0;
+const PROJECT_MANAGER_UNBIND_W: f32 = 58.0;
+const PROJECT_MANAGER_DELETE_W: f32 = 88.0;
+
+fn project_manager_action_width() -> f32 {
+    PROJECT_MANAGER_OPEN_W
+        + PROJECT_MANAGER_SET_INDEX_W
+        + PROJECT_MANAGER_UNBIND_W
+        + PROJECT_MANAGER_DELETE_W
+        + PROJECT_MANAGER_ACTION_GAP * 3.0
+}
+
+fn project_manager_min_project_width(adjustable_w: f32) -> f32 {
+    96.0_f32.min(adjustable_w * 0.5)
+}
+
+fn project_manager_min_index_width(adjustable_w: f32) -> f32 {
+    160.0_f32.min(adjustable_w - project_manager_min_project_width(adjustable_w))
+}
+
+fn project_manager_clamped_split(split: f32, adjustable_w: f32) -> f32 {
+    if adjustable_w <= 0.0 {
+        return PROJECT_MANAGER_SPLIT_DEFAULT;
+    }
+
+    let min_split = project_manager_min_project_width(adjustable_w) / adjustable_w;
+    let max_split = 1.0 - project_manager_min_index_width(adjustable_w) / adjustable_w;
+    split.clamp(min_split, max_split)
+}
+
+fn show_project_manager_splitter(ui: &mut egui::Ui) -> f32 {
+    let rect = ui.max_rect();
+    let handle_rect = egui::Rect::from_min_max(
+        egui::pos2(rect.right() - 4.0, rect.top()),
+        egui::pos2(rect.right() + 4.0, rect.bottom()),
+    );
+    let response = ui
+        .interact(
+            handle_rect,
+            ui.make_persistent_id("project_manager_project_ccs_splitter"),
+            egui::Sense::click_and_drag(),
+        )
+        .on_hover_cursor(egui::CursorIcon::ResizeHorizontal);
+    let active = response.hovered() || response.dragged();
+    let color = if active {
+        theme::TEXT_SUBDUED
+    } else {
+        theme::SEPARATOR
+    };
+    ui.painter().vline(
+        handle_rect.center().x,
+        handle_rect.y_range(),
+        egui::Stroke::new(1.0, color),
+    );
+    if response.dragged() {
+        response.drag_delta().x
+    } else {
+        0.0
+    }
+}
+
+fn show_project_manager_actions(
+    ui: &mut egui::Ui,
+    name: &str,
+    has_project_file: bool,
+    action: &mut Option<ProjectManagerAction>,
+) {
+    ui.spacing_mut().item_spacing.x = PROJECT_MANAGER_ACTION_GAP;
+    let size = |width| egui::vec2(width, PROJECT_MANAGER_ACTION_BUTTON_HEIGHT);
+
+    if ui
+        .add_sized(size(PROJECT_MANAGER_OPEN_W), egui::Button::new("Open"))
+        .clicked()
+    {
+        *action = Some(ProjectManagerAction::Open(name.to_owned()));
+    }
+    if ui
+        .add_sized(
+            size(PROJECT_MANAGER_SET_INDEX_W),
+            egui::Button::new(if has_project_file {
+                "Change Index..."
+            } else {
+                "Set Index..."
+            }),
+        )
+        .clicked()
+    {
+        *action = Some(ProjectManagerAction::SetIndex(name.to_owned()));
+    }
+    if ui
+        .add_enabled_ui(has_project_file, |ui| {
+            ui.add_sized(size(PROJECT_MANAGER_UNBIND_W), egui::Button::new("Unbind"))
+        })
+        .inner
+        .clicked()
+    {
+        *action = Some(ProjectManagerAction::Unbind(name.to_owned()));
+    }
+    if ui
+        .add_sized(
+            size(PROJECT_MANAGER_DELETE_W),
+            egui::Button::new("Delete Cache"),
+        )
+        .clicked()
+    {
+        *action = Some(ProjectManagerAction::Delete(name.to_owned()));
+    }
 }
 
 fn missing_group(

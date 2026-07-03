@@ -2,7 +2,7 @@ use eframe::egui;
 
 use crate::app::state::{
     CalibrationCommandResult, CalibrationGate, CalibrationState, UiState, applied_source_label,
-    cal_result_label, cal_state_label, flags_label, store_result_label,
+    cal_result_label, cal_state_label, store_result_label,
 };
 use crate::source::command_result_text;
 use crate::theme;
@@ -28,6 +28,8 @@ pub fn show(
     egui::Window::new("Current Sensor Calibration")
         .id(egui::Id::new("current_sensor_calibration_window"))
         .open(&mut ui_state.show_current_sensor_calibration)
+        .pivot(egui::Align2::CENTER_CENTER)
+        .default_pos(ui.ctx().content_rect().center())
         .collapsible(false)
         .resizable(true)
         .default_width(540.0)
@@ -111,7 +113,6 @@ fn show_summary(
 ) {
     let state = value_u16(inspector, "v2k_cal.state");
     let result = value_u16(inspector, "v2k_cal.result");
-    let flags = value_u16(inspector, "v2k_cal.flags");
     let applied_src = value_u16(inspector, "v2k_cal.applied_src");
     let store_valid = value_u16(inspector, "v2k_cal.store_valid");
     let store_result = value_u16(inspector, "v2k_cal.store_result");
@@ -136,12 +137,6 @@ fn show_summary(
                 "Applied Source",
                 applied_source_label(applied_src),
                 theme::TEXT_DEFAULT,
-            );
-            summary_row(
-                ui,
-                "Offset Apply Flags",
-                flags_label(flags),
-                flags_color(flags),
             );
             summary_row(
                 ui,
@@ -256,14 +251,6 @@ fn result_color(value: Option<u16>) -> egui::Color32 {
         Some(1) => theme::GREEN,
         Some(0) | None => theme::TEXT_SUBDUED,
         _ => theme::RED,
-    }
-}
-
-fn flags_color(value: Option<u16>) -> egui::Color32 {
-    match value {
-        Some(0) => theme::TEXT_SUBDUED,
-        Some(_) => theme::YELLOW,
-        None => theme::TEXT_SUBDUED,
     }
 }
 

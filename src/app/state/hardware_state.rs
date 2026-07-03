@@ -115,6 +115,12 @@ impl HardwareState {
             .map(|info| format!("Viewer2000 · {}", tick_rate_text(info.tick_hz)))
     }
 
+    pub fn dsp_model_text(&self) -> Option<String> {
+        self.info
+            .as_ref()
+            .map(|info| format!("DSP {}", info.mcu_model_label()))
+    }
+
     pub fn version_hover_text(&self) -> Option<String> {
         self.info.as_ref().map(|info| {
             format!(
@@ -312,6 +318,30 @@ mod tests {
             hardware.version_text().as_deref(),
             Some("Viewer2000 · 20kHz")
         );
+    }
+
+    #[test]
+    fn dsp_model_text_uses_hello_mcu_model() {
+        let hardware = HardwareState {
+            info: Some(DeviceInfo {
+                protocol_version: 1,
+                contract_version: 14,
+                build_hash: 0x3C31_3C66,
+                descriptor_count: 0,
+                firmware_name: "viewer2000".to_owned(),
+                tick_hz: 20_000,
+                capabilities: 0,
+                project_name: "phase4-demo".to_owned(),
+                build_time_utc: 0,
+                mcu_model: 2,
+                scope_max_ch: 16,
+                scope_block_ticks: 10,
+                scope_ring_words: 0x7000,
+            }),
+            ..HardwareState::default()
+        };
+
+        assert_eq!(hardware.dsp_model_text().as_deref(), Some("DSP F28379D"));
     }
 
     #[test]

@@ -6,7 +6,6 @@ pub(crate) const CALIBRATION_READ_PERIOD: Duration = Duration::from_millis(250);
 pub(crate) const CALIBRATION_READ_NAMES: &[&str] = &[
     "v2k_cal.state",
     "v2k_cal.result",
-    "v2k_cal.flags",
     "v2k_cal.applied_src",
     "v2k_cal.zero_meas.ct1",
     "v2k_cal.zero_meas.ct2",
@@ -232,30 +231,6 @@ pub(crate) fn applied_source_label(value: Option<u16>) -> String {
     }
 }
 
-pub(crate) fn flags_label(value: Option<u16>) -> String {
-    let Some(flags) = value else {
-        return "UNKNOWN".to_owned();
-    };
-    if flags == 0 {
-        return "none".to_owned();
-    }
-    let mut labels = Vec::new();
-    if flags & 0x0001 != 0 {
-        labels.push("DRIFT_WARN");
-    }
-    if flags & 0x0002 != 0 {
-        labels.push("MEAS_REJECT");
-    }
-    if flags & 0x0004 != 0 {
-        labels.push("NO_STORE");
-    }
-    let known = flags & 0x0007;
-    if flags != known {
-        labels.push("UNKNOWN_BITS");
-    }
-    labels.join(" | ")
-}
-
 pub(crate) fn store_result_label(value: Option<u16>) -> String {
     match value {
         Some(0) => "NONE".to_owned(),
@@ -368,10 +343,6 @@ mod tests {
         assert_eq!(cal_state_label(Some(1)), "MEASURING");
         assert_eq!(cal_result_label(Some(5)), "UNSTABLE");
         assert_eq!(applied_source_label(Some(2)), "MEASURED");
-        assert_eq!(
-            flags_label(Some(0x0007)),
-            "DRIFT_WARN | MEAS_REJECT | NO_STORE"
-        );
         assert_eq!(store_result_label(Some(3)), "PROG_FAIL");
     }
 }
