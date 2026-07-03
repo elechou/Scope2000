@@ -46,6 +46,24 @@ impl std::fmt::Display for DeviceNak {
 
 impl std::error::Error for DeviceNak {}
 
+#[derive(Debug)]
+struct RequestTimeout {
+    message_type: u8,
+    attempts: usize,
+}
+
+impl std::fmt::Display for RequestTimeout {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "message 0x{:02X} timed out after {} attempts",
+            self.message_type, self.attempts
+        )
+    }
+}
+
+impl std::error::Error for RequestTimeout {}
+
 fn ack_status_label(status: u8) -> &'static str {
     match status {
         1 => "bad parameter",
@@ -181,6 +199,13 @@ impl CaptureAssembly {
 impl Session {
     fn connect(endpoint: &TransportEndpoint, events: &mpsc::Sender<SourceEvent>) -> Result<Self> {
         let transport = transport::open(endpoint)?;
+        Self::connect_transport(transport, events)
+    }
+
+    fn connect_transport(
+        transport: Box<dyn ByteTransport>,
+        events: &mpsc::Sender<SourceEvent>,
+    ) -> Result<Self> {
         let label = transport.label().to_owned();
         let mut session = Self {
             transport,
@@ -209,9 +234,15 @@ impl Session {
             completed_capture_id: None,
             pending_build_hash: None,
         };
-        let hello = session
-            .request(codec::message::HELLO, &codec::hello_request(), events)
-            .context("firmware/Scope2000 wire version mismatch; reflash v10 firmware or use a matching Scope2000 build")?;
+        let hello = match session.request(codec::message::HELLO, &codec::hello_request(), events) {
+            Ok(frame) => frame,
+            Err(error) if error.is::<RequestTimeout>() => {
+                bail!(
+                    "Viewer2000 device did not answer HELLO; check device power, SCI cable, serial port, and baud rate"
+                );
+            }
+            Err(error) => return Err(error),
+        };
         let info = codec::parse_hello(&hello.payload)?;
         validate_device_info(&info)?;
         session.info = info;
@@ -232,6 +263,7 @@ impl Session {
         self.next_sequence = self.next_sequence.wrapping_add(1);
         let wire = codec::encode_frame(message_type, sequence, payload);
         let expected_type = message_type | 0x80;
+        let mut wire_version_mismatch = None;
 
         for attempt in 0..=MAX_RETRIES {
             self.transport
@@ -254,10 +286,15 @@ impl Session {
                             response = Some(frame);
                         }
                         Ok(frame) => self.handle_frame(frame, events)?,
-                        Err(error) => send_event(
-                            events,
-                            SourceEvent::Log(format!("discarded malformed frame: {error}")),
-                        ),
+                        Err(error) => {
+                            if let codec::CodecError::VersionMismatch(device_magic) = &error {
+                                wire_version_mismatch = Some(*device_magic);
+                            }
+                            send_event(
+                                events,
+                                SourceEvent::Log(format!("discarded malformed frame: {error}")),
+                            );
+                        }
                     }
                 }
                 if let Some(frame) = response {
@@ -274,10 +311,18 @@ impl Session {
                 );
             }
         }
-        bail!(
-            "message 0x{message_type:02X} timed out after {} attempts",
-            MAX_RETRIES + 1
-        )
+        if let Some(device_magic) = wire_version_mismatch {
+            bail!(
+                "firmware/Scope2000 wire version mismatch; reflash v{} firmware or use a matching Scope2000 build (device magic=0x{device_magic:02X}, host magic=0x{:02X})",
+                codec::WIRE_VERSION,
+                codec::VERSION_MAGIC
+            );
+        }
+        Err(RequestTimeout {
+            message_type,
+            attempts: MAX_RETRIES + 1,
+        }
+        .into())
     }
 
     fn enumerate(&mut self, events: &mpsc::Sender<SourceEvent>) -> Result<()> {
@@ -1000,6 +1045,25 @@ mod tests {
         }
     }
 
+    fn encode_frame_with_magic(
+        version_magic: u8,
+        message_type: u8,
+        sequence: u16,
+        payload: &[u8],
+    ) -> Vec<u8> {
+        let mut raw = Vec::with_capacity(11 + payload.len());
+        raw.push(version_magic);
+        raw.push(message_type);
+        raw.push(0);
+        raw.extend_from_slice(&sequence.to_le_bytes());
+        raw.extend_from_slice(&(payload.len() as u16).to_le_bytes());
+        raw.extend_from_slice(payload);
+        raw.extend_from_slice(&codec::crc32c(&raw).to_le_bytes());
+        let mut wire = codec::cobs_encode(&raw);
+        wire.push(0);
+        wire
+    }
+
     fn enum_payload(total: u16, start: u16, count: u8) -> Vec<u8> {
         let mut payload = Vec::new();
         payload.extend_from_slice(&total.to_le_bytes());
@@ -1385,6 +1449,44 @@ mod tests {
     }
 
     #[test]
+    fn request_reports_valid_wrong_wire_magic_as_version_mismatch() {
+        let response = encode_frame_with_magic(
+            codec::VERSION_MAGIC - 1,
+            codec::message::HELLO | 0x80,
+            1,
+            &[],
+        );
+        let (event_tx, _event_rx) = mpsc::channel();
+        let mut session = session(vec![response], device_info(0, 0, 0));
+
+        let error = session
+            .request(codec::message::HELLO, &[], &event_tx)
+            .expect_err("wire mismatch should be reported");
+        let message = error.to_string();
+
+        assert!(message.contains("wire version mismatch"), "{message}");
+        assert!(message.contains("device magic=0x59"), "{message}");
+    }
+
+    #[test]
+    fn connect_without_hello_reports_device_not_answering() {
+        let (event_tx, _event_rx) = mpsc::channel();
+        let transport = Box::new(ScriptedTransport {
+            reads: Vec::new(),
+            writes: Vec::new(),
+        });
+
+        let error = match Session::connect_transport(transport, &event_tx) {
+            Ok(_) => panic!("connection should fail without a HELLO response"),
+            Err(error) => error,
+        };
+        let message = error.to_string();
+
+        assert!(message.contains("did not answer HELLO"), "{message}");
+        assert!(!message.contains("wire version mismatch"), "{message}");
+    }
+
+    #[test]
     fn incompatible_contract_is_rejected() {
         let mut source = device_info(0, 0, 0);
         source.contract_version = 9;
@@ -1570,10 +1672,10 @@ mod tests {
     fn request_times_out_after_retries() {
         let (event_tx, _event_rx) = mpsc::channel();
         let mut session = session(Vec::new(), device_info(0, 0, 0));
-        assert!(
-            session
-                .request(codec::message::HELLO, &[], &event_tx)
-                .is_err()
-        );
+        let error = session
+            .request(codec::message::HELLO, &[], &event_tx)
+            .expect_err("request should time out");
+
+        assert!(error.is::<RequestTimeout>());
     }
 }

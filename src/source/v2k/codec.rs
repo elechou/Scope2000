@@ -155,12 +155,6 @@ pub fn decode_raw(raw: &[u8]) -> Result<Frame, CodecError> {
     if raw.len() < 11 {
         return Err(CodecError::FrameTooShort);
     }
-    if raw[0] != VERSION_MAGIC {
-        return Err(CodecError::VersionMismatch(raw[0]));
-    }
-    if raw[2] != 0 {
-        return Err(CodecError::InvalidFlags);
-    }
     let payload_len = usize::from(read_u16(raw, 5)?);
     if payload_len > MAX_PAYLOAD || raw.len() != 7 + payload_len + 4 {
         return Err(CodecError::InvalidLength);
@@ -168,6 +162,12 @@ pub fn decode_raw(raw: &[u8]) -> Result<Frame, CodecError> {
     let expected = read_u32(raw, raw.len() - 4)?;
     if crc32c(&raw[..raw.len() - 4]) != expected {
         return Err(CodecError::InvalidCrc);
+    }
+    if raw[0] != VERSION_MAGIC {
+        return Err(CodecError::VersionMismatch(raw[0]));
+    }
+    if raw[2] != 0 {
+        return Err(CodecError::InvalidFlags);
     }
     Ok(Frame {
         message_type: raw[1],
@@ -691,6 +691,24 @@ mod tests {
         let frames = decoder.push(&garbage);
         assert_eq!(frames.len(), 1);
         assert_eq!(frames[0].as_ref().expect("resynchronized").sequence, 7);
+    }
+
+    #[test]
+    fn decoder_reports_version_mismatch_only_after_crc_passes() {
+        let wire = encode_frame(message::HELLO, 1, &[]);
+        let mut raw = cobs_decode(&wire[..wire.len() - 1]).expect("decode wire");
+        raw[0] = VERSION_MAGIC - 1;
+
+        assert!(matches!(decode_raw(&raw), Err(CodecError::InvalidCrc)));
+
+        let crc_offset = raw.len() - 4;
+        let crc = crc32c(&raw[..crc_offset]);
+        raw[crc_offset..].copy_from_slice(&crc.to_le_bytes());
+
+        assert!(matches!(
+            decode_raw(&raw),
+            Err(CodecError::VersionMismatch(value)) if value == VERSION_MAGIC - 1
+        ));
     }
 
     #[test]
