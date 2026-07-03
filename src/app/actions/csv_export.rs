@@ -255,7 +255,7 @@ fn parse_precision(fmt: &str) -> Result<usize, String> {
 fn write_csv_file(path: &PathBuf, snapshot: &CsvSnapshot) -> Result<(), String> {
     let mut writer = csv::Writer::from_path(path).map_err(|error| error.to_string())?;
     let mut header = Vec::with_capacity(1 + snapshot.channel_names.len());
-    header.push("timestamp");
+    header.push("trigger_time_s");
     for name in &snapshot.channel_names {
         header.push(name.as_str());
     }

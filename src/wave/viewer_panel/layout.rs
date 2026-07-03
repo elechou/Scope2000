@@ -2,7 +2,7 @@ use eframe::egui;
 
 use crate::theme;
 use crate::variable::InspectorState;
-use crate::wave::pane::{AxisRange, LegendCorner, PaneKind, TimeAxisMode};
+use crate::wave::pane::{AxisRange, LegendCorner, PaneKind};
 use crate::wave::selection::Selection;
 
 use super::ViewportPanelState;
@@ -145,25 +145,10 @@ fn show_pane_selection(
         // ---- Time axis ----
         section_heading(ui, "Time axis");
         ui.add_space(1.0);
-        egui::Grid::new("time_axis_mode_grid")
+        egui::Grid::new("time_axis_grid")
             .num_columns(2)
             .spacing([8.0, 2.0])
             .show(ui, |ui| {
-                let previous = props.time_axis_mode;
-                prop_label(ui, "Mode");
-                egui::ComboBox::from_id_salt("time_axis_mode")
-                    .selected_text(props.time_axis_mode.label())
-                    .show_ui(ui, |ui| {
-                        for &mode in TimeAxisMode::ALL {
-                            ui.selectable_value(&mut props.time_axis_mode, mode, mode.label());
-                        }
-                    });
-                if props.time_axis_mode != previous {
-                    props.time_axis_range = AxisRange::Auto;
-                    axis_dirty = true;
-                }
-                ui.end_row();
-
                 prop_label(ui, "Sync");
                 ui.checkbox(&mut props.sync_time_axis, "");
                 ui.end_row();

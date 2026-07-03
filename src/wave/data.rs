@@ -38,7 +38,12 @@ pub struct PlotData {
     pub series: HashMap<String, TimeSeries>,
     pub time_counter: f64,
     pub trigger_time: Option<f64>,
+    time_origin_tick: Option<u32>,
     max_points: usize,
+}
+
+pub(crate) fn relative_time_from_ticks(tick: u32, origin_tick: u32, tick_hz: u32) -> f64 {
+    f64::from(tick.wrapping_sub(origin_tick) as i32) / f64::from(tick_hz.max(1))
 }
 
 impl PlotData {
@@ -47,6 +52,7 @@ impl PlotData {
             series: HashMap::new(),
             time_counter: 0.0,
             trigger_time: None,
+            time_origin_tick: None,
             max_points,
         }
     }
@@ -66,10 +72,12 @@ impl PlotData {
         self.series.clear();
         self.time_counter = 0.0;
         self.trigger_time = None;
+        self.time_origin_tick = None;
     }
 
-    pub fn set_trigger_tick(&mut self, trigger_tick: u32, tick_hz: u32) {
-        self.trigger_time = Some(f64::from(trigger_tick) / f64::from(tick_hz.max(1)));
+    pub fn set_trigger_tick(&mut self, trigger_tick: u32) {
+        self.time_origin_tick = Some(trigger_tick);
+        self.trigger_time = Some(0.0);
     }
 
     pub fn ensure_series(&mut self, binding: &[VarDescriptor]) {
@@ -112,12 +120,14 @@ impl PlotData {
         }
 
         self.ensure_series(binding);
-        let tick_hz = f64::from(tick_hz.max(1));
-        let tick_step = u64::from(prescaler.max(1));
+        let origin_tick = *self.time_origin_tick.get_or_insert(block.start_tick);
+        let tick_step = u32::from(prescaler.max(1));
         for sample_index in 0..usize::from(block.sample_count) {
             let mut offset = sample_index * expected_stride;
-            let tick = u64::from(block.start_tick) + sample_index as u64 * tick_step;
-            let time = tick as f64 / tick_hz;
+            let tick = block
+                .start_tick
+                .wrapping_add((sample_index as u32).wrapping_mul(tick_step));
+            let time = relative_time_from_ticks(tick, origin_tick, tick_hz);
             for descriptor in binding {
                 let width = descriptor.var.ty.wire_width();
                 let raw = descriptor
@@ -175,6 +185,7 @@ mod tests {
         let mut data = PlotData::new(100);
         data.append_block(&block, &binding, 1_000, 1)
             .expect("append block");
+        assert_eq!(data.series["i16"].times[0], 0.0);
         assert_eq!(data.series["i16"].values[0], -2.0);
         assert_eq!(data.series["u16"].values[0], 7.0);
         assert_eq!(data.series["i32"].values[0], -3.0);

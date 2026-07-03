@@ -4,7 +4,7 @@ use std::path::PathBuf;
 pub struct CsvSnapshot {
     /// Column headers sorted alphabetically by variable name.
     pub channel_names: Vec<String>,
-    /// Shared time axis.
+    /// Shared trigger-relative time axis in seconds.
     pub times: Vec<f64>,
     /// `values[channel_index][sample_index]` — parallel to `times`.
     pub values: Vec<Vec<f64>>,

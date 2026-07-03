@@ -6,7 +6,10 @@ use crate::source::{
     ScopeBlock, ScopeMode, SourceEvent, SystemState, VarDescriptor, command_result_text,
 };
 use crate::variable::InspectorState;
-use crate::wave::{AcquisitionSettings, WaveState, data::PlotData};
+use crate::wave::{
+    AcquisitionSettings, WaveState,
+    data::{PlotData, relative_time_from_ticks},
+};
 
 impl ScopeApp {
     pub(in crate::app) fn poll_events(&mut self) {
@@ -310,7 +313,7 @@ fn redraw_capture_frame(
     sort_blocks_by_start_tick(blocks);
     plot_data.clear();
     if let Some(trigger_tick) = trigger_tick {
-        plot_data.set_trigger_tick(trigger_tick, tick_hz);
+        plot_data.set_trigger_tick(trigger_tick);
     }
     plot_data.ensure_series(binding);
     if let Some(trigger_tick) = trigger_tick {
@@ -383,9 +386,8 @@ fn append_requested_capture_window(
         ));
     }
 
-    let tick_hz = f64::from(tick_hz.max(1));
     for row in &rows[start..end] {
-        let time = f64::from(row.tick) / tick_hz;
+        let time = relative_time_from_ticks(row.tick, trigger_tick, tick_hz);
         for (descriptor, value) in binding.iter().zip(row.values.iter()) {
             plot_data.push(&descriptor.name, time, *value);
         }
@@ -613,10 +615,10 @@ mod tests {
         );
 
         let series = &plot_data.series["signal"];
-        assert_eq!(plot_data.trigger_time, Some(1.5));
+        assert_eq!(plot_data.trigger_time, Some(0.0));
         assert_eq!(
             series.times.iter().copied().collect::<Vec<_>>(),
-            vec![1.0, 2.0]
+            vec![-0.5, 0.5]
         );
         assert_eq!(
             series.values.iter().copied().collect::<Vec<_>>(),
@@ -658,8 +660,8 @@ mod tests {
 
         let series = &plot_data.series["signal"];
         assert_eq!(series.times.len(), 20);
-        assert_eq!(series.times.front().copied(), Some(5.0));
-        assert_eq!(series.times.back().copied(), Some(24.0));
+        assert_eq!(series.times.front().copied(), Some(-10.0));
+        assert_eq!(series.times.back().copied(), Some(9.0));
         assert_eq!(series.values.front().copied(), Some(5.0));
         assert_eq!(series.values.back().copied(), Some(24.0));
     }
@@ -676,7 +678,7 @@ mod tests {
         };
         let mut plot_data = PlotData::new(100);
         plot_data.push(&descriptor.name, 1.0, 2.0);
-        plot_data.set_trigger_tick(10, 10);
+        plot_data.set_trigger_tick(10);
         let mut inspector = InspectorState::default();
         inspector.set_descriptors(vec![descriptor]);
         inspector.pinned.push(0);

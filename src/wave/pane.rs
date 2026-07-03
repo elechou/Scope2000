@@ -64,25 +64,6 @@ pub enum AxisRange {
     },
 }
 
-/// Time axis coordinate mode for TimeSeries panes.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
-pub enum TimeAxisMode {
-    System,
-    #[default]
-    TriggerRelative,
-}
-
-impl TimeAxisMode {
-    pub const ALL: &[Self] = &[Self::TriggerRelative, Self::System];
-
-    pub fn label(&self) -> &'static str {
-        match self {
-            Self::System => "System time",
-            Self::TriggerRelative => "Trigger = 0",
-        }
-    }
-}
-
 /// Serde adapter for egui::Color32 — serializes as "#RRGGBB".
 mod color32_serde {
     use eframe::egui;
@@ -158,7 +139,6 @@ pub struct ViewProperties {
     pub show_grid: bool,
     pub legend_visible: bool,
     pub legend_corner: LegendCorner,
-    pub time_axis_mode: TimeAxisMode,
     pub sync_time_axis: bool,
     pub time_axis_range: AxisRange,
     pub scalar_axis_range: AxisRange,
@@ -183,7 +163,6 @@ impl Default for ViewProperties {
             show_grid: true,
             legend_visible: true,
             legend_corner: LegendCorner::default(),
-            time_axis_mode: TimeAxisMode::default(),
             sync_time_axis: true,
             time_axis_range: AxisRange::Auto,
             scalar_axis_range: AxisRange::Auto,
@@ -241,18 +220,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn time_axis_defaults_to_trigger_relative() {
-        assert_eq!(TimeAxisMode::default(), TimeAxisMode::TriggerRelative);
-    }
-
-    #[test]
-    fn new_time_series_pane_uses_trigger_relative_time_axis() {
+    fn new_time_series_pane_syncs_time_axis() {
         let pane = ViewPane::new("Time Series 1", PaneKind::TimeSeries);
 
-        assert_eq!(
-            pane.properties.time_axis_mode,
-            TimeAxisMode::TriggerRelative
-        );
         assert!(pane.properties.sync_time_axis);
     }
 
