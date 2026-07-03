@@ -2,7 +2,9 @@ use std::{cmp::Ordering, time::Instant};
 
 use crate::app::ScopeApp;
 use crate::console::LogLevel;
-use crate::source::{ScopeBlock, ScopeMode, SourceEvent, VarDescriptor, command_result_text};
+use crate::source::{
+    ScopeBlock, ScopeMode, SourceEvent, SystemState, VarDescriptor, command_result_text,
+};
 use crate::variable::InspectorState;
 use crate::wave::{AcquisitionSettings, WaveState, data::PlotData};
 
@@ -80,6 +82,10 @@ impl ScopeApp {
                         .status
                         .as_ref()
                         .map(|previous| previous.system_state);
+                    let system_stopped =
+                        system_stopped_transition(previous_state, status.system_state);
+                    let stop_wave =
+                        system_stopped && wave_has_active_or_pending_stop_target(&self.wave);
                     let entered_running = status.system_state.is_running()
                         && !previous_state.is_some_and(|previous| previous.is_running());
                     let performance = status.performance;
@@ -99,6 +105,13 @@ impl ScopeApp {
                                 completed.command.label(),
                                 completed.sequence
                             ),
+                        );
+                    }
+                    if stop_wave {
+                        self.stop_acquisition();
+                        self.log.push(
+                            LogLevel::Info,
+                            "Wave stopped because user system stopped".to_owned(),
                         );
                     }
                     if entered_running {
@@ -272,6 +285,17 @@ impl ScopeApp {
 
 fn block_matches_binding(bind_sequence: Option<u16>, block_bind_sequence: u16) -> bool {
     bind_sequence == Some(block_bind_sequence)
+}
+
+fn system_stopped_transition(
+    previous_state: Option<SystemState>,
+    current_state: SystemState,
+) -> bool {
+    previous_state.is_some_and(|previous| previous.is_running()) && !current_state.is_running()
+}
+
+fn wave_has_active_or_pending_stop_target(wave: &WaveState) -> bool {
+    wave.active || wave.restart_pending.is_some() || !wave.pending_binding.is_empty()
 }
 
 fn redraw_capture_frame(
@@ -505,6 +529,49 @@ mod tests {
         assert!(block_matches_binding(Some(7), 7));
         assert!(!block_matches_binding(Some(7), 6));
         assert!(!block_matches_binding(None, 7));
+    }
+
+    #[test]
+    fn system_stopped_transition_only_fires_when_leaving_running() {
+        assert!(system_stopped_transition(
+            Some(SystemState::Running),
+            SystemState::Idle
+        ));
+        assert!(system_stopped_transition(
+            Some(SystemState::Running),
+            SystemState::Fault
+        ));
+        assert!(!system_stopped_transition(
+            Some(SystemState::Running),
+            SystemState::Running
+        ));
+        assert!(!system_stopped_transition(
+            Some(SystemState::Idle),
+            SystemState::Idle
+        ));
+        assert!(!system_stopped_transition(None, SystemState::Idle));
+    }
+
+    #[test]
+    fn wave_stop_target_includes_active_restart_and_pending_start() {
+        let descriptor = descriptor("signal");
+        assert!(!wave_has_active_or_pending_stop_target(
+            &WaveState::default()
+        ));
+
+        let mut active = WaveState {
+            active: true,
+            ..WaveState::default()
+        };
+        assert!(wave_has_active_or_pending_stop_target(&active));
+
+        active.active = false;
+        active.restart_pending = Some(ScopeMode::CaptureArmed);
+        assert!(wave_has_active_or_pending_stop_target(&active));
+
+        active.restart_pending = None;
+        active.pending_binding = vec![descriptor];
+        assert!(wave_has_active_or_pending_stop_target(&active));
     }
 
     #[test]
