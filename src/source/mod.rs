@@ -162,6 +162,7 @@ pub const CAP_SCOPE_CAPTURE: u32 = 1 << 3;
 pub const CAP_PRE_TRIGGER: u32 = 1 << 4;
 pub const CAP_SYSTEM_CMD: u32 = 1 << 5;
 pub const CAP_NATIVE_BLOCK: u32 = 1 << 6;
+pub const CAP_CT_ZERO_CAL: u32 = 1 << 7;
 pub const CAL_READ_MAX: usize = 32;
 pub const NO_CAPTURE_ACK: u16 = 0xFFFF;
 
@@ -366,11 +367,28 @@ impl SystemCommand {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CalibrationCommand {
+    MeasureZero,
+    CommitToFlash,
+}
+
+impl CalibrationCommand {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::MeasureZero => "Measure Zero",
+            Self::CommitToFlash => "Commit to Flash",
+        }
+    }
+}
+
 pub fn fault_code_text(code: u16) -> String {
     match code {
         0 => "NONE".to_owned(),
         1 => "TZ1_EXT".to_owned(),
         2 => "OVERCURRENT".to_owned(),
+        3 => "OVERVOLTAGE".to_owned(),
+        4 => "OVERTEMP".to_owned(),
         other => format!("FAULT_{other}"),
     }
 }
@@ -382,6 +400,7 @@ pub fn command_result_text(result: u16) -> String {
         2 => "BAD_STATE".to_owned(),
         3 => "NOT_READY".to_owned(),
         4 => "START_FAILED".to_owned(),
+        5 => "CAL_FAILED".to_owned(),
         other => format!("CMDR_{other}"),
     }
 }
@@ -427,6 +446,7 @@ pub enum SourceCommand {
         command: CatalogCommand,
     },
     SystemCommand(SystemCommand),
+    CalibrationCommand(CalibrationCommand),
 }
 
 #[derive(Debug)]
@@ -451,6 +471,16 @@ pub enum SourceEvent {
     SystemCommandAccepted {
         command: SystemCommand,
         sequence: u32,
+    },
+    CalibrationMeasureAccepted {
+        sequence: u32,
+    },
+    CalibrationCommitCompleted {
+        commit_sequence: u32,
+    },
+    CalibrationCommandFailed {
+        command: CalibrationCommand,
+        message: String,
     },
     ScopeConfigured {
         mode: ScopeMode,
@@ -526,6 +556,8 @@ mod tests {
         assert_eq!(fault_code_text(0), "NONE");
         assert_eq!(fault_code_text(1), "TZ1_EXT");
         assert_eq!(fault_code_text(2), "OVERCURRENT");
+        assert_eq!(fault_code_text(3), "OVERVOLTAGE");
+        assert_eq!(fault_code_text(4), "OVERTEMP");
         assert_eq!(fault_code_text(99), "FAULT_99");
     }
 
@@ -536,6 +568,7 @@ mod tests {
         assert_eq!(command_result_text(2), "BAD_STATE");
         assert_eq!(command_result_text(3), "NOT_READY");
         assert_eq!(command_result_text(4), "START_FAILED");
+        assert_eq!(command_result_text(5), "CAL_FAILED");
         assert_eq!(command_result_text(99), "CMDR_99");
     }
 }

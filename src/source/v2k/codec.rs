@@ -1,8 +1,8 @@
 use thiserror::Error;
 
 use crate::source::{
-    DeviceInfo, DeviceStatus, PerformanceSample, ScopeBlock, ScopeMode, SystemState, VarDescriptor,
-    VarRef, VarType,
+    CalibrationCommand, DeviceInfo, DeviceStatus, PerformanceSample, ScopeBlock, ScopeMode,
+    SystemState, VarDescriptor, VarRef, VarType,
 };
 
 pub const WIRE_VERSION: u8 = 10;
@@ -546,10 +546,22 @@ pub fn system_command_request(command: crate::source::SystemCommand) -> Vec<u8> 
         crate::source::SystemCommand::Stop => 2,
         crate::source::SystemCommand::ClearFault => 3,
     };
+    command_request(code, 0, 0)
+}
+
+pub fn calibration_command_request(command: CalibrationCommand) -> Vec<u8> {
+    let code = match command {
+        CalibrationCommand::MeasureZero => 4,
+        CalibrationCommand::CommitToFlash => 5,
+    };
+    command_request(code, 0, 0)
+}
+
+fn command_request(code: u16, arg0: u16, arg1: u32) -> Vec<u8> {
     let mut payload = Vec::with_capacity(8);
     put_u16(&mut payload, code);
-    put_u16(&mut payload, 0);
-    put_u32(&mut payload, 0);
+    put_u16(&mut payload, arg0);
+    put_u32(&mut payload, arg1);
     payload
 }
 
@@ -665,7 +677,7 @@ mod tests {
                 );
             }
         }
-        assert_eq!(count, 27);
+        assert_eq!(count, 30);
     }
 
     #[test]
@@ -797,10 +809,10 @@ mod tests {
         assert_eq!(info.tick_hz, 20_000);
         assert_eq!(info.project_name, "phase4-demo");
         assert_eq!(info.build_time_utc, 1_781_913_600);
-        assert_eq!(info.mcu_model, 1);
+        assert_eq!(info.mcu_model, 2);
         assert_eq!(info.scope_max_ch, 16);
         assert_eq!(info.scope_block_ticks, 10);
-        assert_eq!(info.scope_ring_words, 0x7000);
+        assert_eq!(info.scope_ring_words, 0xAFF8);
     }
 
     #[test]
@@ -877,5 +889,30 @@ mod tests {
             capture_replay_request(22, 2, 4),
             vec![22, 0, 2, 0, 4, 0, 0, 0]
         );
+    }
+
+    #[test]
+    fn calibration_commands_encode_current_sensor_cmd_codes() {
+        assert_eq!(
+            calibration_command_request(CalibrationCommand::MeasureZero),
+            vec![4, 0, 0, 0, 0, 0, 0, 0]
+        );
+        assert_eq!(
+            calibration_command_request(CalibrationCommand::CommitToFlash),
+            vec![5, 0, 0, 0, 0, 0, 0, 0]
+        );
+        assert_eq!(
+            load_vector_frame("cmd_cal_ct_measure.txt").payload,
+            vec![4, 0, 0, 0, 0, 0, 0, 0]
+        );
+        assert_eq!(
+            load_vector_frame("cmd_cal_ct_commit.txt").payload,
+            vec![5, 0, 0, 0, 0, 0, 0, 0]
+        );
+        let ack =
+            parse_ack(&load_vector_frame("ack_cal_ct_commit.txt").payload).expect("commit ACK");
+        assert_eq!(ack.status, 0);
+        assert_eq!(ack.echoed_type, message::SYSTEM_COMMAND);
+        assert_eq!(ack.data, 3);
     }
 }

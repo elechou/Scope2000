@@ -75,6 +75,13 @@ pub fn show(
                     }
                 });
 
+                ui.menu_button("Toolbox", |ui| {
+                    if ui.button("Current Sensor Calibration").clicked() {
+                        ui_state.show_current_sensor_calibration = true;
+                        ui.close_kind(egui::UiKind::Menu);
+                    }
+                });
+
                 ui.menu_button("About", |ui| {
                     if ui.button("About Scope2000").clicked() {
                         ui_state.show_about_window = true;

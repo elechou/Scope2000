@@ -20,8 +20,8 @@ use crate::wave::viewer_panel::ViewportPanelState;
 use crate::wave::{PLOT_MAX_POINTS, WaveState, pane::PaneKind};
 
 use self::state::{
-    AppConfig, HardwareState, ProjectCandidate, ProjectContext, UiState, ViewportState,
-    WorkspaceAutosaveState, WorkspaceState, WorkspaceStore,
+    AppConfig, CalibrationState, HardwareState, ProjectCandidate, ProjectContext, UiState,
+    ViewportState, WorkspaceAutosaveState, WorkspaceState, WorkspaceStore,
 };
 
 const WATCH_READ_PERIOD: Duration = Duration::from_secs(1);
@@ -31,6 +31,7 @@ pub(in crate::app) const LOCAL_METADATA_REFRESH_PERIOD: Duration = Duration::fro
 
 pub struct ScopeApp {
     hardware: HardwareState,
+    calibration: CalibrationState,
     source: SourceHandle,
     inspector: InspectorState,
     viewport: ViewportState,
@@ -87,6 +88,7 @@ impl ScopeApp {
 
         let mut app = Self {
             hardware,
+            calibration: CalibrationState::new(),
             source: Box::new(V2kSource).spawn(),
             inspector: InspectorState::default(),
             viewport: ViewportState::new(),
@@ -412,6 +414,7 @@ impl eframe::App for ScopeApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.poll_events();
         self.poll_watch_reads();
+        self.poll_current_sensor_calibration_reads();
         if self.hardware.connected {
             ui.ctx().request_repaint_after(Duration::from_millis(16));
         }
@@ -469,6 +472,24 @@ impl eframe::App for ScopeApp {
             self.inspector.descriptors.len(),
             &mut self.ui,
         );
+        let calibration_gate = self.current_sensor_calibration_gate();
+        if let Some(action) = crate::ui::current_sensor_calibration::show(
+            ui,
+            &mut self.ui,
+            &mut self.calibration,
+            calibration_gate,
+            &self.inspector,
+        ) {
+            use crate::ui::current_sensor_calibration::CurrentSensorCalibrationAction;
+            match action {
+                CurrentSensorCalibrationAction::MeasureZero => {
+                    self.send_calibration_command(crate::source::CalibrationCommand::MeasureZero);
+                }
+                CurrentSensorCalibrationAction::CommitToFlash => {
+                    self.send_calibration_command(crate::source::CalibrationCommand::CommitToFlash);
+                }
+            }
+        }
 
         theme::pretick_panel_animation(ui.ctx(), "console_panel", self.ui.show_console_panel);
         egui::Panel::bottom("console_panel")

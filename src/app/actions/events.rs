@@ -1,6 +1,7 @@
 use std::{cmp::Ordering, time::Instant};
 
 use crate::app::ScopeApp;
+use crate::app::state::CalibrationCommandResult;
 use crate::console::LogLevel;
 use crate::source::{
     ScopeBlock, ScopeMode, SourceEvent, SystemState, VarDescriptor, command_result_text,
@@ -43,6 +44,7 @@ impl ScopeApp {
                     self.hardware.info = Some(info);
                     self.hardware.version = self.hardware.version_text();
                     self.hardware.performance.set_available(true);
+                    self.calibration.reset_session();
                     self.handle_firmware_project();
                 }
                 SourceEvent::Disconnected => {
@@ -52,6 +54,7 @@ impl ScopeApp {
                     self.hardware.status = None;
                     self.hardware.performance.clear();
                     self.hardware.clear_system_command_state();
+                    self.calibration.reset_session();
                     self.wave.active = false;
                     self.wave.restart_pending = None;
                     self.descriptor_catalog_ready = false;
@@ -77,9 +80,12 @@ impl ScopeApp {
                     self.descriptor_catalog_ready = true;
                     self.restore_workspace_watch_once();
                     self.next_watch_read = Instant::now();
+                    self.calibration.next_read = Instant::now();
                 }
                 SourceEvent::Status(status) => {
                     let completed_command = self.hardware.complete_pending_system_command(&status);
+                    let completed_calibration =
+                        self.calibration.complete_measure_from_status(&status);
                     let previous_state = self
                         .hardware
                         .status
@@ -109,6 +115,10 @@ impl ScopeApp {
                                 completed.sequence
                             ),
                         );
+                    }
+                    if let Some(result) = completed_calibration {
+                        log_calibration_result(&result, &mut self.log);
+                        self.calibration.next_read = Instant::now();
                     }
                     if stop_wave {
                         self.stop_acquisition();
@@ -174,6 +184,31 @@ impl ScopeApp {
                             ),
                         );
                     }
+                }
+                SourceEvent::CalibrationMeasureAccepted { sequence } => {
+                    if self.calibration.accept_measure(sequence) {
+                        self.log.push(
+                            LogLevel::Info,
+                            format!("Calibration Measure Zero accepted as sequence {sequence}"),
+                        );
+                    } else {
+                        self.log.push(
+                            LogLevel::Warn,
+                            format!(
+                                "Ignored calibration Measure Zero ACK sequence {sequence} without matching pending command"
+                            ),
+                        );
+                    }
+                }
+                SourceEvent::CalibrationCommitCompleted { commit_sequence } => {
+                    let result = self.calibration.complete_commit(commit_sequence);
+                    log_calibration_result(&result, &mut self.log);
+                    self.calibration.next_read = Instant::now();
+                }
+                SourceEvent::CalibrationCommandFailed { command, message } => {
+                    let result = self.calibration.fail(command, message);
+                    log_calibration_result(&result, &mut self.log);
+                    self.calibration.next_read = Instant::now();
                 }
                 SourceEvent::ScopeConfigured { mode } => {
                     self.wave.mode = mode;
@@ -264,6 +299,7 @@ impl ScopeApp {
                     self.hardware.status = None;
                     self.hardware.performance.clear();
                     self.hardware.clear_system_command_state();
+                    self.calibration.reset_session();
                     self.hardware.version = self.hardware.version_text();
                     self.workspace_watch_restored = false;
                     self.descriptor_catalog_ready = false;
@@ -278,10 +314,42 @@ impl ScopeApp {
                 SourceEvent::Error(error) => {
                     self.hardware.connecting = false;
                     self.hardware.clear_system_command_state();
+                    if let Some(result) = self.calibration.fail_pending(error.clone()) {
+                        log_calibration_result(&result, &mut self.log);
+                    }
                     self.log.push(LogLevel::Error, error);
                 }
                 SourceEvent::Log(message) => self.log.push(LogLevel::Info, message),
             }
+        }
+    }
+}
+
+fn log_calibration_result(result: &CalibrationCommandResult, log: &mut crate::console::LogBuffer) {
+    match result {
+        CalibrationCommandResult::Measure { sequence, result } => {
+            let text = command_result_text(*result);
+            let level = if *result == 0 {
+                LogLevel::Notice
+            } else {
+                LogLevel::Warn
+            };
+            log.push(
+                level,
+                format!("Calibration Measure Zero completed {text} as sequence {sequence}"),
+            );
+        }
+        CalibrationCommandResult::Commit { commit_sequence } => {
+            log.push(
+                LogLevel::Notice,
+                format!("Calibration Commit to Flash stored commit sequence {commit_sequence}"),
+            );
+        }
+        CalibrationCommandResult::Failed { command, message } => {
+            log.push(
+                LogLevel::Warn,
+                format!("Calibration {} failed: {message}", command.label()),
+            );
         }
     }
 }

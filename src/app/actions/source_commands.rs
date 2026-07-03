@@ -1,11 +1,16 @@
 use std::time::Instant;
 
 use crate::app::ScopeApp;
+use crate::app::state::{
+    CALIBRATION_READ_NAMES, CALIBRATION_READ_PERIOD, CalibrationGate, CalibrationGateInput,
+    calibration_gate,
+};
 use crate::console::LogLevel;
 use crate::source::{
-    CAP_CAL, CAP_NATIVE_BLOCK, CAP_PRE_TRIGGER, CAP_SCOPE_CAPTURE, CAP_SCOPE_STREAM,
-    CAP_SYSTEM_CMD, CatalogCommand, NO_CAPTURE_ACK, ParamWrite, ScopeConfig, ScopeMode,
-    SourceCommand, SystemCommand, TriggerEdge, VarDescriptor,
+    CAP_CAL, CAP_CT_ZERO_CAL, CAP_NATIVE_BLOCK, CAP_PRE_TRIGGER, CAP_SCOPE_CAPTURE,
+    CAP_SCOPE_STREAM, CAP_SYSTEM_CMD, CalibrationCommand, CatalogCommand, NO_CAPTURE_ACK,
+    ParamWrite, ScopeConfig, ScopeMode, SourceCommand, SystemCommand, TriggerEdge, ValueRead,
+    VarDescriptor,
 };
 use crate::wave::{max_record_points_for_binding, pane::PaneKind, scope_channel_limit};
 
@@ -47,6 +52,45 @@ impl ScopeApp {
         self.send(SourceCommand::SystemCommand(command));
     }
 
+    pub(in crate::app) fn current_sensor_calibration_gate(&self) -> CalibrationGate {
+        calibration_gate(CalibrationGateInput {
+            connected: self.hardware.connected,
+            catalog_ready: self.descriptor_catalog_ready,
+            has_cal: self.has_capability(CAP_CAL),
+            has_ct_zero_cal: self.has_capability(CAP_CT_ZERO_CAL),
+            can_write_calibration: self.project_policy().calibration_write,
+            system_state: self
+                .hardware
+                .status
+                .as_ref()
+                .map(|status| status.system_state),
+            system_command_pending: self.hardware.pending_system_command.is_some(),
+            calibration_command_pending: self.calibration.pending.is_some(),
+            measurement_done_ok: self.calibration_measurement_done_ok(),
+        })
+    }
+
+    pub(in crate::app) fn send_calibration_command(&mut self, command: CalibrationCommand) {
+        let gate = self.current_sensor_calibration_gate();
+        let allowed = match command {
+            CalibrationCommand::MeasureZero => gate.can_measure,
+            CalibrationCommand::CommitToFlash => gate.can_commit,
+        };
+        if !allowed {
+            let reason = gate
+                .reason
+                .unwrap_or("No passing measurement available to commit");
+            self.log.push(LogLevel::Warn, reason.to_owned());
+            return;
+        }
+        self.calibration.begin(command);
+        self.send(SourceCommand::CalibrationCommand(command));
+        self.log.push(
+            LogLevel::Info,
+            format!("Calibration command {} sent", command.label()),
+        );
+    }
+
     pub(in crate::app) fn connect(&mut self) {
         let Some(endpoint) = self.hardware.endpoint() else {
             self.log
@@ -83,6 +127,36 @@ impl ScopeApp {
             }
             self.next_watch_read = now + super::super::WATCH_READ_PERIOD;
         }
+    }
+
+    pub(in crate::app) fn poll_current_sensor_calibration_reads(&mut self) {
+        if !self.ui.show_current_sensor_calibration
+            || !self.hardware.connected
+            || !self.descriptor_catalog_ready
+            || !self.has_capability(CAP_CAL)
+        {
+            return;
+        }
+        let now = Instant::now();
+        if now < self.calibration.next_read {
+            return;
+        }
+
+        let reads: Vec<ValueRead> = CALIBRATION_READ_NAMES
+            .iter()
+            .filter_map(|name| {
+                let descriptor_index = self.inspector.index_by_name(name)?;
+                let descriptor = self.inspector.descriptors.get(descriptor_index)?;
+                Some(ValueRead {
+                    descriptor_index,
+                    var: descriptor.var,
+                })
+            })
+            .collect();
+        if !reads.is_empty() {
+            self.send_catalog(CatalogCommand::ReadValues(reads));
+        }
+        self.calibration.next_read = now + CALIBRATION_READ_PERIOD;
     }
 
     pub(in crate::app) fn write_variables(&mut self, writes: Vec<(usize, f64)>) {
@@ -354,6 +428,18 @@ impl ScopeApp {
             .info
             .as_ref()
             .and_then(|info| max_record_points_for_binding(binding, info))
+    }
+
+    fn calibration_measurement_done_ok(&self) -> bool {
+        let state = self
+            .inspector
+            .value_by_name("v2k_cal.state")
+            .map(|value| value as u16);
+        let result = self
+            .inspector
+            .value_by_name("v2k_cal.result")
+            .map(|value| value as u16);
+        state == Some(2) && result == Some(1)
     }
 }
 

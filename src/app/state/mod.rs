@@ -1,3 +1,5 @@
+#[path = "calibration_state.rs"]
+mod calibration_state;
 #[path = "hardware_state.rs"]
 mod hardware_state;
 #[path = "project_state.rs"]
@@ -10,6 +12,11 @@ mod viewport_state;
 mod workspace_state;
 
 pub(crate) use self::{
+    calibration_state::{
+        CALIBRATION_READ_NAMES, CALIBRATION_READ_PERIOD, CalibrationCommandResult, CalibrationGate,
+        CalibrationGateInput, CalibrationState, applied_source_label, cal_result_label,
+        cal_state_label, calibration_gate, flags_label, store_result_label,
+    },
     hardware_state::HardwareState,
     project_state::{
         LocalBuildScan, LocalProject, MutationPolicy, ProjectBinding, ProjectCandidate,

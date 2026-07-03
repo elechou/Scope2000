@@ -1,0 +1,6 @@
+# vector: cmd_cal_ct_measure
+# CMD: CAL_CT_MEASURE, IDLE-only CT zero-offset measurement (CPU1, async via mailbox)
+# raw  = frame before COBS (ver|type|flags|seq|len|payload|crc32c, all LE)
+# wire = COBS(raw) + 0x00 delimiter, the actual SCI-link octets
+raw: 5a30000e00080004000000000000005b18d9e5
+wire: 035a30020e02080204010101010101055b18d9e500

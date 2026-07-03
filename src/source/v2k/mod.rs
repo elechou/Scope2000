@@ -10,16 +10,20 @@ use anyhow::{Context, Result, bail};
 use self::codec::{Frame, FrameDecoder};
 use self::transport::ByteTransport;
 use crate::source::{
-    CAP_ENUM, CatalogCommand, DataSource, DeviceInfo, DeviceStatus, ParamWrite, ScopeBlock,
-    ScopeMode, SourceCommand, SourceEvent, SourceHandle, TransportEndpoint,
+    CAP_ENUM, CalibrationCommand, CatalogCommand, DataSource, DeviceInfo, DeviceStatus, ParamWrite,
+    ScopeBlock, ScopeMode, SourceCommand, SourceEvent, SourceHandle, TransportEndpoint,
 };
 
-const EXPECTED_CONTRACT_VERSION: u16 = 14;
+const EXPECTED_CONTRACT_VERSION: u16 = 15;
 const ENUM_PAGE_SIZE: u8 = 8;
 #[cfg(not(test))]
 const REQUEST_TIMEOUT: Duration = Duration::from_millis(150);
 #[cfg(test)]
 const REQUEST_TIMEOUT: Duration = Duration::from_millis(5);
+#[cfg(not(test))]
+const CAL_COMMIT_TIMEOUT: Duration = Duration::from_secs(3);
+#[cfg(test)]
+const CAL_COMMIT_TIMEOUT: Duration = Duration::from_millis(50);
 const MAX_RETRIES: usize = 2;
 const CAPTURE_REPLAY_IDLE_DELAY: Duration = Duration::from_millis(20);
 const CAPTURE_REPLAY_MAX_BLOCKS: u8 = 8;
@@ -259,6 +263,16 @@ impl Session {
         payload: &[u8],
         events: &mpsc::Sender<SourceEvent>,
     ) -> Result<Frame> {
+        self.request_with_timeout(message_type, payload, REQUEST_TIMEOUT, events)
+    }
+
+    fn request_with_timeout(
+        &mut self,
+        message_type: u8,
+        payload: &[u8],
+        timeout: Duration,
+        events: &mpsc::Sender<SourceEvent>,
+    ) -> Result<Frame> {
         let sequence = self.next_sequence;
         self.next_sequence = self.next_sequence.wrapping_add(1);
         let wire = codec::encode_frame(message_type, sequence, payload);
@@ -269,7 +283,7 @@ impl Session {
             self.transport
                 .write_all(&wire)
                 .with_context(|| format!("send message 0x{message_type:02X}"))?;
-            let deadline = Instant::now() + REQUEST_TIMEOUT;
+            let deadline = Instant::now() + timeout;
             let mut read_buffer = [0_u8; 512];
             while Instant::now() < deadline {
                 let count = self.transport.read(&mut read_buffer)?;
@@ -427,8 +441,54 @@ impl Session {
                     },
                 );
             }
+            SourceCommand::CalibrationCommand(command) => {
+                self.handle_calibration_command(command, events)?;
+            }
         }
         Ok(true)
+    }
+
+    fn handle_calibration_command(
+        &mut self,
+        command: CalibrationCommand,
+        events: &mpsc::Sender<SourceEvent>,
+    ) -> Result<()> {
+        let timeout = calibration_command_timeout(command);
+        let response = self.request_with_timeout(
+            codec::message::SYSTEM_COMMAND,
+            &codec::calibration_command_request(command),
+            timeout,
+            events,
+        )?;
+        match require_ack(&response, codec::message::SYSTEM_COMMAND) {
+            Ok(ack) => match command {
+                CalibrationCommand::MeasureZero => {
+                    send_event(
+                        events,
+                        SourceEvent::CalibrationMeasureAccepted { sequence: ack.data },
+                    );
+                }
+                CalibrationCommand::CommitToFlash => {
+                    send_event(
+                        events,
+                        SourceEvent::CalibrationCommitCompleted {
+                            commit_sequence: ack.data,
+                        },
+                    );
+                }
+            },
+            Err(error) if error.is::<DeviceNak>() => {
+                send_event(
+                    events,
+                    SourceEvent::CalibrationCommandFailed {
+                        command,
+                        message: error.to_string(),
+                    },
+                );
+            }
+            Err(error) => return Err(error),
+        }
+        Ok(())
     }
 
     fn handle_catalog_command(
@@ -876,6 +936,13 @@ enum WorkerStep {
     Shutdown,
 }
 
+fn calibration_command_timeout(command: CalibrationCommand) -> Duration {
+    match command {
+        CalibrationCommand::MeasureZero => REQUEST_TIMEOUT,
+        CalibrationCommand::CommitToFlash => CAL_COMMIT_TIMEOUT,
+    }
+}
+
 fn require_ack(frame: &Frame, request_type: u8) -> Result<codec::Ack> {
     let ack = codec::parse_ack(&frame.payload)?;
     if ack.echoed_type != request_type {
@@ -943,7 +1010,9 @@ fn send_event(events: &mpsc::Sender<SourceEvent>, event: SourceEvent) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::source::{DataSource, SystemCommand, ValueRead, VarRef, VarType};
+    use crate::source::{
+        CalibrationCommand, DataSource, SystemCommand, ValueRead, VarRef, VarType,
+    };
 
     struct ScriptedTransport {
         reads: Vec<Vec<u8>>,
@@ -1666,6 +1735,91 @@ mod tests {
         };
         assert_eq!(command, SystemCommand::Start);
         assert_eq!(sequence, 42);
+    }
+
+    #[test]
+    fn calibration_measure_ack_data_is_emitted_as_sequence() {
+        let response = codec::encode_frame(
+            codec::message::SYSTEM_COMMAND | 0x80,
+            1,
+            &ack_payload(codec::message::SYSTEM_COMMAND, 77),
+        );
+        let (event_tx, event_rx) = mpsc::channel();
+        let mut session = session(vec![response], device_info(0, 0, 0));
+
+        session
+            .handle_command(
+                SourceCommand::CalibrationCommand(CalibrationCommand::MeasureZero),
+                &event_tx,
+            )
+            .expect("calibration measure accepted");
+
+        let SourceEvent::CalibrationMeasureAccepted { sequence } =
+            event_rx.recv().expect("measure accepted event")
+        else {
+            panic!("expected calibration measure accepted event");
+        };
+        assert_eq!(sequence, 77);
+    }
+
+    #[test]
+    fn calibration_commit_ack_data_is_final_commit_sequence() {
+        let response = codec::encode_frame(
+            codec::message::SYSTEM_COMMAND | 0x80,
+            1,
+            &ack_payload(codec::message::SYSTEM_COMMAND, 3),
+        );
+        let (event_tx, event_rx) = mpsc::channel();
+        let mut session = session(vec![response], device_info(0, 0, 0));
+
+        session
+            .handle_command(
+                SourceCommand::CalibrationCommand(CalibrationCommand::CommitToFlash),
+                &event_tx,
+            )
+            .expect("calibration commit completed");
+
+        let SourceEvent::CalibrationCommitCompleted { commit_sequence } =
+            event_rx.recv().expect("commit completed event")
+        else {
+            panic!("expected calibration commit completed event");
+        };
+        assert_eq!(commit_sequence, 3);
+    }
+
+    #[test]
+    fn calibration_commit_nak_is_reported_without_session_error() {
+        let response = codec::encode_frame(
+            codec::message::SYSTEM_COMMAND | 0x80,
+            1,
+            &nak_payload(codec::message::SYSTEM_COMMAND, 3),
+        );
+        let (event_tx, event_rx) = mpsc::channel();
+        let mut session = session(vec![response], device_info(0, 0, 0));
+
+        session
+            .handle_command(
+                SourceCommand::CalibrationCommand(CalibrationCommand::CommitToFlash),
+                &event_tx,
+            )
+            .expect("calibration NAK is session-local");
+
+        let SourceEvent::CalibrationCommandFailed { command, message } =
+            event_rx.recv().expect("calibration failure event")
+        else {
+            panic!("expected calibration failure event");
+        };
+        assert_eq!(command, CalibrationCommand::CommitToFlash);
+        assert!(message.contains("bad state"), "{message}");
+    }
+
+    #[test]
+    fn calibration_commit_uses_extended_timeout() {
+        assert_eq!(
+            calibration_command_timeout(CalibrationCommand::MeasureZero),
+            REQUEST_TIMEOUT
+        );
+        assert!(calibration_command_timeout(CalibrationCommand::CommitToFlash) > REQUEST_TIMEOUT);
     }
 
     #[test]
