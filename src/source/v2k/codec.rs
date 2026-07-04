@@ -812,7 +812,7 @@ mod tests {
         assert_eq!(info.mcu_model, 2);
         assert_eq!(info.scope_max_ch, 16);
         assert_eq!(info.scope_block_ticks, 10);
-        assert_eq!(info.scope_ring_words, 0xAFF8);
+        assert_eq!(info.scope_ring_words, 0xDFF8);
     }
 
     #[test]

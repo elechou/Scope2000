@@ -151,7 +151,10 @@ pub fn max_record_points_for_binding(binding: &[VarDescriptor], info: &DeviceInf
     if slot_words & 1 != 0 {
         slot_words += 1;
     }
-    let block_capacity = floor_pow2(info.scope_ring_words / slot_words);
+    // Exact ring fit, mirroring the firmware's v2k_scope_layout (wire-spec
+    // "capacity_blocks = floor(scope_ring_words / aligned_slot_words)"; the
+    // former power-of-two rounding was removed).
+    let block_capacity = info.scope_ring_words / slot_words;
     let points = block_capacity
         .saturating_sub(1)
         .saturating_mul(u32::from(info.scope_block_ticks));
@@ -159,13 +162,6 @@ pub fn max_record_points_for_binding(binding: &[VarDescriptor], info: &DeviceInf
         return None;
     }
     Some(points.min(u32::from(MAX_RECORD_POINTS_ABSOLUTE)) as u16)
-}
-
-fn floor_pow2(value: u32) -> u32 {
-    if value == 0 {
-        return 0;
-    }
-    1 << (31 - value.leading_zeros())
 }
 
 pub fn format_record_duration(seconds: f64) -> String {
@@ -281,9 +277,9 @@ mod tests {
         assert_eq!(max_record_points_for_binding(&one_f32, &info), Some(10_230));
         assert_eq!(
             max_record_points_for_binding(&eight_f32, &info),
-            Some(1_270)
+            Some(1_690)
         );
-        assert_eq!(max_record_points_for_binding(&mixed, &info), Some(2_550));
+        assert_eq!(max_record_points_for_binding(&mixed, &info), Some(4_930));
         assert_eq!(max_record_points_for_binding(&[], &info), None);
     }
 
@@ -302,7 +298,7 @@ mod tests {
             mcu_model: 2,
             scope_max_ch: 16,
             scope_block_ticks: 10,
-            scope_ring_words: 0xAFF8,
+            scope_ring_words: 0xDFF8,
         };
         let eight_f32 = (0..8)
             .map(|index| descriptor(&format!("f32_{index}"), VarType::F32))
@@ -314,11 +310,11 @@ mod tests {
         assert_eq!(scope_channel_limit(Some(&info)), 16);
         assert_eq!(
             max_record_points_for_binding(&eight_f32, &info),
-            Some(2_550)
+            Some(3_400)
         );
         assert_eq!(
             max_record_points_for_binding(&sixteen_f32, &info),
-            Some(1_270)
+            Some(1_730)
         );
 
         info.scope_block_ticks = 0;
