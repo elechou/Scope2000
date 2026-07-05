@@ -8,7 +8,7 @@ use crate::app::state::{
 };
 use crate::console::LogLevel;
 use crate::source::{
-    CAP_CAL, CAP_CT_ZERO_CAL, CAP_NATIVE_BLOCK, CAP_PRE_TRIGGER, CAP_SCOPE_CAPTURE,
+    CAL_READ_MAX, CAP_CAL, CAP_CT_ZERO_CAL, CAP_NATIVE_BLOCK, CAP_PRE_TRIGGER, CAP_SCOPE_CAPTURE,
     CAP_SCOPE_STREAM, CAP_SYSTEM_CMD, CalibrationCommand, CatalogCommand, NO_CAPTURE_ACK,
     ParamWrite, ScopeConfig, ScopeMode, SourceCommand, SystemCommand, TriggerEdge, ValueRead,
     VarDescriptor,
@@ -194,9 +194,21 @@ impl ScopeApp {
                 .push(LogLevel::Warn, "CAL capability is not available".to_owned());
             return;
         }
+        let read_values: Vec<ValueRead> = writes
+            .iter()
+            .filter_map(|(index, _)| {
+                self.inspector
+                    .descriptors
+                    .get(*index)
+                    .map(|descriptor| ValueRead {
+                        descriptor_index: *index,
+                        var: descriptor.var,
+                    })
+            })
+            .collect();
         let param_writes: Vec<ParamWrite> = writes
-            .into_iter()
-            .filter_map(|(index, value)| self.inspector.param_write_for(index, value))
+            .iter()
+            .filter_map(|(index, value)| self.inspector.param_write_for(*index, *value))
             .collect();
         if param_writes.is_empty() {
             return;
@@ -213,6 +225,9 @@ impl ScopeApp {
         }
         self.send_catalog(CatalogCommand::WriteParams(param_writes));
         self.send_catalog(CatalogCommand::CommitParams);
+        for reads in read_values.chunks(CAL_READ_MAX) {
+            self.send_catalog(CatalogCommand::ReadValues(reads.to_vec()));
+        }
     }
 
     pub(in crate::app) fn start_acquisition(&mut self, mode: ScopeMode) {

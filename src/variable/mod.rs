@@ -59,6 +59,7 @@ pub struct WatchEntry {
     pub var_name: String,
     pub descriptor_index: usize,
     pub write_buf: String,
+    pub write_selected: bool,
 }
 
 #[derive(Default)]
@@ -78,10 +79,16 @@ impl InspectorState {
             .iter()
             .filter_map(|&index| self.descriptors.get(index).map(|d| d.name.clone()))
             .collect();
-        let watch_names: Vec<(String, String)> = self
+        let watch_names: Vec<(String, String, bool)> = self
             .watch_vars
             .iter()
-            .map(|watch| (watch.var_name.clone(), watch.write_buf.clone()))
+            .map(|watch| {
+                (
+                    watch.var_name.clone(),
+                    watch.write_buf.clone(),
+                    watch.write_selected,
+                )
+            })
             .collect();
 
         self.entries = build_descriptor_tree_filtered(&descriptors, VarDescriptor::is_user);
@@ -96,12 +103,13 @@ impl InspectorState {
             .collect();
         self.watch_vars = watch_names
             .into_iter()
-            .filter_map(|(name, write_buf)| {
+            .filter_map(|(name, write_buf, write_selected)| {
                 self.index_by_name(&name)
                     .map(|descriptor_index| WatchEntry {
                         var_name: name,
                         descriptor_index,
                         write_buf,
+                        write_selected,
                     })
             })
             .collect();
@@ -659,6 +667,7 @@ mod tests {
             var_name: "b".to_owned(),
             descriptor_index: 1,
             write_buf: "1.0".to_owned(),
+            write_selected: true,
         });
         state.set_descriptors(vec![descriptor("a")]);
         assert_eq!(state.pinned, vec![0]);

@@ -49,6 +49,42 @@ fn pin_button(ui: &mut egui::Ui, row_rect: egui::Rect, id_src: &str, pinned: boo
     resp.clicked()
 }
 
+fn write_select_button(
+    ui: &mut egui::Ui,
+    selected: bool,
+    enabled: bool,
+    row_alpha: f32,
+) -> egui::Response {
+    let enabled = enabled && ui.is_enabled();
+    let height = ui.spacing().interact_size.y;
+    let desired = egui::vec2(ui.available_width(), height);
+    let sense = if enabled {
+        egui::Sense::click()
+    } else {
+        egui::Sense::hover()
+    };
+    let (rect, resp) = ui.allocate_exact_size(desired, sense);
+    if ui.is_rect_visible(rect) {
+        if selected {
+            ui.painter()
+                .rect_filled(rect, 3.0, theme::SELECT_BG.gamma_multiply(row_alpha));
+        } else if resp.hovered() {
+            ui.painter()
+                .rect_filled(rect, 3.0, theme::WIDGET_HOVER.gamma_multiply(row_alpha));
+        }
+        if selected || resp.hovered() {
+            ui.painter().text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                ICON_ARROW_LEFT,
+                egui::TextStyle::Body.resolve(ui.style()),
+                theme::TEXT_STRONG.gamma_multiply(row_alpha),
+            );
+        }
+    }
+    resp
+}
+
 fn pinned_item_ui(
     ui: &mut egui::Ui,
     name: &str,
@@ -488,7 +524,7 @@ pub fn show_variables(
             });
             header.col(|_| {});
             header.col(|ui| {
-                ui.strong("Write");
+                ui.strong("Input");
             });
         })
         .body(|body| {
@@ -553,35 +589,9 @@ pub fn show_variables(
                     })
                     .1;
                 row.col(|ui| {
-                    let height = ui.spacing().interact_size.y;
-                    let desired = egui::vec2(ui.available_width(), height);
-                    let sense = if can_write {
-                        egui::Sense::click()
-                    } else {
-                        egui::Sense::hover()
-                    };
-                    let (rect, resp) = ui.allocate_exact_size(desired, sense);
-                    if ui.is_rect_visible(rect) {
-                        if resp.hovered() {
-                            ui.painter().rect_filled(rect, 3.0, theme::WIDGET_HOVER);
-                        }
-                        ui.painter().text(
-                            rect.center(),
-                            egui::Align2::CENTER_CENTER,
-                            ICON_ARROW_LEFT,
-                            egui::TextStyle::Body.resolve(ui.style()),
-                            if resp.hovered() {
-                                theme::TEXT_STRONG
-                            } else {
-                                theme::TEXT_DEFAULT
-                            },
-                        );
-                    }
-                    if can_write
-                        && resp.clicked()
-                        && let Ok(value) = watch.write_buf.parse::<f64>()
-                    {
-                        to_write.push((watch.descriptor_index, value));
+                    let resp = write_select_button(ui, watch.write_selected, can_write, row_alpha);
+                    if can_write && resp.clicked() {
+                        watch.write_selected = !watch.write_selected;
                     }
                 });
                 let write_resp = row
@@ -722,6 +732,7 @@ pub fn show_variables(
                         var_name: name,
                         descriptor_index,
                         write_buf: String::new(),
+                        write_selected: false,
                     },
                 );
                 pos += 1;
@@ -739,7 +750,9 @@ pub fn show_variables(
         ui.available_width(),
     ) {
         for watch in &inspector.watch_vars {
-            if let Ok(value) = watch.write_buf.parse::<f64>() {
+            if watch.write_selected
+                && let Ok(value) = watch.write_buf.parse::<f64>()
+            {
                 to_write.push((watch.descriptor_index, value));
             }
         }

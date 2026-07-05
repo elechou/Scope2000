@@ -274,25 +274,32 @@ fn snapshot_watch_refs(
             pinned.push(name.clone());
         }
     }
-    let mut watch: Vec<String> = inspector
+    let mut watch: Vec<WatchRef> = inspector
         .watch_vars
         .iter()
-        .map(|watch| watch.var_name.clone())
+        .map(|watch| WatchRef {
+            var_name: watch.var_name.clone(),
+            write_buf: watch.write_buf.clone(),
+            write_selected: watch.write_selected,
+        })
         .collect();
     for name in unresolved_watch {
-        if !watch.contains(name) {
-            watch.push(name.clone());
+        if !watch.iter().any(|watch| watch.var_name == *name) {
+            watch.push(WatchRef {
+                var_name: name.clone(),
+                ..WatchRef::default()
+            });
         }
     }
     (
         pinned
             .into_iter()
-            .map(|var_name| WatchRef { var_name })
+            .map(|var_name| WatchRef {
+                var_name,
+                ..WatchRef::default()
+            })
             .collect(),
-        watch
-            .into_iter()
-            .map(|var_name| WatchRef { var_name })
-            .collect(),
+        watch,
     )
 }
 
@@ -323,7 +330,8 @@ fn restore_watch_refs(
             Some(WatchEntry {
                 var_name: watch.var_name.clone(),
                 descriptor_index,
-                write_buf: String::new(),
+                write_buf: watch.write_buf.clone(),
+                write_selected: watch.write_selected,
             })
         })
         .collect();
@@ -355,17 +363,21 @@ mod tests {
         let pinned = vec![
             WatchRef {
                 var_name: "present.pin".to_owned(),
+                ..WatchRef::default()
             },
             WatchRef {
                 var_name: "missing.pin".to_owned(),
+                ..WatchRef::default()
             },
         ];
         let watch = vec![
             WatchRef {
                 var_name: "present.watch".to_owned(),
+                ..WatchRef::default()
             },
             WatchRef {
                 var_name: "missing.watch".to_owned(),
+                ..WatchRef::default()
             },
         ];
         let (missing_pinned, missing_watch) = restore_watch_refs(&mut inspector, &pinned, &watch);
@@ -375,14 +387,38 @@ mod tests {
     }
 
     #[test]
+    fn workspace_watch_refs_preserve_write_inputs() {
+        let mut inspector = InspectorState::default();
+        inspector.set_descriptors(vec![descriptor("present.watch")]);
+        let watch = vec![WatchRef {
+            var_name: "present.watch".to_owned(),
+            write_buf: "12.5".to_owned(),
+            write_selected: true,
+        }];
+
+        let (missing_pinned, missing_watch) = restore_watch_refs(&mut inspector, &[], &watch);
+
+        assert!(missing_pinned.is_empty());
+        assert!(missing_watch.is_empty());
+        assert_eq!(inspector.watch_vars.len(), 1);
+        assert_eq!(inspector.watch_vars[0].write_buf, "12.5");
+        assert!(inspector.watch_vars[0].write_selected);
+
+        let (_, saved_watch) = snapshot_watch_refs(&inspector, &[], &[]);
+        assert_eq!(saved_watch, watch);
+    }
+
+    #[test]
     fn complete_catalog_replacement_preserves_refs_that_become_missing() {
         let mut inspector = InspectorState::default();
         inspector.set_descriptors(vec![descriptor("kept.pin"), descriptor("kept.watch")]);
         let initial_pinned = vec![WatchRef {
             var_name: "kept.pin".to_owned(),
+            ..WatchRef::default()
         }];
         let initial_watch = vec![WatchRef {
             var_name: "kept.watch".to_owned(),
+            ..WatchRef::default()
         }];
         let unresolved = restore_watch_refs(&mut inspector, &initial_pinned, &initial_watch);
         let (saved_pinned, saved_watch) =

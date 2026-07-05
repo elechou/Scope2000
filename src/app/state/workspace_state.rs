@@ -128,8 +128,27 @@ pub(crate) struct WorkspaceState {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
 pub(crate) struct WatchRef {
     pub var_name: String,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub write_buf: String,
+    #[serde(skip_serializing_if = "is_false")]
+    pub write_selected: bool,
+}
+
+impl Default for WatchRef {
+    fn default() -> Self {
+        Self {
+            var_name: String::new(),
+            write_buf: String::new(),
+            write_selected: false,
+        }
+    }
+}
+
+fn is_false(value: &bool) -> bool {
+    !*value
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -197,7 +216,8 @@ var_name = "control_ticks"
         assert_eq!(
             config.legacy_workspace.unwrap().pinned,
             vec![WatchRef {
-                var_name: "control_ticks".to_owned()
+                var_name: "control_ticks".to_owned(),
+                ..WatchRef::default()
             }]
         );
         assert!(!config.legacy_migration_complete);
