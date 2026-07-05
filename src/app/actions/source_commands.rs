@@ -5,7 +5,8 @@ use crate::app::state::{
     ABZ_ZEROING_READ_NAMES, ABZ_ZEROING_READ_PERIOD, ABZ_ZEROING_STATUS_READ_NAMES,
     ABZ_ZEROING_STATUS_READ_PERIOD, AbzZeroingSnapshot, CALIBRATION_READ_NAMES,
     CALIBRATION_READ_PERIOD, CALIBRATION_STATUS_READ_NAMES, CALIBRATION_STATUS_READ_PERIOD,
-    CalibrationGate, CalibrationGateInput, CalibrationSnapshot, calibration_gate,
+    CalibrationGate, CalibrationGateInput, CalibrationSnapshot, DcVoltageSnapshot,
+    calibration_gate,
 };
 use crate::console::LogLevel;
 use crate::source::{
@@ -128,6 +129,10 @@ impl ScopeApp {
             for reads in self.inspector.read_batches() {
                 self.send_catalog(CatalogCommand::ReadValues(reads));
             }
+            let voltage_reads = self.dc_voltage_reads();
+            if !voltage_reads.is_empty() {
+                self.send_catalog(CatalogCommand::ReadValues(voltage_reads));
+            }
             self.next_watch_read = now + super::super::WATCH_READ_PERIOD;
         }
     }
@@ -227,6 +232,13 @@ impl ScopeApp {
         }
     }
 
+    pub(in crate::app) fn dc_voltage_snapshot(&self) -> DcVoltageSnapshot {
+        DcVoltageSnapshot {
+            dc1: self.catalog_value_dc_voltage(1),
+            dc2: self.catalog_value_dc_voltage(2),
+        }
+    }
+
     pub(in crate::app) fn abz_zeroing_snapshot(&self) -> Option<AbzZeroingSnapshot> {
         self.has_capability(CAP_ABZ_ZEROING)
             .then(|| AbzZeroingSnapshot {
@@ -255,6 +267,21 @@ impl ScopeApp {
                 npe_last_error_flags: self
                     .catalog_value_u32("v2k_abz_zeroing.npe.last_error_flags"),
             })
+    }
+
+    pub(in crate::app) fn zeroing_start_ready(&self) -> bool {
+        self.current_zeroing_start_ready() && self.abz_zeroing_start_ready()
+    }
+
+    pub(in crate::app) fn zeroing_start_block_reason(&self) -> Option<&'static str> {
+        let current_ready = self.current_zeroing_start_ready();
+        let abz_ready = self.abz_zeroing_start_ready();
+        match (current_ready, abz_ready) {
+            (false, false) => Some("Start requires Current Zeroing and ABZ Zeroing ready"),
+            (false, true) => Some("Start requires Current Zeroing ready"),
+            (true, false) => Some("Start requires ABZ Zeroing ready"),
+            (true, true) => None,
+        }
     }
 
     pub(in crate::app) fn write_variables(&mut self, writes: Vec<(usize, f64)>) {
@@ -555,6 +582,65 @@ impl ScopeApp {
         state == Some(2) && result == Some(1)
     }
 
+    fn current_zeroing_start_ready(&self) -> bool {
+        if !self.has_capability(CAP_CAL) || !self.has_capability(CAP_CT_ZERO_CAL) {
+            return true;
+        }
+        self.current_sensor_calibration_snapshot().start_ready()
+    }
+
+    fn abz_zeroing_start_ready(&self) -> bool {
+        if !self.has_capability(CAP_ABZ_ZEROING) {
+            return true;
+        }
+        self.abz_zeroing_snapshot()
+            .is_some_and(AbzZeroingSnapshot::start_ready)
+    }
+
+    fn catalog_value_dc_voltage(&self, channel: u8) -> Option<f64> {
+        let index = self.dc_voltage_descriptor_index(channel)?;
+        self.inspector
+            .values
+            .get(index)
+            .copied()
+            .flatten()
+            .filter(|value| value.is_finite())
+    }
+
+    fn dc_voltage_reads(&self) -> Vec<ValueRead> {
+        let mut indexes = Vec::new();
+        for channel in [1, 2] {
+            if let Some(index) = self.dc_voltage_descriptor_index(channel)
+                && !indexes.contains(&index)
+            {
+                indexes.push(index);
+            }
+        }
+
+        indexes
+            .into_iter()
+            .filter_map(|descriptor_index| {
+                self.inspector
+                    .descriptors
+                    .get(descriptor_index)
+                    .map(|descriptor| ValueRead {
+                        descriptor_index,
+                        var: descriptor.var,
+                    })
+            })
+            .collect()
+    }
+
+    fn dc_voltage_descriptor_index(&self, channel: u8) -> Option<usize> {
+        for name in dc_voltage_candidate_names(channel) {
+            if let Some(index) = self.inspector.index_by_name(name) {
+                return Some(index);
+            }
+        }
+
+        None
+    }
+
     fn catalog_value_u16(&self, name: &str) -> Option<u16> {
         self.inspector
             .value_by_name(name)
@@ -578,5 +664,17 @@ fn mode_name(mode: ScopeMode) -> &'static str {
         ScopeMode::CapturePost => "capture post",
         ScopeMode::CaptureFrozen => "capture frozen",
         ScopeMode::Unknown(_) => "unknown",
+    }
+}
+
+const DC1_VOLTAGE_NAMES: &[&str] = &["v2k_adc.voltage.vt1"];
+
+const DC2_VOLTAGE_NAMES: &[&str] = &["v2k_adc.voltage.vt2"];
+
+fn dc_voltage_candidate_names(channel: u8) -> &'static [&'static str] {
+    match channel {
+        1 => DC1_VOLTAGE_NAMES,
+        2 => DC2_VOLTAGE_NAMES,
+        _ => &[],
     }
 }

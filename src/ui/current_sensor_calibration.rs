@@ -27,7 +27,7 @@ pub fn show(
     }
 
     let mut action = None;
-    egui::Window::new("Current Sensor Calibration")
+    egui::Window::new("Current Zeroing")
         .id(egui::Id::new("current_sensor_calibration_window"))
         .open(&mut ui_state.show_current_sensor_calibration)
         .pivot(egui::Align2::CENTER_CENTER)
@@ -51,7 +51,7 @@ pub fn show(
         egui::Modal::new("current_sensor_calibration_commit_confirm".into()).show(ui.ctx(), |ui| {
             ui.set_width(360.0);
             ui.add_space(8.0);
-            theme::modal_title(ui, "Commit Current Sensor Calibration?");
+            theme::modal_title(ui, "Commit Current Zeroing Reference?");
             ui.add_space(8.0);
             ui.label(
                 "Write the latest passing CT zero measurement as the system Golden reference in CPU2 flash.",
@@ -88,7 +88,9 @@ fn show_service_notice(ui: &mut egui::Ui, snapshot: CalibrationSnapshot) {
             .color(theme::TEXT_STRONG),
     );
     ui.label(
-        "Viewer2000 automatically calibrates current-sensor zero at every boot. Use this one-time commissioning and service workflow only to establish or update the system Golden reference in flash after initial setup or a significant hardware change.",
+        "Viewer2000 automatically runs Current Zeroing at every boot. Use this one-time \
+         commissioning and service workflow only to establish or update the system Golden \
+         reference in flash after initial setup or a significant hardware change.",
     );
 
     let health = snapshot.health();

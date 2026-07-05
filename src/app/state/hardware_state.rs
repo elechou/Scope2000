@@ -112,7 +112,7 @@ impl HardwareState {
     pub fn device_summary_text(&self) -> Option<String> {
         self.info.as_ref().map(|info| {
             format!(
-                "{} · {}",
+                "{} . {}",
                 info.mcu_model_label(),
                 tick_rate_text(info.tick_hz)
             )
@@ -287,7 +287,7 @@ mod tests {
 
         assert_eq!(
             hardware.device_summary_text().as_deref(),
-            Some("F28379D · 20kHz")
+            Some("F28379D . 20kHz")
         );
     }
 
@@ -314,7 +314,7 @@ mod tests {
 
         assert_eq!(
             hardware.device_summary_text().as_deref(),
-            Some("F28P65x · 20kHz")
+            Some("F28P65x . 20kHz")
         );
     }
 

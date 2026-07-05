@@ -2,7 +2,7 @@ use eframe::egui;
 
 use crate::app::state::{
     AbzZeroingHealthLevel, AbzZeroingSnapshot, CalibrationHealthLevel, CalibrationSnapshot,
-    HardwareState, UiState,
+    DcVoltageSnapshot, HardwareState, UiState,
 };
 use crate::console::{LogBuffer, LogLevel};
 use crate::theme;
@@ -19,6 +19,7 @@ pub fn show(
     hardware: &mut HardwareState,
     ui_state: &mut UiState,
     log: &mut LogBuffer,
+    dc_voltage: DcVoltageSnapshot,
     calibration: CalibrationSnapshot,
     abz_zeroing: Option<AbzZeroingSnapshot>,
 ) -> Option<StatusBarAction> {
@@ -124,33 +125,20 @@ pub fn show(
                 }
 
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let calibration_health = calibration.health();
-                    let calibration_color = match calibration_health.level {
-                        CalibrationHealthLevel::Normal => theme::TEXT_SUBDUED,
-                        CalibrationHealthLevel::Warning => theme::YELLOW,
-                        CalibrationHealthLevel::Error => theme::RED,
-                    };
-                    let calibration_text =
-                        if calibration_health.level == CalibrationHealthLevel::Normal {
-                            "Current Sensor"
-                        } else {
-                            "⚠ Current Sensor"
-                        };
-                    let calibration_status = ui.add(
-                        egui::Button::new(
-                            egui::RichText::new(calibration_text).color(calibration_color),
-                        )
-                        .frame(false),
-                    );
-                    if calibration_status.clicked() {
-                        ui_state.show_device_info_window = true;
+                    if let Some(ref info) = hardware.device_summary {
+                        let device_info = ui.add(
+                            egui::Button::new(egui::RichText::new(info).color(theme::TEXT_SUBDUED))
+                                .frame(false),
+                        );
+                        if device_info.clicked() {
+                            ui_state.show_device_info_window = !ui_state.show_device_info_window;
+                        }
+                        let hover = hardware
+                            .device_info_hover_text()
+                            .unwrap_or_else(|| "Device Information".to_owned());
+                        device_info.on_hover_text(hover);
+                        ui.separator();
                     }
-                    calibration_status.on_hover_text(format!(
-                        "{}\n{}",
-                        calibration_health.label, calibration_health.detail
-                    ));
-
-                    ui.separator();
 
                     if let Some(snapshot) = abz_zeroing {
                         let health = snapshot.health();
@@ -168,27 +156,53 @@ pub fn show(
                             egui::Button::new(egui::RichText::new(text).color(color)).frame(false),
                         );
                         if status.clicked() {
-                            ui_state.show_abz_zeroing = true;
+                            ui_state.show_abz_zeroing = !ui_state.show_abz_zeroing;
                         }
                         status.on_hover_text(format!("{}\n{}", health.label, health.detail));
-
                         ui.separator();
                     }
 
-                    if let Some(ref info) = hardware.device_summary {
-                        let device_info = ui.add(
-                            egui::Button::new(egui::RichText::new(info).color(theme::TEXT_SUBDUED))
-                                .frame(false),
-                        );
-                        if device_info.clicked() {
-                            ui_state.show_device_info_window = !ui_state.show_device_info_window;
-                        }
-                        let hover = hardware
-                            .device_info_hover_text()
-                            .unwrap_or_else(|| "Device Information".to_owned());
-                        device_info.on_hover_text(hover);
-                        ui.separator();
+                    let calibration_health = calibration.health();
+                    let calibration_color = match calibration_health.level {
+                        CalibrationHealthLevel::Normal => theme::TEXT_SUBDUED,
+                        CalibrationHealthLevel::Warning => theme::YELLOW,
+                        CalibrationHealthLevel::Error => theme::RED,
+                    };
+                    let calibration_text =
+                        if calibration_health.level == CalibrationHealthLevel::Normal {
+                            "Current Zeroing"
+                        } else {
+                            "⚠ Current Zeroing"
+                        };
+                    let calibration_status = ui.add(
+                        egui::Button::new(
+                            egui::RichText::new(calibration_text).color(calibration_color),
+                        )
+                        .frame(false),
+                    );
+                    if calibration_status.clicked() {
+                        ui_state.show_current_sensor_calibration =
+                            !ui_state.show_current_sensor_calibration;
                     }
+                    calibration_status.on_hover_text(format!(
+                        "{}\n{}",
+                        calibration_health.label, calibration_health.detail
+                    ));
+                    ui.separator();
+
+                    let voltage_warning = dc_voltage.has_warning();
+                    let voltage_color = if voltage_warning {
+                        theme::YELLOW
+                    } else {
+                        theme::TEXT_SUBDUED
+                    };
+                    let voltage_text = if voltage_warning {
+                        format!("⚠ {}", dc_voltage_text(dc_voltage))
+                    } else {
+                        dc_voltage_text(dc_voltage)
+                    };
+                    ui.label(egui::RichText::new(voltage_text).color(voltage_color))
+                        .on_hover_text(dc_voltage_hover_text(dc_voltage));
                 });
             });
         });
@@ -204,4 +218,34 @@ pub fn show(
     } else {
         None
     }
+}
+
+fn dc_voltage_text(snapshot: DcVoltageSnapshot) -> String {
+    format!(
+        "DC {}/{} V",
+        voltage_part(snapshot.dc1),
+        voltage_part(snapshot.dc2)
+    )
+}
+
+fn voltage_part(value: Option<f64>) -> String {
+    value.map_or_else(
+        || "--".to_owned(),
+        |voltage| (voltage.trunc() as i64).to_string(),
+    )
+}
+
+fn dc_voltage_hover_text(snapshot: DcVoltageSnapshot) -> String {
+    format!(
+        "DC 1 Voltage: {}\nDC 2 Voltage: {}",
+        voltage_hover_part(snapshot.dc1),
+        voltage_hover_part(snapshot.dc2)
+    )
+}
+
+fn voltage_hover_part(value: Option<f64>) -> String {
+    value.map_or_else(
+        || "unavailable".to_owned(),
+        |voltage| format!("{voltage:.2} V"),
+    )
 }

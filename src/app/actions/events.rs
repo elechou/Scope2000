@@ -4,7 +4,7 @@ use crate::app::ScopeApp;
 use crate::app::state::{AbzZeroingCommandResult, CalibrationCommandResult};
 use crate::console::LogLevel;
 use crate::source::{
-    CAP_ABZ_ZEROING, ScopeBlock, ScopeMode, SourceEvent, SystemCommand, SystemState, VarDescriptor,
+    ScopeBlock, ScopeMode, SourceEvent, SystemCommand, SystemState, VarDescriptor,
     command_result_text,
 };
 use crate::variable::InspectorState;
@@ -125,19 +125,14 @@ impl ScopeApp {
                             // untrusted current-sensor zero.
                             self.log.push(
                                 LogLevel::Warn,
-                                "Start refused: the current-sensor zero is not trusted. Open Current Sensor Calibration and run Measure (Commit a new Golden reference first if the drift is legitimate).".to_owned(),
+                                "Start refused: Current Zeroing is not trusted.".to_owned(),
                             );
-                            self.ui.show_current_sensor_calibration = true;
                         }
-                        if completed.command == SystemCommand::Start
-                            && completed.result == 3
-                            && self.has_capability(CAP_ABZ_ZEROING)
-                        {
+                        if completed.command == SystemCommand::Start && completed.result == 3 {
                             self.log.push(
                                 LogLevel::Warn,
-                                "Start refused: ABZ Zeroing is not ready. Opened ABZ Zeroing status.".to_owned(),
+                                "Start refused: ABZ Zeroing is not ready.".to_owned(),
                             );
-                            self.ui.show_abz_zeroing = true;
                             self.abz_zeroing.next_read = Instant::now();
                         }
                     }

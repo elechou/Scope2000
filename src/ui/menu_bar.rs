@@ -80,7 +80,7 @@ pub fn show(
                 });
 
                 ui.menu_button("Toolbox", |ui| {
-                    if ui.button("Current Sensor Calibration").clicked() {
+                    if ui.button("Current Zeroing").clicked() {
                         ui_state.show_current_sensor_calibration = true;
                         ui.close_kind(egui::UiKind::Menu);
                     }

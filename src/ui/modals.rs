@@ -230,9 +230,9 @@ fn show_current_sensor_status(ui: &mut egui::Ui, calibration: CalibrationSnapsho
         CalibrationHealthLevel::Error => theme::RED,
     };
     let heading = if health.level == CalibrationHealthLevel::Normal {
-        "Current Sensor"
+        "Current Zeroing"
     } else {
-        "⚠ Current Sensor"
+        "⚠ Current Zeroing"
     };
 
     ui.label(egui::RichText::new(heading).strong().color(color));

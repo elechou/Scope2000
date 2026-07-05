@@ -158,7 +158,8 @@ impl ScopeApp {
             && !system_command_pending;
         let can_start = can_send_system_command
             && self.project_policy().system_start
-            && matches!(system_state, Some(SystemState::Idle));
+            && matches!(system_state, Some(SystemState::Idle))
+            && self.zeroing_start_ready();
         let can_stop =
             can_send_system_command && matches!(system_state, Some(SystemState::Running));
 
@@ -194,6 +195,12 @@ impl ScopeApp {
         }
         if let Some(text) = self.hardware.last_system_command_text() {
             ui.colored_label(theme::TEXT_SUBDUED, text);
+        }
+        if let Some(reason) = self.zeroing_start_block_reason()
+            && can_send_system_command
+            && matches!(system_state, Some(SystemState::Idle))
+        {
+            ui.colored_label(theme::YELLOW, reason);
         }
         if let Some(status) = &self.hardware.status
             && status.fault_code != 0
@@ -460,12 +467,14 @@ impl eframe::App for ScopeApp {
             self.handle_menu_action(action);
         }
         let calibration_snapshot = self.current_sensor_calibration_snapshot();
+        let dc_voltage_snapshot = self.dc_voltage_snapshot();
         let abz_zeroing_snapshot = self.abz_zeroing_snapshot();
         if let Some(action) = crate::ui::status_bar::show(
             ui,
             &mut self.hardware,
             &mut self.ui,
             &mut self.log,
+            dc_voltage_snapshot,
             calibration_snapshot,
             abz_zeroing_snapshot,
         ) {

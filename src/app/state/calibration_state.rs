@@ -66,6 +66,13 @@ pub(crate) struct CalibrationSnapshot {
 }
 
 impl CalibrationSnapshot {
+    pub fn start_ready(self) -> bool {
+        matches!(
+            (self.state, self.result, self.applied_source),
+            (Some(2), Some(1), Some(2))
+        )
+    }
+
     pub fn health(self) -> CalibrationHealth {
         if matches!(self.store_result, Some(2..)) {
             return CalibrationHealth {
@@ -82,7 +89,7 @@ impl CalibrationSnapshot {
                 detail: "Current-sensor calibration status is not available.",
             },
             (Some(0), _, _) => CalibrationHealth {
-                level: CalibrationHealthLevel::Normal,
+                level: CalibrationHealthLevel::Warning,
                 label: "Pending",
                 detail: "Automatic current-sensor calibration has not completed yet. Start is refused until it passes.",
             },
@@ -466,6 +473,7 @@ mod tests {
             store_sequence: Some(3),
         };
         assert_eq!(normal.health().level, CalibrationHealthLevel::Normal);
+        assert!(normal.start_ready());
 
         let no_golden = CalibrationSnapshot {
             store_valid: Some(0),
@@ -506,5 +514,12 @@ mod tests {
             ..normal
         };
         assert_eq!(flash_failure.health().level, CalibrationHealthLevel::Error);
+
+        let pending = CalibrationSnapshot {
+            state: Some(0),
+            ..CalibrationSnapshot::default()
+        };
+        assert_eq!(pending.health().level, CalibrationHealthLevel::Warning);
+        assert!(!pending.start_ready());
     }
 }

@@ -71,8 +71,12 @@ pub(crate) struct AbzZeroingSnapshot {
 }
 
 impl AbzZeroingSnapshot {
+    pub fn start_ready(self) -> bool {
+        self.ready == Some(1) || matches!((self.state, self.result), (Some(2), Some(1)))
+    }
+
     pub fn health(self) -> AbzZeroingHealth {
-        if self.ready == Some(1) || matches!((self.state, self.result), (Some(2), Some(1))) {
+        if self.start_ready() {
             return AbzZeroingHealth {
                 level: AbzZeroingHealthLevel::Normal,
                 label: "Ready",
@@ -93,20 +97,20 @@ impl AbzZeroingSnapshot {
             }
             if self.npe_dir_resets.unwrap_or_default() != 0 {
                 return AbzZeroingHealth {
-                    level: AbzZeroingHealthLevel::Warning,
+                    level: AbzZeroingHealthLevel::Error,
                     label: "Direction Reset",
                     detail: "Z events were observed with inconsistent direction.",
                 };
             }
             if self.npe_z_rejects.unwrap_or_default() != 0 {
                 return AbzZeroingHealth {
-                    level: AbzZeroingHealthLevel::Warning,
+                    level: AbzZeroingHealthLevel::Error,
                     label: "Z Repeat Check",
                     detail: "Z events were observed but the index latch did not repeat yet.",
                 };
             }
             return AbzZeroingHealth {
-                level: AbzZeroingHealthLevel::Warning,
+                level: AbzZeroingHealthLevel::Error,
                 label: "Waiting for Z",
                 detail: "The passive ABZ observer is waiting for two qualified Z events. Rotate the shaft externally; firmware will not energize the motor.",
             };
@@ -114,7 +118,7 @@ impl AbzZeroingSnapshot {
 
         match (self.state, self.result, self.block_reason) {
             (None, _, _) if self.ready.is_none() => AbzZeroingHealth {
-                level: AbzZeroingHealthLevel::Normal,
+                level: AbzZeroingHealthLevel::Error,
                 label: "Unavailable",
                 detail: "ABZ zeroing status is not available.",
             },
@@ -139,7 +143,7 @@ impl AbzZeroingSnapshot {
                 detail: "ABZ zeroing was cancelled before the reference became ready.",
             },
             (Some(0), _, _) | (None, _, _) if self.ready == Some(0) => AbzZeroingHealth {
-                level: AbzZeroingHealthLevel::Warning,
+                level: AbzZeroingHealthLevel::Error,
                 label: "Required",
                 detail: "ABZ angle-reference zeroing is required before Start.",
             },
@@ -149,7 +153,7 @@ impl AbzZeroingSnapshot {
                 detail: "Viewer2000 reported an unknown ABZ zeroing state.",
             },
             (None, _, _) => AbzZeroingHealth {
-                level: AbzZeroingHealthLevel::Warning,
+                level: AbzZeroingHealthLevel::Error,
                 label: "Required",
                 detail: "ABZ angle-reference zeroing is not ready.",
             },
@@ -334,7 +338,7 @@ mod tests {
             block_reason: Some(0),
             ..AbzZeroingSnapshot::default()
         };
-        assert_eq!(required.health().level, AbzZeroingHealthLevel::Warning);
+        assert_eq!(required.health().level, AbzZeroingHealthLevel::Error);
         assert_eq!(required.health().label, "Waiting for Z");
 
         let failed = AbzZeroingSnapshot {

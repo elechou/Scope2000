@@ -26,6 +26,10 @@ impl ScopeApp {
             );
             return;
         }
+        if let Some(reason) = self.zeroing_start_block_reason() {
+            self.log.push(LogLevel::Warn, reason.to_owned());
+            return;
+        }
         self.send_system_command(SystemCommand::Start);
     }
 
