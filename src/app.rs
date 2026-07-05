@@ -62,7 +62,6 @@ impl ScopeApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         theme::setup_fonts_and_icons(&cc.egui_ctx);
         theme::apply_theme(&cc.egui_ctx);
-        let csv_gpu_mask_ready = crate::wave::panel::init_csv_button_renderer(cc);
 
         let config = AppConfig::load();
         let legacy_backup_error = config
@@ -104,7 +103,6 @@ impl ScopeApp {
                 snapshot_dir: workspace.csv_export.snapshot_dir.clone(),
                 filename_template: workspace.csv_export.filename_template.clone(),
                 ultra_fast: workspace.csv_export.ultra_fast,
-                gpu_mask_ready: csv_gpu_mask_ready,
                 ..CsvState::default()
             },
             log: LogBuffer::default(),

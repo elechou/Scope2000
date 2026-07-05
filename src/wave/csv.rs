@@ -31,10 +31,6 @@ pub struct CsvState {
     pub save_rx: Option<std::sync::mpsc::Receiver<Result<PathBuf, String>>>,
     /// Set when a Quick Snapshot would overwrite an existing file.
     pub overwrite_pending: Option<OverwritePending>,
-    /// Whether the WGPU rounded-mask renderer for the snapshot button is available.
-    pub gpu_mask_ready: bool,
-    /// Accumulated hover time driving the rainbow flow animation.
-    pub rainbow_phase: f32,
 }
 
 impl Default for CsvState {
@@ -46,8 +42,6 @@ impl Default for CsvState {
             show_settings: false,
             save_rx: None,
             overwrite_pending: None,
-            gpu_mask_ready: false,
-            rainbow_phase: 0.0,
         }
     }
 }
