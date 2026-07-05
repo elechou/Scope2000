@@ -15,7 +15,9 @@ use crate::source::{
     NO_CAPTURE_ACK, ParamWrite, ScopeConfig, ScopeMode, SourceCommand, SystemCommand, TriggerEdge,
     ValueRead, VarDescriptor,
 };
-use crate::wave::{max_record_points_for_binding, pane::PaneKind, scope_channel_limit};
+use crate::wave::{
+    AutoTriggerReadPending, max_record_points_for_binding, pane::PaneKind, scope_channel_limit,
+};
 
 impl ScopeApp {
     pub(in crate::app) fn send(&self, command: SourceCommand) {
@@ -124,6 +126,9 @@ impl ScopeApp {
         if !self.hardware.connected || !self.has_capability(CAP_CAL) {
             return;
         }
+        if !self.watch_read_pending && !self.ui.varmap_continuous_refresh {
+            return;
+        }
         let now = Instant::now();
         if now >= self.next_watch_read {
             for reads in self.inspector.read_batches() {
@@ -133,6 +138,7 @@ impl ScopeApp {
             if !voltage_reads.is_empty() {
                 self.send_catalog(CatalogCommand::ReadValues(voltage_reads));
             }
+            self.watch_read_pending = false;
             self.next_watch_read = now + super::super::WATCH_READ_PERIOD;
         }
     }
@@ -334,10 +340,21 @@ impl ScopeApp {
     }
 
     pub(in crate::app) fn start_acquisition(&mut self, mode: ScopeMode) {
+        self.start_acquisition_inner(mode, true);
+    }
+
+    fn start_acquisition_inner(&mut self, mode: ScopeMode, allow_auto_trigger_read: bool) {
         if !self.project_policy().wave_start {
             self.log.push(
                 LogLevel::Warn,
                 "Wave start blocked by project safety state".to_owned(),
+            );
+            return;
+        }
+        if self.wave.auto_trigger_read_pending.is_some() {
+            self.log.push(
+                LogLevel::Debug,
+                "Wave auto trigger read is pending".to_owned(),
             );
             return;
         }
@@ -409,6 +426,35 @@ impl ScopeApp {
             );
         }
 
+        if allow_auto_trigger_read
+            && mode == ScopeMode::CaptureArmed
+            && self.wave.settings.trigger_source.is_none()
+            && self.auto_trigger_level(&binding).is_none()
+            && self.has_capability(CAP_CAL)
+            && let Some(descriptor_index) = binding
+                .first()
+                .and_then(|descriptor| self.inspector.index_by_name(&descriptor.name))
+            && let Some(descriptor) = self.inspector.descriptors.get(descriptor_index)
+        {
+            self.wave.auto_trigger_read_pending = Some(AutoTriggerReadPending {
+                mode,
+                descriptor_index,
+            });
+            self.send_catalog(CatalogCommand::ReadValues(vec![ValueRead {
+                descriptor_index,
+                var: descriptor.var,
+            }]));
+            self.log.push(
+                LogLevel::Debug,
+                format!(
+                    "Wave auto trigger: reading {} before capture",
+                    descriptor.name
+                ),
+            );
+            return;
+        }
+
+        let start_config = self.scope_config(mode, &binding);
         self.plot_data.clear();
         self.wave.pending_binding = binding.clone();
         self.wave.settings_snapshot = settings_snapshot;
@@ -429,9 +475,7 @@ impl ScopeApp {
         self.send_catalog(CatalogCommand::BindChannels {
             channels: binding.iter().map(|descriptor| descriptor.var).collect(),
         });
-        self.send_catalog(CatalogCommand::ConfigureScope(
-            self.scope_config(mode, &binding),
-        ));
+        self.send_catalog(CatalogCommand::ConfigureScope(start_config));
         self.log.push(
             LogLevel::Info,
             format!(
@@ -440,6 +484,17 @@ impl ScopeApp {
                 binding.len()
             ),
         );
+    }
+
+    pub(in crate::app) fn finish_auto_trigger_read(&mut self, indexes: &[usize]) {
+        let Some(pending) = self.wave.auto_trigger_read_pending else {
+            return;
+        };
+        if !indexes.contains(&pending.descriptor_index) {
+            return;
+        }
+        self.wave.auto_trigger_read_pending = None;
+        self.start_acquisition_inner(pending.mode, false);
     }
 
     pub(in crate::app) fn stop_acquisition(&mut self) {
@@ -457,6 +512,7 @@ impl ScopeApp {
         }));
         self.wave.active = false;
         self.wave.restart_pending = None;
+        self.wave.auto_trigger_read_pending = None;
     }
 
     pub(in crate::app) fn restart_acquisition(&mut self, mode: ScopeMode) {
@@ -502,12 +558,24 @@ impl ScopeApp {
                     .map(|index| index as u16)
             })
             .unwrap_or(0);
+        let auto_trigger_level = (mode == ScopeMode::CaptureArmed
+            && self.wave.settings.trigger_source.is_none())
+        .then(|| self.auto_trigger_level(binding))
+        .flatten();
         ScopeConfig {
             mode,
             trigger_slot,
-            trigger_level: settings.trigger_level,
-            trigger_hysteresis: settings.trigger_hysteresis,
-            trigger_edge: settings.trigger_edge,
+            trigger_level: auto_trigger_level.unwrap_or(settings.trigger_level),
+            trigger_hysteresis: if auto_trigger_level.is_some() {
+                0.0
+            } else {
+                settings.trigger_hysteresis
+            },
+            trigger_edge: if auto_trigger_level.is_some() {
+                TriggerEdge::Rise
+            } else {
+                settings.trigger_edge
+            },
             pre_trigger_percent: settings.pre_trigger_percent,
             prescaler: settings.prescaler,
             record_points: if mode == ScopeMode::CaptureArmed {
@@ -518,6 +586,14 @@ impl ScopeApp {
             ack_capture_id: NO_CAPTURE_ACK,
             flags: 0,
         }
+    }
+
+    fn auto_trigger_level(&self, binding: &[VarDescriptor]) -> Option<f32> {
+        let trigger_name = &binding.first()?.name;
+        self.inspector
+            .value_by_name(trigger_name)
+            .or_else(|| self.plot_data.latest_finite_value(trigger_name))
+            .and_then(finite_f32)
     }
 
     fn scope_effective_settings(
@@ -677,4 +753,9 @@ fn dc_voltage_candidate_names(channel: u8) -> &'static [&'static str] {
         2 => DC2_VOLTAGE_NAMES,
         _ => &[],
     }
+}
+
+fn finite_f32(value: f64) -> Option<f32> {
+    let value = value as f32;
+    value.is_finite().then_some(value)
 }

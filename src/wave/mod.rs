@@ -182,6 +182,7 @@ pub fn format_record_duration(seconds: f64) -> String {
 pub struct WaveState {
     pub active: bool,
     pub restart_pending: Option<ScopeMode>,
+    pub auto_trigger_read_pending: Option<AutoTriggerReadPending>,
     pub binding: Vec<VarDescriptor>,
     pub pending_binding: Vec<VarDescriptor>,
     pub bind_sequence: Option<u16>,
@@ -191,11 +192,18 @@ pub struct WaveState {
     pub mode: ScopeMode,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct AutoTriggerReadPending {
+    pub mode: ScopeMode,
+    pub descriptor_index: usize,
+}
+
 impl Default for WaveState {
     fn default() -> Self {
         Self {
             active: false,
             restart_pending: None,
+            auto_trigger_read_pending: None,
             binding: Vec::new(),
             pending_binding: Vec::new(),
             bind_sequence: None,
@@ -211,6 +219,7 @@ impl WaveState {
     pub fn clear_binding(&mut self) {
         self.active = false;
         self.restart_pending = None;
+        self.auto_trigger_read_pending = None;
         self.binding.clear();
         self.pending_binding.clear();
         self.bind_sequence = None;

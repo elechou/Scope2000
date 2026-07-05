@@ -61,6 +61,39 @@ fn trigger_source_label(name: &str, system_var_names: &[String]) -> String {
     }
 }
 
+fn trigger_source_width(ui: &egui::Ui, name: &str, system_var_names: &[String]) -> f32 {
+    let font_id = egui::TextStyle::Button.resolve(ui.style());
+    let text_width = ui
+        .painter()
+        .layout_no_wrap(name.to_owned(), font_id, theme::TEXT_DEFAULT)
+        .size()
+        .x;
+    if is_system_var_name(name, system_var_names) {
+        text_width + theme::system_variable_badge_size().x + theme::SYSTEM_VARIABLE_BADGE_GAP
+    } else {
+        text_width
+    }
+}
+
+fn trigger_source_popup_width(
+    ui: &egui::Ui,
+    pane_vars: &[String],
+    system_var_names: &[String],
+) -> f32 {
+    const MIN_WIDTH: f32 = 90.0;
+    const OUTER_MARGIN: f32 = 24.0;
+
+    let auto_width = trigger_source_width(ui, "Auto", system_var_names);
+    let var_width = pane_vars
+        .iter()
+        .take(16)
+        .map(|name| trigger_source_width(ui, name, system_var_names))
+        .fold(auto_width, f32::max);
+    let padded = var_width + ui.spacing().button_padding.x * 2.0 + 24.0;
+    let content_max = (ui.ctx().content_rect().width() - OUTER_MARGIN).max(MIN_WIDTH);
+    padded.clamp(MIN_WIDTH, content_max)
+}
+
 fn selectable_trigger_source(
     ui: &mut egui::Ui,
     selected: bool,
@@ -136,13 +169,17 @@ pub fn show_wave_section(
             ui,
             "Stop",
             theme::RED,
-            wave.active || wave.restart_pending.is_some(),
+            wave.active
+                || wave.restart_pending.is_some()
+                || wave.auto_trigger_read_pending.is_some(),
             w,
         ) {
             action = Some(WaveAction::Stop);
         }
     });
-    if wave.active {
+    if wave.auto_trigger_read_pending.is_some() {
+        ui.colored_label(theme::YELLOW, "Wave preparing auto trigger");
+    } else if wave.active {
         ui.colored_label(
             theme::GREEN,
             format!("{} channels, {}", wave.binding.len(), mode_label(wave.mode)),
@@ -166,14 +203,20 @@ pub fn show_wave_section(
     ui.add_enabled_ui(can_edit_variable_refs, |ui| {
         ui.horizontal(|ui| {
             ui.label("Trigger");
+            let source_popup_width = trigger_source_popup_width(ui, &pane_vars, system_var_names);
+            let edge_width = 45.0;
+            let source_button_width =
+                (ui.available_width() - edge_width - ui.spacing().item_spacing.x)
+                    .clamp(90.0, source_popup_width);
             let ch_label: egui::WidgetText = match &wave.settings.trigger_source {
                 None => "Auto".into(),
                 Some(name) => trigger_source_label(name, system_var_names).into(),
             };
             egui::ComboBox::from_id_salt("trg_ch")
-                .width(90.0)
+                .width(source_button_width)
                 .selected_text(ch_label)
                 .show_ui(ui, |ui| {
+                    ui.set_min_width(source_popup_width);
                     ui.selectable_value(&mut wave.settings.trigger_source, None, "Auto");
                     for (i, name) in pane_vars.iter().enumerate() {
                         if i > 15 {

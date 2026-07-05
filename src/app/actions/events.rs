@@ -60,6 +60,7 @@ impl ScopeApp {
                     self.abz_zeroing.reset_session();
                     self.wave.active = false;
                     self.wave.restart_pending = None;
+                    self.wave.auto_trigger_read_pending = None;
                     self.descriptor_catalog_ready = false;
                     // Keep the last catalog and restored refs available for
                     // offline inspection/layout edits. Connected always resets
@@ -82,7 +83,7 @@ impl ScopeApp {
                     self.inspector.set_descriptors(descriptors);
                     self.descriptor_catalog_ready = true;
                     self.restore_workspace_watch_once();
-                    self.next_watch_read = Instant::now();
+                    self.request_watch_read();
                     self.calibration.next_read = Instant::now();
                     self.abz_zeroing.next_read = Instant::now();
                 }
@@ -152,7 +153,7 @@ impl ScopeApp {
                         );
                     }
                     if entered_running {
-                        self.next_watch_read = Instant::now();
+                        self.request_watch_read();
                         self.log.push(
                             LogLevel::Debug,
                             "User variables reset on START; refreshing watched values".to_owned(),
@@ -168,7 +169,7 @@ impl ScopeApp {
                         LogLevel::Notice,
                         format!("Parameter commit sequence {sequence}"),
                     );
-                    self.next_watch_read = Instant::now();
+                    self.request_watch_read();
                 }
                 SourceEvent::Values {
                     read_sequence,
@@ -176,6 +177,7 @@ impl ScopeApp {
                     values,
                 } => {
                     self.inspector.update_values(&indexes, values);
+                    self.finish_auto_trigger_read(&indexes);
                     self.log.push(
                         LogLevel::Debug,
                         format!("Value read sequence {read_sequence}"),
@@ -440,7 +442,10 @@ fn system_stopped_transition(
 }
 
 fn wave_has_active_or_pending_stop_target(wave: &WaveState) -> bool {
-    wave.active || wave.restart_pending.is_some() || !wave.pending_binding.is_empty()
+    wave.active
+        || wave.restart_pending.is_some()
+        || wave.auto_trigger_read_pending.is_some()
+        || !wave.pending_binding.is_empty()
 }
 
 fn redraw_capture_frame(
@@ -715,6 +720,13 @@ mod tests {
 
         active.restart_pending = None;
         active.pending_binding = vec![descriptor];
+        assert!(wave_has_active_or_pending_stop_target(&active));
+
+        active.pending_binding.clear();
+        active.auto_trigger_read_pending = Some(crate::wave::AutoTriggerReadPending {
+            mode: ScopeMode::CaptureArmed,
+            descriptor_index: 0,
+        });
         assert!(wave_has_active_or_pending_stop_target(&active));
     }
 
