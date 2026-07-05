@@ -1,5 +1,7 @@
 pub mod panel;
 
+use std::cmp::Ordering;
+
 use crate::source::{CAL_READ_MAX, ParamWrite, ValueRead, VarDescriptor};
 
 #[derive(Debug, Clone)]
@@ -17,6 +19,18 @@ pub enum DescriptorEntry {
 }
 
 impl DescriptorEntry {
+    fn label(&self) -> &str {
+        match self {
+            Self::Var { label, .. } | Self::Group { label, .. } => label,
+        }
+    }
+
+    fn full_name(&self) -> &str {
+        match self {
+            Self::Var { full_name, .. } | Self::Group { full_name, .. } => full_name,
+        }
+    }
+
     pub fn flatten_names(&self, out: &mut Vec<String>) {
         match self {
             Self::Var { full_name, .. } => out.push(full_name.clone()),
@@ -229,7 +243,136 @@ fn build_descriptor_tree_filtered(
             insert_descriptor(&mut root, &descriptor.name, index);
         }
     }
+    sort_descriptor_entries(&mut root);
     root
+}
+
+fn sort_descriptor_entries(entries: &mut [DescriptorEntry]) {
+    for entry in entries.iter_mut() {
+        if let DescriptorEntry::Group { members, .. } = entry {
+            sort_descriptor_entries(members);
+        }
+    }
+    entries.sort_by(compare_descriptor_entries);
+}
+
+fn compare_descriptor_entries(left: &DescriptorEntry, right: &DescriptorEntry) -> Ordering {
+    natural_descriptor_cmp(left.label(), right.label())
+        .then_with(|| natural_descriptor_cmp(left.full_name(), right.full_name()))
+}
+
+fn natural_descriptor_cmp(left: &str, right: &str) -> Ordering {
+    let left = left.as_bytes();
+    let right = right.as_bytes();
+    let mut left_offset = 0;
+    let mut right_offset = 0;
+
+    while left_offset < left.len() && right_offset < right.len() {
+        let left_token = next_sort_token(left, left_offset);
+        let right_token = next_sort_token(right, right_offset);
+
+        match left_token.cmp_value(right_token) {
+            Ordering::Equal => {
+                left_offset = left_token.end;
+                right_offset = right_token.end;
+            }
+            ordering => return ordering,
+        }
+    }
+
+    left.len().cmp(&right.len())
+}
+
+#[derive(Clone, Copy)]
+struct SortToken<'a> {
+    class: SortTokenClass,
+    bytes: &'a [u8],
+    end: usize,
+}
+
+impl SortToken<'_> {
+    fn cmp_value(self, other: Self) -> Ordering {
+        self.class
+            .cmp(&other.class)
+            .then_with(|| match (self.class, other.class) {
+                (SortTokenClass::Digit, SortTokenClass::Digit) => {
+                    compare_digit_runs(self.bytes, other.bytes)
+                }
+                (SortTokenClass::Letter, SortTokenClass::Letter) => {
+                    compare_ascii_case_insensitive(self.bytes, other.bytes)
+                }
+                _ => self.bytes.cmp(other.bytes),
+            })
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum SortTokenClass {
+    Digit,
+    Letter,
+    Other,
+}
+
+fn next_sort_token(bytes: &[u8], offset: usize) -> SortToken<'_> {
+    let start = if bytes[offset] == b'['
+        && offset + 1 < bytes.len()
+        && bytes[offset + 1].is_ascii_digit()
+    {
+        offset + 1
+    } else {
+        offset
+    };
+    let class = sort_token_class(bytes[start]);
+    let mut end = start + 1;
+    while end < bytes.len() && sort_token_class(bytes[end]) == class {
+        end += 1;
+    }
+    let value_end = end;
+    if start != offset && end < bytes.len() && bytes[end] == b']' {
+        end += 1;
+    }
+
+    SortToken {
+        class,
+        bytes: &bytes[start..value_end],
+        end,
+    }
+}
+
+fn sort_token_class(byte: u8) -> SortTokenClass {
+    if byte.is_ascii_digit() {
+        SortTokenClass::Digit
+    } else if byte.is_ascii_alphabetic() {
+        SortTokenClass::Letter
+    } else {
+        SortTokenClass::Other
+    }
+}
+
+fn compare_digit_runs(left: &[u8], right: &[u8]) -> Ordering {
+    let left_digits = trim_leading_zeroes(left);
+    let right_digits = trim_leading_zeroes(right);
+    left_digits
+        .len()
+        .cmp(&right_digits.len())
+        .then_with(|| left_digits.cmp(right_digits))
+        .then_with(|| left.len().cmp(&right.len()))
+}
+
+fn trim_leading_zeroes(bytes: &[u8]) -> &[u8] {
+    let trimmed = bytes
+        .iter()
+        .position(|byte| *byte != b'0')
+        .map(|pos| &bytes[pos..])
+        .unwrap_or(&[]);
+    if trimmed.is_empty() { b"0" } else { trimmed }
+}
+
+fn compare_ascii_case_insensitive(left: &[u8], right: &[u8]) -> Ordering {
+    left.iter()
+        .map(u8::to_ascii_lowercase)
+        .cmp(right.iter().map(u8::to_ascii_lowercase))
+        .then_with(|| left.cmp(right))
 }
 
 #[derive(Debug)]
@@ -410,6 +553,56 @@ mod tests {
         assert_eq!(label, "err");
         assert_eq!(full_name, "trace.err");
         assert_eq!(members.len(), 2);
+    }
+
+    #[test]
+    fn descriptor_tree_sorts_root_and_group_members_naturally() {
+        let tree = build_descriptor_tree(&[
+            descriptor("motor.z"),
+            descriptor("10_global"),
+            descriptor("motor.a10"),
+            descriptor("alpha"),
+            descriptor("2_global"),
+            descriptor("motor.a2"),
+            descriptor("motor.a1"),
+            descriptor("1_global"),
+        ]);
+
+        let mut names = Vec::new();
+        for entry in &tree {
+            entry.flatten_names(&mut names);
+        }
+
+        assert_eq!(
+            names,
+            [
+                "1_global",
+                "2_global",
+                "10_global",
+                "alpha",
+                "motor.a1",
+                "motor.a2",
+                "motor.a10",
+                "motor.z"
+            ]
+        );
+    }
+
+    #[test]
+    fn descriptor_tree_sorts_array_indexes_numerically() {
+        let tree = build_descriptor_tree(&[
+            descriptor("offset[10]"),
+            descriptor("offset[2]"),
+            descriptor("offset[0]"),
+            descriptor("offset[1]"),
+        ]);
+
+        let DescriptorEntry::Group { members, .. } = &tree[0] else {
+            panic!("offset should be a group");
+        };
+        let labels: Vec<_> = members.iter().map(DescriptorEntry::label).collect();
+
+        assert_eq!(labels, ["[0]", "[1]", "[2]", "[10]"]);
     }
 
     #[test]
