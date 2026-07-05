@@ -163,6 +163,7 @@ pub const CAP_PRE_TRIGGER: u32 = 1 << 4;
 pub const CAP_SYSTEM_CMD: u32 = 1 << 5;
 pub const CAP_NATIVE_BLOCK: u32 = 1 << 6;
 pub const CAP_CT_ZERO_CAL: u32 = 1 << 7;
+pub const CAP_ABZ_ZEROING: u32 = 1 << 8;
 pub const CAL_READ_MAX: usize = 32;
 pub const NO_CAPTURE_ACK: u16 = 0xFFFF;
 
@@ -447,6 +448,8 @@ pub enum SourceCommand {
     },
     SystemCommand(SystemCommand),
     CalibrationCommand(CalibrationCommand),
+    #[cfg(test)]
+    AbzZeroing,
 }
 
 #[derive(Debug)]
@@ -480,6 +483,14 @@ pub enum SourceEvent {
     },
     CalibrationCommandFailed {
         command: CalibrationCommand,
+        message: String,
+    },
+    #[cfg(test)]
+    AbzZeroingAccepted {
+        sequence: u32,
+    },
+    #[cfg(test)]
+    AbzZeroingCommandFailed {
         message: String,
     },
     ScopeConfigured {

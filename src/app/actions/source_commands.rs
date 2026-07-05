@@ -2,16 +2,17 @@ use std::time::Instant;
 
 use crate::app::ScopeApp;
 use crate::app::state::{
-    CALIBRATION_READ_NAMES, CALIBRATION_READ_PERIOD, CALIBRATION_STATUS_READ_NAMES,
-    CALIBRATION_STATUS_READ_PERIOD, CalibrationGate, CalibrationGateInput, CalibrationSnapshot,
-    calibration_gate,
+    ABZ_ZEROING_READ_NAMES, ABZ_ZEROING_READ_PERIOD, ABZ_ZEROING_STATUS_READ_NAMES,
+    ABZ_ZEROING_STATUS_READ_PERIOD, AbzZeroingSnapshot, CALIBRATION_READ_NAMES,
+    CALIBRATION_READ_PERIOD, CALIBRATION_STATUS_READ_NAMES, CALIBRATION_STATUS_READ_PERIOD,
+    CalibrationGate, CalibrationGateInput, CalibrationSnapshot, calibration_gate,
 };
 use crate::console::LogLevel;
 use crate::source::{
-    CAL_READ_MAX, CAP_CAL, CAP_CT_ZERO_CAL, CAP_NATIVE_BLOCK, CAP_PRE_TRIGGER, CAP_SCOPE_CAPTURE,
-    CAP_SCOPE_STREAM, CAP_SYSTEM_CMD, CalibrationCommand, CatalogCommand, NO_CAPTURE_ACK,
-    ParamWrite, ScopeConfig, ScopeMode, SourceCommand, SystemCommand, TriggerEdge, ValueRead,
-    VarDescriptor,
+    CAL_READ_MAX, CAP_ABZ_ZEROING, CAP_CAL, CAP_CT_ZERO_CAL, CAP_NATIVE_BLOCK, CAP_PRE_TRIGGER,
+    CAP_SCOPE_CAPTURE, CAP_SCOPE_STREAM, CAP_SYSTEM_CMD, CalibrationCommand, CatalogCommand,
+    NO_CAPTURE_ACK, ParamWrite, ScopeConfig, ScopeMode, SourceCommand, SystemCommand, TriggerEdge,
+    ValueRead, VarDescriptor,
 };
 use crate::wave::{max_record_points_for_binding, pane::PaneKind, scope_channel_limit};
 
@@ -106,6 +107,7 @@ impl ScopeApp {
         self.hardware.status = None;
         self.hardware.performance.clear();
         self.hardware.clear_system_command_state();
+        self.abz_zeroing.reset_session();
         self.send(SourceCommand::Connect(endpoint));
     }
 
@@ -170,15 +172,89 @@ impl ScopeApp {
         self.calibration.next_read = now + period;
     }
 
+    pub(in crate::app) fn poll_abz_zeroing_reads(&mut self) {
+        if !self.hardware.connected
+            || !self.descriptor_catalog_ready
+            || !self.has_capability(CAP_CAL)
+            || !self.has_capability(CAP_ABZ_ZEROING)
+        {
+            return;
+        }
+        if !self.ui.show_abz_zeroing && self.catalog_value_u16("v2k_abz_zeroing.ready") == Some(1) {
+            return;
+        }
+
+        let now = Instant::now();
+        if now < self.abz_zeroing.next_read {
+            return;
+        }
+
+        let names = if self.ui.show_abz_zeroing {
+            ABZ_ZEROING_READ_NAMES
+        } else {
+            ABZ_ZEROING_STATUS_READ_NAMES
+        };
+        let reads: Vec<ValueRead> = names
+            .iter()
+            .filter_map(|name| {
+                let descriptor_index = self.inspector.index_by_name(name)?;
+                let descriptor = self.inspector.descriptors.get(descriptor_index)?;
+                Some(ValueRead {
+                    descriptor_index,
+                    var: descriptor.var,
+                })
+            })
+            .collect();
+        if !reads.is_empty() {
+            self.send_catalog(CatalogCommand::ReadValues(reads));
+        }
+        let period = if self.ui.show_abz_zeroing {
+            ABZ_ZEROING_READ_PERIOD
+        } else {
+            ABZ_ZEROING_STATUS_READ_PERIOD
+        };
+        self.abz_zeroing.next_read = now + period;
+    }
+
     pub(in crate::app) fn current_sensor_calibration_snapshot(&self) -> CalibrationSnapshot {
         CalibrationSnapshot {
-            state: self.calibration_value_u16("v2k_cal.state"),
-            result: self.calibration_value_u16("v2k_cal.result"),
-            applied_source: self.calibration_value_u16("v2k_cal.applied_src"),
-            store_valid: self.calibration_value_u16("v2k_cal.store_valid"),
-            store_result: self.calibration_value_u16("v2k_cal.store_result"),
-            store_sequence: self.calibration_value_u32("v2k_cal.store_seq"),
+            state: self.catalog_value_u16("v2k_cal.state"),
+            result: self.catalog_value_u16("v2k_cal.result"),
+            applied_source: self.catalog_value_u16("v2k_cal.applied_src"),
+            store_valid: self.catalog_value_u16("v2k_cal.store_valid"),
+            store_result: self.catalog_value_u16("v2k_cal.store_result"),
+            store_sequence: self.catalog_value_u32("v2k_cal.store_seq"),
         }
+    }
+
+    pub(in crate::app) fn abz_zeroing_snapshot(&self) -> Option<AbzZeroingSnapshot> {
+        self.has_capability(CAP_ABZ_ZEROING)
+            .then(|| AbzZeroingSnapshot {
+                ready: self.catalog_value_u16("v2k_abz_zeroing.ready"),
+                state: self.catalog_value_u16("v2k_abz_zeroing.state"),
+                result: self.catalog_value_u16("v2k_abz_zeroing.result"),
+                block_reason: self.catalog_value_u16("v2k_abz_zeroing.block_reason"),
+                attempt_sequence: self.catalog_value_u32("v2k_abz_zeroing.attempt_seq"),
+                eqep2_raw_count: self.catalog_value_u16("v2k_abz.eqep2.raw_count"),
+                eqep2_index_count: self.catalog_value_u32("v2k_abz.eqep2.index_count"),
+                eqep2_index_latch: self.catalog_value_u16("v2k_abz.eqep2.index_latch"),
+                eqep2_index_event: self.catalog_value_u16("v2k_abz.eqep2.index_event"),
+                eqep2_dir_change: self.catalog_value_u16("v2k_abz.eqep2.dir_change"),
+                eqep2_status: self.catalog_value_u16("v2k_abz.eqep2.status"),
+                eqep2_error_flags: self.catalog_value_u32("v2k_abz.eqep2.error_flags"),
+                npe_z_good: self.catalog_value_u16("v2k_abz_zeroing.npe.z_good"),
+                npe_z_seen: self.catalog_value_u32("v2k_abz_zeroing.npe.z_seen"),
+                npe_z_rejects: self.catalog_value_u32("v2k_abz_zeroing.npe.z_rejects"),
+                npe_first_latch: self.catalog_value_u16("v2k_abz_zeroing.npe.first_latch"),
+                npe_last_latch: self.catalog_value_u16("v2k_abz_zeroing.npe.last_latch"),
+                npe_last_reject_latch: self
+                    .catalog_value_u16("v2k_abz_zeroing.npe.last_reject_latch"),
+                npe_dir_changes: self.catalog_value_u32("v2k_abz_zeroing.npe.dir_changes"),
+                npe_dir_resets: self.catalog_value_u32("v2k_abz_zeroing.npe.dir_resets"),
+                npe_error_resets: self.catalog_value_u32("v2k_abz_zeroing.npe.error_resets"),
+                npe_last_error_flags: self
+                    .catalog_value_u32("v2k_abz_zeroing.npe.last_error_flags"),
+            })
     }
 
     pub(in crate::app) fn write_variables(&mut self, writes: Vec<(usize, f64)>) {
@@ -479,14 +555,14 @@ impl ScopeApp {
         state == Some(2) && result == Some(1)
     }
 
-    fn calibration_value_u16(&self, name: &str) -> Option<u16> {
+    fn catalog_value_u16(&self, name: &str) -> Option<u16> {
         self.inspector
             .value_by_name(name)
             .filter(|value| value.is_finite() && *value >= 0.0)
             .map(|value| value as u16)
     }
 
-    fn calibration_value_u32(&self, name: &str) -> Option<u32> {
+    fn catalog_value_u32(&self, name: &str) -> Option<u32> {
         self.inspector
             .value_by_name(name)
             .filter(|value| value.is_finite() && *value >= 0.0)

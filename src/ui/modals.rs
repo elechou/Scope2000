@@ -1,8 +1,10 @@
 use eframe::egui;
 
 use crate::app::state::{
-    CalibrationHealthLevel, CalibrationSnapshot, HardwareState, UiState, applied_source_label,
-    cal_result_label, cal_state_label, store_result_label,
+    AbzZeroingHealthLevel, AbzZeroingSnapshot, CalibrationHealthLevel, CalibrationSnapshot,
+    HardwareState, UiState, abz_zeroing_block_label, abz_zeroing_result_label,
+    abz_zeroing_state_label, applied_source_label, cal_result_label, cal_state_label,
+    store_result_label,
 };
 use crate::source::v2k::transport;
 use crate::source::{command_result_text, fault_code_text};
@@ -127,6 +129,7 @@ pub fn show_device_info_window(
     hardware: &HardwareState,
     descriptor_count: usize,
     calibration: CalibrationSnapshot,
+    abz_zeroing: Option<AbzZeroingSnapshot>,
     ui_state: &mut UiState,
 ) {
     if !ui_state.show_device_info_window {
@@ -174,6 +177,10 @@ pub fn show_device_info_window(
 
             ui.separator();
             show_current_sensor_status(ui, calibration);
+            if let Some(snapshot) = abz_zeroing {
+                ui.separator();
+                show_abz_zeroing_status(ui, snapshot);
+            }
 
             if let Some(status) = &hardware.status {
                 ui.separator();
@@ -254,6 +261,39 @@ fn show_current_sensor_status(ui: &mut egui::Ui, calibration: CalibrationSnapsho
     ui.monospace(format!(
         "flash result {}",
         store_result_label(calibration.store_result)
+    ));
+    ui.label(egui::RichText::new(health.detail).color(color));
+}
+
+fn show_abz_zeroing_status(ui: &mut egui::Ui, snapshot: AbzZeroingSnapshot) {
+    let health = snapshot.health();
+    let color = match health.level {
+        AbzZeroingHealthLevel::Normal => theme::TEXT_SUBDUED,
+        AbzZeroingHealthLevel::Warning => theme::YELLOW,
+        AbzZeroingHealthLevel::Error => theme::RED,
+    };
+    let heading = if health.level == AbzZeroingHealthLevel::Normal {
+        "ABZ Zeroing"
+    } else {
+        "⚠ ABZ Zeroing"
+    };
+
+    ui.label(egui::RichText::new(heading).strong().color(color));
+    ui.monospace(egui::RichText::new(format!("status {}", health.label)).color(color));
+    ui.monospace(format!(
+        "state {} / {}",
+        abz_zeroing_state_label(snapshot.state),
+        abz_zeroing_result_label(snapshot.result)
+    ));
+    ui.monospace(format!(
+        "block {}",
+        abz_zeroing_block_label(snapshot.block_reason)
+    ));
+    ui.monospace(format!(
+        "attempt seq {}",
+        snapshot
+            .attempt_sequence
+            .map_or("-".to_owned(), |sequence| sequence.to_string())
     ));
     ui.label(egui::RichText::new(health.detail).color(color));
 }

@@ -1,3 +1,5 @@
+#[path = "abz_zeroing_state.rs"]
+mod abz_zeroing_state;
 #[path = "calibration_state.rs"]
 mod calibration_state;
 #[path = "hardware_state.rs"]
@@ -12,6 +14,12 @@ mod viewport_state;
 mod workspace_state;
 
 pub(crate) use self::{
+    abz_zeroing_state::{
+        ABZ_ZEROING_READ_NAMES, ABZ_ZEROING_READ_PERIOD, ABZ_ZEROING_STATUS_READ_NAMES,
+        ABZ_ZEROING_STATUS_READ_PERIOD, AbzZeroingCommandResult, AbzZeroingHealthLevel,
+        AbzZeroingSnapshot, AbzZeroingState, abz_zeroing_block_label, abz_zeroing_result_label,
+        abz_zeroing_state_label,
+    },
     calibration_state::{
         CALIBRATION_READ_NAMES, CALIBRATION_READ_PERIOD, CALIBRATION_STATUS_READ_NAMES,
         CALIBRATION_STATUS_READ_PERIOD, CalibrationCommandResult, CalibrationGate,

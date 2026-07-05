@@ -1,6 +1,9 @@
 use eframe::egui;
 
-use crate::app::state::{CalibrationHealthLevel, CalibrationSnapshot, HardwareState, UiState};
+use crate::app::state::{
+    AbzZeroingHealthLevel, AbzZeroingSnapshot, CalibrationHealthLevel, CalibrationSnapshot,
+    HardwareState, UiState,
+};
 use crate::console::{LogBuffer, LogLevel};
 use crate::theme;
 
@@ -17,6 +20,7 @@ pub fn show(
     ui_state: &mut UiState,
     log: &mut LogBuffer,
     calibration: CalibrationSnapshot,
+    abz_zeroing: Option<AbzZeroingSnapshot>,
 ) -> Option<StatusBarAction> {
     // Auto-dismiss promoted status messages after 5 seconds.
     if let Some(ref msg) = log.status_message
@@ -147,6 +151,29 @@ pub fn show(
                     ));
 
                     ui.separator();
+
+                    if let Some(snapshot) = abz_zeroing {
+                        let health = snapshot.health();
+                        let color = match health.level {
+                            AbzZeroingHealthLevel::Normal => theme::TEXT_SUBDUED,
+                            AbzZeroingHealthLevel::Warning => theme::YELLOW,
+                            AbzZeroingHealthLevel::Error => theme::RED,
+                        };
+                        let text = if health.level == AbzZeroingHealthLevel::Normal {
+                            "ABZ Zeroing"
+                        } else {
+                            "⚠ ABZ Zeroing"
+                        };
+                        let status = ui.add(
+                            egui::Button::new(egui::RichText::new(text).color(color)).frame(false),
+                        );
+                        if status.clicked() {
+                            ui_state.show_abz_zeroing = true;
+                        }
+                        status.on_hover_text(format!("{}\n{}", health.label, health.detail));
+
+                        ui.separator();
+                    }
 
                     if let Some(ref info) = hardware.device_summary {
                         let device_info = ui.add(

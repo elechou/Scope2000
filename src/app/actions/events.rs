@@ -1,10 +1,10 @@
 use std::{cmp::Ordering, time::Instant};
 
 use crate::app::ScopeApp;
-use crate::app::state::CalibrationCommandResult;
+use crate::app::state::{AbzZeroingCommandResult, CalibrationCommandResult};
 use crate::console::LogLevel;
 use crate::source::{
-    ScopeBlock, ScopeMode, SourceEvent, SystemCommand, SystemState, VarDescriptor,
+    CAP_ABZ_ZEROING, ScopeBlock, ScopeMode, SourceEvent, SystemCommand, SystemState, VarDescriptor,
     command_result_text,
 };
 use crate::variable::InspectorState;
@@ -46,6 +46,7 @@ impl ScopeApp {
                     self.hardware.device_summary = self.hardware.device_summary_text();
                     self.hardware.performance.set_available(true);
                     self.calibration.reset_session();
+                    self.abz_zeroing.reset_session();
                     self.handle_firmware_project();
                 }
                 SourceEvent::Disconnected => {
@@ -56,6 +57,7 @@ impl ScopeApp {
                     self.hardware.performance.clear();
                     self.hardware.clear_system_command_state();
                     self.calibration.reset_session();
+                    self.abz_zeroing.reset_session();
                     self.wave.active = false;
                     self.wave.restart_pending = None;
                     self.descriptor_catalog_ready = false;
@@ -82,11 +84,13 @@ impl ScopeApp {
                     self.restore_workspace_watch_once();
                     self.next_watch_read = Instant::now();
                     self.calibration.next_read = Instant::now();
+                    self.abz_zeroing.next_read = Instant::now();
                 }
                 SourceEvent::Status(status) => {
                     let completed_command = self.hardware.complete_pending_system_command(&status);
                     let completed_calibration =
                         self.calibration.complete_measure_from_status(&status);
+                    let completed_abz_zeroing = self.abz_zeroing.complete_from_status(&status);
                     let previous_state = self
                         .hardware
                         .status
@@ -125,10 +129,25 @@ impl ScopeApp {
                             );
                             self.ui.show_current_sensor_calibration = true;
                         }
+                        if completed.command == SystemCommand::Start
+                            && completed.result == 3
+                            && self.has_capability(CAP_ABZ_ZEROING)
+                        {
+                            self.log.push(
+                                LogLevel::Warn,
+                                "Start refused: ABZ Zeroing is not ready. Opened ABZ Zeroing status.".to_owned(),
+                            );
+                            self.ui.show_abz_zeroing = true;
+                            self.abz_zeroing.next_read = Instant::now();
+                        }
                     }
                     if let Some(result) = completed_calibration {
                         log_calibration_result(&result, &mut self.log);
                         self.calibration.next_read = Instant::now();
+                    }
+                    if let Some(result) = completed_abz_zeroing {
+                        log_abz_zeroing_result(&result, &mut self.log);
+                        self.abz_zeroing.next_read = Instant::now();
                     }
                     if stop_wave {
                         self.stop_acquisition();
@@ -220,6 +239,29 @@ impl ScopeApp {
                     log_calibration_result(&result, &mut self.log);
                     self.calibration.next_read = Instant::now();
                 }
+                #[cfg(test)]
+                SourceEvent::AbzZeroingAccepted { sequence } => {
+                    if self.abz_zeroing.accept(sequence) {
+                        self.log.push(
+                            LogLevel::Info,
+                            format!("ABZ Zeroing accepted as sequence {sequence}"),
+                        );
+                    } else {
+                        self.log.push(
+                            LogLevel::Warn,
+                            format!(
+                                "Ignored ABZ Zeroing ACK sequence {sequence} without matching pending command"
+                            ),
+                        );
+                    }
+                    self.abz_zeroing.next_read = Instant::now();
+                }
+                #[cfg(test)]
+                SourceEvent::AbzZeroingCommandFailed { message } => {
+                    let result = self.abz_zeroing.fail(message);
+                    log_abz_zeroing_result(&result, &mut self.log);
+                    self.abz_zeroing.next_read = Instant::now();
+                }
                 SourceEvent::ScopeConfigured { mode } => {
                     self.wave.mode = mode;
                     self.wave.active = mode != ScopeMode::Off;
@@ -310,6 +352,7 @@ impl ScopeApp {
                     self.hardware.performance.clear();
                     self.hardware.clear_system_command_state();
                     self.calibration.reset_session();
+                    self.abz_zeroing.reset_session();
                     self.hardware.device_summary = self.hardware.device_summary_text();
                     self.workspace_watch_restored = false;
                     self.descriptor_catalog_ready = false;
@@ -326,6 +369,9 @@ impl ScopeApp {
                     self.hardware.clear_system_command_state();
                     if let Some(result) = self.calibration.fail_pending(error.clone()) {
                         log_calibration_result(&result, &mut self.log);
+                    }
+                    if let Some(result) = self.abz_zeroing.fail_pending(error.clone()) {
+                        log_abz_zeroing_result(&result, &mut self.log);
                     }
                     self.log.push(LogLevel::Error, error);
                 }
@@ -359,6 +405,29 @@ fn log_calibration_result(result: &CalibrationCommandResult, log: &mut crate::co
             log.push(
                 LogLevel::Warn,
                 format!("Calibration {} failed: {message}", command.label()),
+            );
+        }
+    }
+}
+
+fn log_abz_zeroing_result(result: &AbzZeroingCommandResult, log: &mut crate::console::LogBuffer) {
+    match result {
+        AbzZeroingCommandResult::Completed { sequence, result } => {
+            let text = command_result_text(*result);
+            let level = if *result == 0 {
+                LogLevel::Notice
+            } else {
+                LogLevel::Warn
+            };
+            log.push(
+                level,
+                format!("ABZ Zeroing request completed {text} as sequence {sequence}"),
+            );
+        }
+        AbzZeroingCommandResult::Failed { message } => {
+            log.push(
+                LogLevel::Warn,
+                format!("ABZ Zeroing request failed: {message}"),
             );
         }
     }
