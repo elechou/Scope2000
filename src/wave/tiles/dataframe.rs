@@ -3,7 +3,7 @@ use egui_tiles::TileId;
 
 use super::MyTilesDelegate;
 use crate::theme;
-use crate::wave::dnd::VarDragPayload;
+use crate::wave::dnd::{self, VarDragPayload};
 use crate::wave::pane::ViewPane;
 use crate::wave::selection::Selection;
 
@@ -78,7 +78,8 @@ impl<'a> MyTilesDelegate<'a> {
 
         if self.can_edit_variable_refs
             && inner_resp.response.contains_pointer()
-            && egui::DragAndDrop::has_payload_of_type::<VarDragPayload>(ui.ctx())
+            && egui::DragAndDrop::payload::<VarDragPayload>(ui.ctx())
+                .is_some_and(|payload| dnd::can_drop_on_wave_body(&payload.source, tile_id))
         {
             self.drop_hover_tile = Some(tile_id);
         }

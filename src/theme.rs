@@ -60,6 +60,7 @@ pub const ICON_DATAFRAME: &str = "bytes://icon_dataframe.svg";
 pub const ICON_PLUG: &str = "bytes://icon_plug.svg";
 pub const ICON_DND_COPY: &str = "bytes://icon_dnd_copy_to.svg";
 pub const ICON_DND_MOVE: &str = "bytes://icon_dnd_move_to.svg";
+pub const ICON_DND_TRASH: &str = "bytes://icon_dnd_trash.svg";
 
 /// Icon size used in tabs and blueprint entries.
 pub const ICON_SIZE: egui::Vec2 = egui::Vec2::new(14.0, 14.0);
@@ -153,6 +154,10 @@ pub fn setup_fonts_and_icons(ctx: &egui::Context) {
     ctx.include_bytes(
         ICON_DND_MOVE,
         include_bytes!("../assets/icons/dnd_move_to.svg"),
+    );
+    ctx.include_bytes(
+        ICON_DND_TRASH,
+        include_bytes!("../assets/icons/dnd_trash.svg"),
     );
 
     let mut fonts = egui::FontDefinitions::default();

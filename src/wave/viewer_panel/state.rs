@@ -1,5 +1,6 @@
 use eframe::egui;
 
+use crate::wave::dnd;
 use crate::wave::pane::ViewPane;
 use crate::wave::selection::Selection;
 
@@ -13,4 +14,5 @@ pub struct ViewportPanelState<'a> {
     pub hovered_blueprint_var: &'a mut Option<(egui_tiles::TileId, egui::Id)>,
     pub hovered_plot_var: &'a mut Option<(egui_tiles::TileId, egui::Id)>,
     pub drop_hover_panel: &'a mut bool,
+    pub drop_action: &'a mut Option<dnd::DropAction>,
 }

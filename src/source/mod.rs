@@ -36,16 +36,6 @@ impl VarType {
         }
     }
 
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::I16 => "i16",
-            Self::U16 => "u16",
-            Self::I32 => "i32",
-            Self::U32 => "u32",
-            Self::F32 => "f32",
-        }
-    }
-
     pub fn decode(self, bytes: &[u8]) -> Option<f64> {
         match self {
             Self::I16 => Some(i16::from_le_bytes(bytes.get(..2)?.try_into().ok()?) as f64),

@@ -1,8 +1,8 @@
 use eframe::egui;
 
-use crate::wave::pane::ViewPane;
 use crate::wave::selection::Selection;
 use crate::wave::tiles;
+use crate::wave::{dnd, pane::ViewPane};
 
 pub(crate) struct ViewportState {
     pub tree: egui_tiles::Tree<ViewPane>,
@@ -12,6 +12,7 @@ pub(crate) struct ViewportState {
     pub hovered_blueprint_var: Option<(egui_tiles::TileId, egui::Id)>,
     pub hovered_plot_var: Option<(egui_tiles::TileId, egui::Id)>,
     pub drop_hover_panel: bool,
+    pub drop_action: Option<dnd::DropAction>,
 }
 
 impl ViewportState {
@@ -24,6 +25,7 @@ impl ViewportState {
             hovered_blueprint_var: None,
             hovered_plot_var: None,
             drop_hover_panel: false,
+            drop_action: None,
         }
     }
 
@@ -35,5 +37,6 @@ impl ViewportState {
         self.hovered_blueprint_var = None;
         self.hovered_plot_var = None;
         self.drop_hover_panel = false;
+        self.drop_action = None;
     }
 }

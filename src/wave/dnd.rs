@@ -1,5 +1,3 @@
-use eframe::egui;
-
 // ---------------------------------------------------------------------------
 // Drag payload & source
 // ---------------------------------------------------------------------------
@@ -14,41 +12,69 @@ pub struct VarDragPayload {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DragSource {
-    /// Variable dragged from the Variable Source or Variable Controller — duplicates (copy).
-    Copy,
-    /// Series dragged from a pane in the Wave Layout — relocates (move) unless Ctrl held.
-    MoveFromPane {
+    /// Variable dragged from the descriptor catalog in Variable Map.
+    VariableMap,
+    /// Pinned variable dragged inside Variable Map.
+    VariableMapPinned,
+    /// Watched variable dragged from Variable Controller.
+    VariableController,
+    /// Series dragged from a pane in Wave Layout.
+    WaveLayout {
         tile_id: egui_tiles::TileId,
         index: usize,
     },
 }
 
-// ---------------------------------------------------------------------------
-// Effective drag mode (Ctrl modifier)
-// ---------------------------------------------------------------------------
-
-/// The resolved drag operation: Copy always duplicates, Move removes from source.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DragMode {
-    Copy,
-    Move,
+pub enum DragSurface {
+    VariableMap,
+    VariableController,
+    WaveLayout,
 }
 
-/// Determine whether the current drag should copy or move.
-///
-/// - `DragSource::Copy` → always `DragMode::Copy`
-/// - `DragSource::MoveFromPane` → `DragMode::Move` by default,
-///   but `DragMode::Copy` when **Ctrl** is held.
-pub fn effective_drag_mode(ctx: &egui::Context, source: &DragSource) -> DragMode {
-    match source {
-        DragSource::Copy => DragMode::Copy,
-        DragSource::MoveFromPane { .. } => {
-            if ctx.input(|i| i.modifiers.ctrl) {
-                DragMode::Copy
-            } else {
-                DragMode::Move
-            }
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DropAction {
+    Add,
+    Move,
+    Delete,
+}
+
+impl DragSource {
+    pub fn surface(self) -> DragSurface {
+        match self {
+            Self::VariableMap | Self::VariableMapPinned => DragSurface::VariableMap,
+            Self::VariableController => DragSurface::VariableController,
+            Self::WaveLayout { .. } => DragSurface::WaveLayout,
         }
+    }
+
+    pub fn can_delete(self) -> bool {
+        !matches!(self, Self::VariableMap)
+    }
+}
+
+/// Resolve the visible operation from the hovered drop target, not from the
+/// drag source alone.
+pub fn action_for_target(source: &DragSource, target: DragSurface) -> DropAction {
+    if source.surface() != target {
+        return DropAction::Add;
+    }
+
+    match (source, target) {
+        (DragSource::VariableMapPinned, DragSurface::VariableMap)
+        | (DragSource::VariableController, DragSurface::VariableController)
+        | (DragSource::WaveLayout { .. }, DragSurface::WaveLayout) => DropAction::Move,
+        (DragSource::VariableMap, DragSurface::VariableMap) => DropAction::Add,
+        _ => DropAction::Add,
+    }
+}
+
+pub fn can_drop_on_wave_body(source: &DragSource, target_tile: egui_tiles::TileId) -> bool {
+    match source {
+        DragSource::WaveLayout { tile_id, .. } => *tile_id != target_tile,
+        DragSource::VariableMap
+        | DragSource::VariableMapPinned
+        | DragSource::VariableController => true,
     }
 }
 

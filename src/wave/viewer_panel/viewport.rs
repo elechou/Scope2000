@@ -106,6 +106,12 @@ pub fn show_viewport(
     if let Some(drop_id) = drop_hover_tile
         && let Some(rect) = vp.tree.tiles.rect(drop_id)
     {
+        if let Some(payload) = egui::DragAndDrop::payload::<dnd::VarDragPayload>(ui.ctx()) {
+            *vp.drop_action = Some(dnd::action_for_target(
+                &payload.source,
+                dnd::DragSurface::WaveLayout,
+            ));
+        }
         let stroke = egui::Stroke::new(2.0, theme::DROP_TARGET_STROKE);
         painter.rect_stroke(rect, 0.0, stroke, egui::StrokeKind::Inside);
         painter.rect_filled(
@@ -115,7 +121,7 @@ pub fn show_viewport(
         );
     }
 
-    // Drag pill near cursor — shows variable names + copy/move SVG icon
+    // Drag pill near cursor.
     if let Some(payload) = egui::DragAndDrop::payload::<dnd::VarDragPayload>(ui.ctx())
         && let Some(pointer_pos) = ui.ctx().pointer_interact_pos()
     {
@@ -126,22 +132,26 @@ pub fn show_viewport(
             egui::UiBuilder::new().layer_id(pill_layer),
         );
 
-        let droppable = drop_hover_tile.is_some() || *vp.drop_hover_panel;
-        pill_ui.set_opacity(if droppable { 0.8 } else { 0.5 });
-        let pill_frame = egui::Frame {
-            fill: if droppable {
-                theme::DRAG_PILL_DROPPABLE_FILL
-            } else {
-                theme::DRAG_PILL_NONDROPPABLE_FILL
-            },
-            stroke: egui::Stroke::new(
-                1.0,
-                if droppable {
-                    theme::DRAG_PILL_DROPPABLE_STROKE
-                } else {
-                    theme::DRAG_PILL_NONDROPPABLE_STROKE
-                },
+        let action = *vp.drop_action;
+        let droppable = action.is_some();
+        pill_ui.set_opacity(if droppable { 0.86 } else { 0.5 });
+        let (fill, stroke_color) = match action {
+            Some(dnd::DropAction::Delete) => (
+                theme::RED.gamma_multiply(0.78),
+                theme::RED.gamma_multiply(1.15),
             ),
+            Some(dnd::DropAction::Add | dnd::DropAction::Move) => (
+                theme::DRAG_PILL_DROPPABLE_FILL,
+                theme::DRAG_PILL_DROPPABLE_STROKE,
+            ),
+            None => (
+                theme::DRAG_PILL_NONDROPPABLE_FILL,
+                theme::DRAG_PILL_NONDROPPABLE_STROKE,
+            ),
+        };
+        let pill_frame = egui::Frame {
+            fill,
+            stroke: egui::Stroke::new(1.0, stroke_color),
             corner_radius: egui::CornerRadius::same(2),
             inner_margin: egui::Margin {
                 left: 6,
@@ -154,21 +164,23 @@ pub fn show_viewport(
         };
 
         let label = dnd::pill_label(&payload.names);
-        let mode = dnd::effective_drag_mode(ui.ctx(), &payload.source);
-        let icon_uri = match mode {
-            dnd::DragMode::Copy => theme::ICON_DND_COPY,
-            dnd::DragMode::Move => theme::ICON_DND_MOVE,
-        };
+        let icon_uri = action.map(|action| match action {
+            dnd::DropAction::Add => theme::ICON_DND_COPY,
+            dnd::DropAction::Move => theme::ICON_DND_MOVE,
+            dnd::DropAction::Delete => theme::ICON_DND_TRASH,
+        });
 
         let resp = pill_frame
             .show(&mut pill_ui, |ui| {
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 4.0;
-                    ui.add(
-                        egui::Image::new(icon_uri)
-                            .fit_to_exact_size(egui::vec2(14.0, 14.0))
-                            .tint(ui.visuals().widgets.inactive.text_color()),
-                    );
+                    if let Some(icon_uri) = icon_uri {
+                        ui.add(
+                            egui::Image::new(icon_uri)
+                                .fit_to_exact_size(egui::vec2(14.0, 14.0))
+                                .tint(ui.visuals().widgets.inactive.text_color()),
+                        );
+                    }
                     let text_color = ui.visuals().widgets.inactive.text_color();
                     ui.label(egui::RichText::new(label).color(text_color));
                 });

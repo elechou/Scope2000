@@ -183,28 +183,33 @@ pub fn show_blueprint(
                 let var_hover_on_header = resp.dnd_hover_payload::<VarDragPayload>().filter(|p| {
                     !matches!(
                         p.source,
-                        DragSource::MoveFromPane { tile_id, .. }
+                        DragSource::WaveLayout { tile_id, .. }
                             if tile_id == id
                     )
                 });
                 let has_drop_hover = var_hover_on_header.is_some();
-                if has_drop_hover {
+                if let Some(payload) = var_hover_on_header.as_ref() {
                     *vp.drop_hover_panel = true;
+                    *vp.drop_action = Some(dnd::action_for_target(
+                        &payload.source,
+                        dnd::DragSurface::WaveLayout,
+                    ));
                     if let Some(payload) = resp.dnd_release_payload::<VarDragPayload>() {
-                        let mode = dnd::effective_drag_mode(ui.ctx(), &payload.source);
-                        match (&payload.source, mode) {
-                            (_, dnd::DragMode::Copy) => {
+                        let action =
+                            dnd::action_for_target(&payload.source, dnd::DragSurface::WaveLayout);
+                        match (&payload.source, action) {
+                            (_, dnd::DropAction::Add) => {
                                 actions.push(BlueprintAction::AddVarsToPane(
                                     id,
                                     payload.names.clone(),
                                 ));
                             }
                             (
-                                DragSource::MoveFromPane {
+                                DragSource::WaveLayout {
                                     tile_id: from_tile,
                                     index: from_idx,
                                 },
-                                dnd::DragMode::Move,
+                                dnd::DropAction::Move,
                             ) => {
                                 if *from_tile != id {
                                     let to_idx = vp
@@ -357,7 +362,7 @@ pub fn show_blueprint(
                                     ui.ctx(),
                                     VarDragPayload {
                                         names: vec![var.clone()],
-                                        source: DragSource::MoveFromPane {
+                                        source: DragSource::WaveLayout {
                                             tile_id: id,
                                             index: idx,
                                         },
@@ -369,7 +374,7 @@ pub fn show_blueprint(
                                 ui.ctx(),
                             )
                             .is_some_and(|p| match p.source {
-                                DragSource::MoveFromPane { tile_id, index } => {
+                                DragSource::WaveLayout { tile_id, index } => {
                                     tile_id == id && index == idx
                                 }
                                 _ => false,
@@ -379,12 +384,16 @@ pub fn show_blueprint(
                                 resp.dnd_hover_payload::<VarDragPayload>().filter(|p| {
                                     !matches!(
                                         p.source,
-                                        DragSource::MoveFromPane { tile_id, index }
+                                        DragSource::WaveLayout { tile_id, index }
                                             if tile_id == id && index == idx
                                     )
                                 });
-                            if var_hover_payload.is_some() {
+                            if let Some(payload) = var_hover_payload.as_ref() {
                                 *vp.drop_hover_panel = true;
+                                *vp.drop_action = Some(dnd::action_for_target(
+                                    &payload.source,
+                                    dnd::DragSurface::WaveLayout,
+                                ));
                                 if let Some(payload) = resp.dnd_release_payload::<VarDragPayload>()
                                 {
                                     let interact_y = ui
@@ -393,10 +402,12 @@ pub fn show_blueprint(
                                         .unwrap_or(rect.center().y);
                                     let insert_above = interact_y < rect.center().y;
                                     let insert_at = if insert_above { idx } else { idx + 1 };
-                                    let mode = dnd::effective_drag_mode(ui.ctx(), &payload.source);
-                                    match (&payload.source, mode) {
-                                        (_, dnd::DragMode::Copy) => {
-                                            // Copy mode (Source panel, or Ctrl+Move)
+                                    let action = dnd::action_for_target(
+                                        &payload.source,
+                                        dnd::DragSurface::WaveLayout,
+                                    );
+                                    match (&payload.source, action) {
+                                        (_, dnd::DropAction::Add) => {
                                             actions.push(BlueprintAction::InsertVarsInPane(
                                                 id,
                                                 insert_at,
@@ -404,11 +415,11 @@ pub fn show_blueprint(
                                             ));
                                         }
                                         (
-                                            DragSource::MoveFromPane {
+                                            DragSource::WaveLayout {
                                                 tile_id: from_tile,
                                                 index: from_idx,
                                             },
-                                            dnd::DragMode::Move,
+                                            dnd::DropAction::Move,
                                         ) => {
                                             if *from_tile == id {
                                                 let mut to = insert_at;

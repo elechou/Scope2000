@@ -52,6 +52,7 @@ pub struct ScopeApp {
     pending_rebind: Option<state::LocalProject>,
     pending_delete_project: Option<String>,
     next_watch_read: Instant,
+    watch_read_pending: bool,
     next_metadata_refresh: Instant,
     workspace_watch_restored: bool,
     descriptor_catalog_ready: bool,
@@ -118,6 +119,7 @@ impl ScopeApp {
             pending_rebind: None,
             pending_delete_project: None,
             next_watch_read: Instant::now(),
+            watch_read_pending: false,
             next_metadata_refresh: Instant::now(),
             workspace_watch_restored: false,
             descriptor_catalog_ready: false,
@@ -140,6 +142,11 @@ impl ScopeApp {
             .info
             .as_ref()
             .is_some_and(|info| info.has(capability))
+    }
+
+    fn request_watch_read(&mut self) {
+        self.watch_read_pending = true;
+        self.next_watch_read = Instant::now();
     }
 
     fn system_panel(&mut self, ui: &mut egui::Ui) {
@@ -304,6 +311,7 @@ impl ScopeApp {
             hovered_blueprint_var: &mut self.viewport.hovered_blueprint_var,
             hovered_plot_var: &mut self.viewport.hovered_plot_var,
             drop_hover_panel: &mut self.viewport.drop_hover_panel,
+            drop_action: &mut self.viewport.drop_action,
         };
         if let Some(feedback) = crate::wave::viewer_panel::show_viewport(
             ui,
@@ -313,6 +321,55 @@ impl ScopeApp {
             can_edit_variable_refs,
         ) {
             self.log.push(LogLevel::Warn, feedback.message());
+        }
+    }
+
+    fn apply_var_drag_delete(&mut self, payload: crate::wave::dnd::VarDragPayload) -> bool {
+        use crate::wave::dnd::DragSource;
+        use crate::wave::selection::Selection;
+
+        match payload.source {
+            DragSource::VariableMap => false,
+            DragSource::VariableMapPinned => {
+                let indexes: Vec<usize> = payload
+                    .names
+                    .iter()
+                    .filter_map(|name| self.inspector.index_by_name(name))
+                    .collect();
+                let before = self.inspector.pinned.len();
+                self.inspector.pinned.retain(|idx| !indexes.contains(idx));
+                before != self.inspector.pinned.len()
+            }
+            DragSource::VariableController => {
+                let before = self.inspector.watch_vars.len();
+                self.inspector
+                    .watch_vars
+                    .retain(|watch| !payload.names.iter().any(|name| name == &watch.var_name));
+                before != self.inspector.watch_vars.len()
+            }
+            DragSource::WaveLayout { tile_id, index } => {
+                let Some(egui_tiles::Tile::Pane(pane)) = self.viewport.tree.tiles.get_mut(tile_id)
+                else {
+                    return false;
+                };
+                if index >= pane.series.len() {
+                    return false;
+                }
+                pane.series.remove(index);
+                self.viewport.selection = match &self.viewport.selection {
+                    Selection::Series(tid, sidx) if *tid == tile_id => {
+                        if *sidx == index {
+                            Selection::Pane(tile_id)
+                        } else if *sidx > index {
+                            Selection::Series(tile_id, *sidx - 1)
+                        } else {
+                            self.viewport.selection.clone()
+                        }
+                    }
+                    _ => self.viewport.selection.clone(),
+                };
+                false
+            }
         }
     }
 
@@ -523,10 +580,11 @@ impl eframe::App for ScopeApp {
             });
 
         self.viewport.drop_hover_panel = false;
+        self.viewport.drop_action = None;
         theme::pretick_panel_animation(ui.ctx(), "system_panel", self.ui.show_system_panel);
         egui::Panel::left("system_panel")
             .resizable(false)
-            .exact_size(250.0)
+            .exact_size(280.0)
             .show_separator_line(true)
             .frame(theme::side_panel_frame())
             .show_animated_inside(ui, self.ui.show_system_panel, |ui| {
@@ -535,18 +593,29 @@ impl eframe::App for ScopeApp {
                 self.system_panel(ui);
                 ui.separator();
                 let can_edit_refs = self.project_policy().edit_variable_refs;
-                let pinned_changed = ui
-                    .add_enabled_ui(can_edit_refs, |ui| {
-                        crate::variable::panel::show_variable_map(
-                            ui,
-                            &mut self.inspector,
-                            &mut self.ui.source_filter,
-                            &mut self.ui.varmap_split,
-                        )
-                    })
-                    .inner;
-                if pinned_changed {
-                    self.next_watch_read = Instant::now();
+                let can_refresh_values = self.hardware.connected
+                    && self.descriptor_catalog_ready
+                    && self.has_capability(crate::source::CAP_CAL);
+                let varmap_out = crate::variable::panel::show_variable_map(
+                    ui,
+                    &mut self.inspector,
+                    &mut self.ui.source_filter,
+                    &mut self.ui.varmap_split,
+                    &mut self.ui.varmap_continuous_refresh,
+                    can_edit_refs,
+                    can_refresh_values,
+                    &mut self.viewport.drop_action,
+                );
+                if let Some(payload) = varmap_out.delete_request {
+                    if self.apply_var_drag_delete(payload) {
+                        self.request_watch_read();
+                    }
+                }
+                if varmap_out.pinned_changed
+                    || varmap_out.refresh_requested
+                    || (varmap_out.continuous_refresh_changed && self.ui.varmap_continuous_refresh)
+                {
+                    self.request_watch_read();
                 }
             });
 
@@ -615,6 +684,7 @@ impl eframe::App for ScopeApp {
                     ui,
                     &mut self.inspector,
                     &mut self.viewport.drop_hover_panel,
+                    &mut self.viewport.drop_action,
                     project_policy.calibration_write,
                     project_policy.edit_variable_refs,
                 );
@@ -622,7 +692,7 @@ impl eframe::App for ScopeApp {
                     self.write_variables(var_out.to_write);
                 }
                 if var_out.watch_changed {
-                    self.next_watch_read = Instant::now();
+                    self.request_watch_read();
                 }
 
                 let (add_pane, feedback) = {
@@ -634,6 +704,7 @@ impl eframe::App for ScopeApp {
                         hovered_blueprint_var: &mut self.viewport.hovered_blueprint_var,
                         hovered_plot_var: &mut self.viewport.hovered_plot_var,
                         drop_hover_panel: &mut self.viewport.drop_hover_panel,
+                        drop_action: &mut self.viewport.drop_action,
                     };
                     crate::wave::viewer_panel::show_blueprint(
                         ui,
@@ -667,6 +738,7 @@ impl eframe::App for ScopeApp {
                     hovered_blueprint_var: &mut self.viewport.hovered_blueprint_var,
                     hovered_plot_var: &mut self.viewport.hovered_plot_var,
                     drop_hover_panel: &mut self.viewport.drop_hover_panel,
+                    drop_action: &mut self.viewport.drop_action,
                 };
                 crate::wave::viewer_panel::show_selection_panel(
                     ui,

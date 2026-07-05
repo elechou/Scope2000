@@ -305,11 +305,10 @@ impl<'a> MyTilesDelegate<'a> {
             .any(|system_name| system_name == name)
     }
 
-    /// Apply a VarDragPayload drop to a pane. Respects Ctrl modifier for
-    /// copy vs move. Returns feedback for the status bar.
+    /// Apply a VarDragPayload drop to a pane. Returns feedback for the status bar.
     pub(crate) fn apply_drop(
         &mut self,
-        ctx: &egui::Context,
+        _ctx: &egui::Context,
         tile_id: TileId,
         pane: &mut ViewPane,
         payload: &VarDragPayload,
@@ -317,13 +316,11 @@ impl<'a> MyTilesDelegate<'a> {
         if !self.can_edit_variable_refs {
             return None;
         }
-        use super::dnd::{DragMode, DropFeedback};
+        use super::dnd::{DragSurface, DropAction, DropFeedback};
 
-        let mode = super::dnd::effective_drag_mode(ctx, &payload.source);
-
-        match payload.source {
-            DragSource::Copy | DragSource::MoveFromPane { .. } if mode == DragMode::Copy => {
-                // Copy: append new series, skip duplicates
+        let action = super::dnd::action_for_target(&payload.source, DragSurface::WaveLayout);
+        match (payload.source, action) {
+            (_, DropAction::Add) => {
                 let mut added = Vec::new();
                 for var_name in &payload.names {
                     if pane.series.iter().any(|s| &s.var_name == var_name) {
@@ -345,11 +342,13 @@ impl<'a> MyTilesDelegate<'a> {
                     })
                 }
             }
-            DragSource::MoveFromPane {
-                tile_id: from_tile,
-                index: from_idx,
-            } => {
-                // Move: append to target and queue removal from source
+            (
+                DragSource::WaveLayout {
+                    tile_id: from_tile,
+                    index: from_idx,
+                },
+                DropAction::Move,
+            ) => {
                 if from_tile == tile_id {
                     return None;
                 }
