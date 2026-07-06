@@ -139,6 +139,25 @@ pub fn scope_channel_limit(info: Option<&DeviceInfo>) -> usize {
         .unwrap_or(0)
 }
 
+/// Collect unique variable names from Time Series panes in the tile tree.
+pub fn collect_time_series_vars(tiles: &egui_tiles::Tiles<pane::ViewPane>) -> Vec<String> {
+    let mut names = Vec::new();
+    for id in tiles.tile_ids() {
+        let Some(egui_tiles::Tile::Pane(pane)) = tiles.get(id) else {
+            continue;
+        };
+        if pane.kind != pane::PaneKind::TimeSeries {
+            continue;
+        }
+        for series in &pane.series {
+            if !names.contains(&series.var_name) {
+                names.push(series.var_name.clone());
+            }
+        }
+    }
+    names
+}
+
 pub fn max_record_points_for_binding(binding: &[VarDescriptor], info: &DeviceInfo) -> Option<u16> {
     let stride_words: u32 = binding
         .iter()

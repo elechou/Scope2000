@@ -90,6 +90,8 @@ pub enum DropFeedback {
     },
     /// Drop was rejected because the variable(s) are already in the target pane.
     Duplicate { var_name: String, pane_name: String },
+    /// Drop was rejected because it would exceed the device scope channel limit.
+    ScopeChannelLimit { var_name: String, limit: usize },
 }
 
 impl DropFeedback {
@@ -111,6 +113,9 @@ impl DropFeedback {
                 pane_name,
             } => {
                 format!("{} already in {}", var_name, pane_name)
+            }
+            Self::ScopeChannelLimit { var_name, limit } => {
+                format!("Viewer2000 scope channel limit is {limit}; {var_name} was not added")
             }
         }
     }

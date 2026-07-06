@@ -90,6 +90,59 @@ fn collect_views(
     views
 }
 
+fn pane_add_context(
+    tree: &egui_tiles::Tree<ViewPane>,
+    tile_id: egui_tiles::TileId,
+    var_name: &str,
+) -> Option<(String, bool)> {
+    let Some(egui_tiles::Tile::Pane(pane)) = tree.tiles.get(tile_id) else {
+        return None;
+    };
+    Some((
+        pane.name.clone(),
+        pane.series.iter().any(|series| series.var_name == var_name),
+    ))
+}
+
+fn scope_channel_limit_feedback(
+    tree: &egui_tiles::Tree<ViewPane>,
+    inspector: &InspectorState,
+    limit: usize,
+    tile_id: egui_tiles::TileId,
+    var_name: &str,
+) -> Option<dnd::DropFeedback> {
+    if limit == 0 {
+        return None;
+    }
+    let Some(egui_tiles::Tile::Pane(pane)) = tree.tiles.get(tile_id) else {
+        return None;
+    };
+    if pane.kind != PaneKind::TimeSeries {
+        return None;
+    }
+    if !inspector
+        .descriptor_by_name(var_name)
+        .is_some_and(|descriptor| descriptor.is_scope())
+    {
+        return None;
+    }
+    let current = crate::wave::collect_time_series_vars(&tree.tiles)
+        .into_iter()
+        .filter(|name| {
+            inspector
+                .descriptor_by_name(name)
+                .is_some_and(|descriptor| descriptor.is_scope())
+        })
+        .collect::<std::collections::HashSet<_>>();
+    if current.contains(var_name) {
+        return None;
+    }
+    (current.len() + 1 > limit).then(|| dnd::DropFeedback::ScopeChannelLimit {
+        var_name: var_name.to_owned(),
+        limit,
+    })
+}
+
 /// Render the blueprint panel. Returns `Some(kind)` if the user clicked
 /// "+ Time Series" or "+ Dataframe" and the caller should create a new pane.
 /// Returns (add_pane_request, drop_feedback).
@@ -97,6 +150,7 @@ pub fn show_blueprint(
     ui: &mut egui::Ui,
     vp: &mut ViewportPanelState<'_>,
     inspector: &InspectorState,
+    scope_channel_limit: usize,
     can_edit_variable_refs: bool,
 ) -> (Option<PaneKind>, Option<dnd::DropFeedback>) {
     let mut wants_add_pane: Option<PaneKind> = None;
@@ -628,17 +682,30 @@ pub fn show_blueprint(
                 if !can_edit_variable_refs {
                     continue;
                 }
-                if let Some(egui_tiles::Tile::Pane(p)) = vp.tree.tiles.get_mut(id) {
-                    for name in &names {
-                        if p.series.iter().any(|s| &s.var_name == name) {
-                            blueprint_feedback = Some(dnd::DropFeedback::Duplicate {
-                                var_name: name.clone(),
-                                pane_name: p.name.clone(),
-                            });
-                        } else {
-                            let idx = p.series.len();
-                            p.add_series(name.clone(), crate::wave::pane::default_color(idx));
-                        }
+                for name in &names {
+                    let Some((pane_name, duplicate)) = pane_add_context(vp.tree, id, name) else {
+                        continue;
+                    };
+                    if duplicate {
+                        blueprint_feedback = Some(dnd::DropFeedback::Duplicate {
+                            var_name: name.clone(),
+                            pane_name,
+                        });
+                        continue;
+                    }
+                    if let Some(feedback) = scope_channel_limit_feedback(
+                        vp.tree,
+                        inspector,
+                        scope_channel_limit,
+                        id,
+                        name,
+                    ) {
+                        blueprint_feedback = Some(feedback);
+                        continue;
+                    }
+                    if let Some(egui_tiles::Tile::Pane(p)) = vp.tree.tiles.get_mut(id) {
+                        let idx = p.series.len();
+                        p.add_series(name.clone(), crate::wave::pane::default_color(idx));
                     }
                 }
             }
@@ -646,25 +713,39 @@ pub fn show_blueprint(
                 if !can_edit_variable_refs {
                     continue;
                 }
-                if let Some(egui_tiles::Tile::Pane(p)) = vp.tree.tiles.get_mut(id) {
-                    let mut cursor = insert_at.min(p.series.len());
-                    for name in &names {
-                        if p.series.iter().any(|s| &s.var_name == name) {
-                            blueprint_feedback = Some(dnd::DropFeedback::Duplicate {
-                                var_name: name.clone(),
-                                pane_name: p.name.clone(),
-                            });
-                        } else {
-                            let color_idx = p.series.len();
-                            p.series.insert(
-                                cursor,
-                                crate::wave::pane::SeriesConfig::new(
-                                    name.clone(),
-                                    crate::wave::pane::default_color(color_idx),
-                                ),
-                            );
-                            cursor += 1;
-                        }
+                let mut cursor = insert_at;
+                for name in &names {
+                    let Some((pane_name, duplicate)) = pane_add_context(vp.tree, id, name) else {
+                        continue;
+                    };
+                    if duplicate {
+                        blueprint_feedback = Some(dnd::DropFeedback::Duplicate {
+                            var_name: name.clone(),
+                            pane_name,
+                        });
+                        continue;
+                    }
+                    if let Some(feedback) = scope_channel_limit_feedback(
+                        vp.tree,
+                        inspector,
+                        scope_channel_limit,
+                        id,
+                        name,
+                    ) {
+                        blueprint_feedback = Some(feedback);
+                        continue;
+                    }
+                    if let Some(egui_tiles::Tile::Pane(p)) = vp.tree.tiles.get_mut(id) {
+                        let color_idx = p.series.len();
+                        let insert_at = cursor.min(p.series.len());
+                        p.series.insert(
+                            insert_at,
+                            crate::wave::pane::SeriesConfig::new(
+                                name.clone(),
+                                crate::wave::pane::default_color(color_idx),
+                            ),
+                        );
+                        cursor = insert_at + 1;
                     }
                 }
             }
@@ -740,6 +821,16 @@ pub fn show_blueprint(
                         pane_name,
                     });
                     continue; // Don't remove from source — kick back
+                }
+                if let Some(feedback) = scope_channel_limit_feedback(
+                    vp.tree,
+                    inspector,
+                    scope_channel_limit,
+                    to_tile,
+                    &var_name,
+                ) {
+                    blueprint_feedback = Some(feedback);
+                    continue;
                 }
 
                 // Safe to move: remove from source, insert into destination

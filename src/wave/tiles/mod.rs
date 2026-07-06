@@ -1,6 +1,8 @@
 mod dataframe;
 mod time_series;
 
+use std::collections::HashSet;
+
 use eframe::egui;
 use egui::{Color32, Stroke, vec2};
 use egui_tiles::{TileId, Tiles};
@@ -28,6 +30,9 @@ pub struct MyTilesDelegate<'a> {
     pub var_names: &'a [String],
     pub var_values: &'a [f64],
     pub system_var_names: &'a [String],
+    pub scope_channel_limit: usize,
+    pub scope_channel_names: HashSet<String>,
+    pub scope_capable_var_names: HashSet<String>,
     /// Set when a pane's drop zone is hovered with a valid drag payload.
     pub drop_hover_tile: Option<TileId>,
     /// Which curve to highlight: (pane_id, var_id). Merged from blueprint hover + plot hover.
@@ -322,6 +327,7 @@ impl<'a> MyTilesDelegate<'a> {
         match (payload.source, action) {
             (_, DropAction::Add) => {
                 let mut added = Vec::new();
+                let mut added_scope_channels = 0;
                 for var_name in &payload.names {
                     if pane.series.iter().any(|s| &s.var_name == var_name) {
                         return Some(DropFeedback::Duplicate {
@@ -329,8 +335,16 @@ impl<'a> MyTilesDelegate<'a> {
                             pane_name: pane.name.clone(),
                         });
                     }
+                    if let Some(feedback) =
+                        self.scope_channel_limit_feedback(pane, var_name, added_scope_channels)
+                    {
+                        return Some(feedback);
+                    }
                     let color_idx = pane.series.len();
                     pane.add_series(var_name.clone(), pane::default_color(color_idx));
+                    if self.adds_scope_channel(pane, var_name) {
+                        added_scope_channels += 1;
+                    }
                     added.push(var_name.clone());
                 }
                 if added.is_empty() {
@@ -359,6 +373,9 @@ impl<'a> MyTilesDelegate<'a> {
                             pane_name: pane.name.clone(),
                         });
                     }
+                    if let Some(feedback) = self.scope_channel_limit_feedback(pane, name, 0) {
+                        return Some(feedback);
+                    }
                     let color_idx = pane.series.len();
                     pane.add_series(name.clone(), pane::default_color(color_idx));
                     self.pending_cross_pane_move =
@@ -373,6 +390,30 @@ impl<'a> MyTilesDelegate<'a> {
             }
             _ => None,
         }
+    }
+
+    fn scope_channel_limit_feedback(
+        &self,
+        pane: &ViewPane,
+        var_name: &str,
+        pending_new_scope_channels: usize,
+    ) -> Option<super::dnd::DropFeedback> {
+        if self.scope_channel_limit == 0 || !self.adds_scope_channel(pane, var_name) {
+            return None;
+        }
+        let next_count = self.scope_channel_names.len() + pending_new_scope_channels + 1;
+        (next_count > self.scope_channel_limit).then(|| {
+            super::dnd::DropFeedback::ScopeChannelLimit {
+                var_name: var_name.to_owned(),
+                limit: self.scope_channel_limit,
+            }
+        })
+    }
+
+    fn adds_scope_channel(&self, pane: &ViewPane, var_name: &str) -> bool {
+        pane.kind == PaneKind::TimeSeries
+            && self.scope_capable_var_names.contains(var_name)
+            && !self.scope_channel_names.contains(var_name)
     }
 }
 

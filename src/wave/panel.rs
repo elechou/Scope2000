@@ -2,7 +2,6 @@ use eframe::egui;
 
 use crate::source::{ScopeMode, TriggerEdge};
 use crate::theme;
-use crate::wave::pane::PaneKind;
 
 use super::csv::CsvState;
 use super::{
@@ -26,25 +25,6 @@ pub enum WaveAction {
 pub struct WavePermissions {
     pub can_start: bool,
     pub can_edit_variable_refs: bool,
-}
-
-/// Collect variable names from TimeSeries panes in the tile tree.
-fn collect_pane_vars(tiles: &egui_tiles::Tiles<crate::wave::pane::ViewPane>) -> Vec<String> {
-    let mut vars = Vec::new();
-    let ids: Vec<_> = tiles.tile_ids().collect();
-    for id in ids {
-        if let Some(egui_tiles::Tile::Pane(p)) = tiles.get(id) {
-            if p.kind != PaneKind::TimeSeries {
-                continue;
-            }
-            for s in &p.series {
-                if !vars.contains(&s.var_name) {
-                    vars.push(s.var_name.clone());
-                }
-            }
-        }
-    }
-    vars
 }
 
 fn is_system_var_name(name: &str, system_var_names: &[String]) -> bool {
@@ -86,7 +66,6 @@ fn trigger_source_popup_width(
     let auto_width = trigger_source_width(ui, "Auto", system_var_names);
     let var_width = pane_vars
         .iter()
-        .take(16)
         .map(|name| trigger_source_width(ui, name, system_var_names))
         .fold(auto_width, f32::max);
     let padded = var_width + ui.spacing().button_padding.x * 2.0 + 24.0;
@@ -203,7 +182,7 @@ pub fn show_wave_section(
     ui.add_space(2.0);
     ui.separator();
 
-    let pane_vars = collect_pane_vars(tiles);
+    let pane_vars = super::collect_time_series_vars(tiles);
 
     ui.add_enabled_ui(can_edit_variable_refs, |ui| {
         ui.horizontal(|ui| {
@@ -226,10 +205,7 @@ pub fn show_wave_section(
                         .on_hover_text(
                             "Capture the next complete frame without a trigger threshold",
                         );
-                    for (i, name) in pane_vars.iter().enumerate() {
-                        if i > 15 {
-                            break;
-                        }
+                    for name in &pane_vars {
                         let selected = wave.settings.trigger_source.as_ref() == Some(name);
                         let mut response =
                             selectable_trigger_source(ui, selected, name, system_var_names);

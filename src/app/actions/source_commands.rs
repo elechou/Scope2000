@@ -15,7 +15,7 @@ use crate::source::{
     CatalogCommand, DAQ_FLAG_TRIGGER_DISABLED, NO_CAPTURE_ACK, ParamWrite, ScopeConfig, ScopeMode,
     SourceCommand, SystemCommand, TriggerEdge, ValueRead, VarDescriptor,
 };
-use crate::wave::{max_record_points_for_binding, pane::PaneKind, scope_channel_limit};
+use crate::wave::{max_record_points_for_binding, scope_channel_limit};
 
 impl ScopeApp {
     pub(in crate::app) fn send(&self, command: SourceCommand) {
@@ -413,6 +413,17 @@ impl ScopeApp {
             );
             return;
         }
+        let channel_limit = scope_channel_limit(self.hardware.info.as_ref());
+        if channel_limit != 0 && binding.len() > channel_limit {
+            self.log.push(
+                LogLevel::Warn,
+                format!(
+                    "Wave start rejected: {} scope channel(s) exceed the Viewer2000 limit of {channel_limit}",
+                    binding.len()
+                ),
+            );
+            return;
+        }
         if let Some(trigger_source) = &self.wave.settings.trigger_source
             && !binding
                 .iter()
@@ -567,25 +578,15 @@ impl ScopeApp {
     pub(in crate::app) fn current_scope_record_limit(&self) -> Option<u16> {
         let pane_vars = self.collect_time_series_vars();
         let binding = self.resolve_scope_binding(&pane_vars);
+        let channel_limit = scope_channel_limit(self.hardware.info.as_ref());
+        if channel_limit != 0 && binding.len() > channel_limit {
+            return None;
+        }
         self.max_record_points_for_scope_binding(&binding)
     }
 
     fn collect_time_series_vars(&self) -> Vec<String> {
-        let mut names = Vec::new();
-        for id in self.viewport.tree.tiles.tile_ids() {
-            let Some(egui_tiles::Tile::Pane(pane)) = self.viewport.tree.tiles.get(id) else {
-                continue;
-            };
-            if pane.kind != PaneKind::TimeSeries {
-                continue;
-            }
-            for series in &pane.series {
-                if !names.contains(&series.var_name) {
-                    names.push(series.var_name.clone());
-                }
-            }
-        }
-        names
+        crate::wave::collect_time_series_vars(&self.viewport.tree.tiles)
     }
 
     fn resolve_scope_binding(&self, names: &[String]) -> Vec<VarDescriptor> {
@@ -593,7 +594,6 @@ impl ScopeApp {
             .iter()
             .filter_map(|name| self.inspector.descriptor_by_name(name))
             .filter(|descriptor| descriptor.is_scope())
-            .take(scope_channel_limit(self.hardware.info.as_ref()))
             .cloned()
             .collect()
     }
@@ -872,6 +872,23 @@ mod tests {
             .collect()
     }
 
+    fn set_time_series_vars(app: &mut ScopeApp, names: &[String]) {
+        let tile_ids: Vec<_> = app.viewport.tree.tiles.tile_ids().collect();
+        for tile_id in tile_ids {
+            let Some(egui_tiles::Tile::Pane(pane)) = app.viewport.tree.tiles.get_mut(tile_id)
+            else {
+                continue;
+            };
+            if pane.kind == PaneKind::TimeSeries {
+                pane.series.clear();
+                for name in names {
+                    pane.add_series(name.clone(), egui::Color32::WHITE);
+                }
+                return;
+            }
+        }
+    }
+
     #[test]
     fn dc_voltage_poll_reads_voltage_descriptors_once_per_period() {
         let mut harness = test_harness(None);
@@ -908,6 +925,30 @@ mod tests {
         harness.app.poll_dc_voltage_reads();
 
         assert!(drain_catalog_commands(&harness.commands).is_empty());
+    }
+
+    #[test]
+    fn wave_start_rejects_scope_bindings_over_device_channel_limit() {
+        let mut harness = test_harness(None);
+        let names = (0..17)
+            .map(|index| format!("signal_{index}"))
+            .collect::<Vec<_>>();
+        harness
+            .app
+            .inspector
+            .set_descriptors(names.iter().map(|name| descriptor(name)).collect());
+        set_time_series_vars(&mut harness.app, &names);
+
+        harness.app.start_acquisition(ScopeMode::CaptureArmed);
+
+        assert!(drain_catalog_commands(&harness.commands).is_empty());
+        assert!(harness.app.wave.pending_binding.is_empty());
+        assert!(harness.app.log.logs.iter().any(|entry| {
+            entry.level == LogLevel::Warn
+                && entry
+                    .message
+                    .contains("17 scope channel(s) exceed the Viewer2000 limit of 16")
+        }));
     }
 
     #[test]

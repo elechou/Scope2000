@@ -321,6 +321,7 @@ impl ScopeApp {
             &mut vp,
             &self.plot_data,
             &self.inspector,
+            crate::wave::scope_channel_limit(self.hardware.info.as_ref()),
             can_edit_variable_refs,
         ) {
             self.log.push(LogLevel::Warn, feedback.message());
@@ -714,6 +715,7 @@ impl eframe::App for ScopeApp {
                         ui,
                         &mut vp,
                         &self.inspector,
+                        crate::wave::scope_channel_limit(self.hardware.info.as_ref()),
                         project_policy.edit_variable_refs,
                     )
                 };
