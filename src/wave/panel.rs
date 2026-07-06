@@ -169,20 +169,25 @@ pub fn show_wave_section(
             ui,
             "Stop",
             theme::RED,
-            wave.active
-                || wave.restart_pending.is_some()
-                || wave.auto_trigger_read_pending.is_some(),
+            wave.active || wave.restart_pending.is_some(),
             w,
         ) {
             action = Some(WaveAction::Stop);
         }
     });
-    if wave.auto_trigger_read_pending.is_some() {
-        ui.colored_label(theme::YELLOW, "Wave preparing auto trigger");
-    } else if wave.active {
+    if wave.active {
+        let mode = if wave.settings_snapshot.trigger_source.is_none()
+            && matches!(
+                wave.mode,
+                ScopeMode::CaptureArmed | ScopeMode::CapturePost | ScopeMode::CaptureFrozen
+            ) {
+            "auto capture"
+        } else {
+            mode_label(wave.mode)
+        };
         ui.colored_label(
             theme::GREEN,
-            format!("{} channels, {}", wave.binding.len(), mode_label(wave.mode)),
+            format!("{} channels, {mode}", wave.binding.len()),
         );
     } else {
         ui.colored_label(egui::Color32::GRAY, "Wave stopped");
@@ -217,7 +222,10 @@ pub fn show_wave_section(
                 .selected_text(ch_label)
                 .show_ui(ui, |ui| {
                     ui.set_min_width(source_popup_width);
-                    ui.selectable_value(&mut wave.settings.trigger_source, None, "Auto");
+                    ui.selectable_value(&mut wave.settings.trigger_source, None, "Auto")
+                        .on_hover_text(
+                            "Capture the next complete frame without a trigger threshold",
+                        );
                     for (i, name) in pane_vars.iter().enumerate() {
                         if i > 15 {
                             break;
@@ -232,23 +240,35 @@ pub fn show_wave_section(
                         }
                     }
                 });
-            egui::ComboBox::from_id_salt("trg_edge")
-                .width(45.0)
-                .selected_text(trigger_edge_label(wave.settings.trigger_edge))
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut wave.settings.trigger_edge, TriggerEdge::Rise, "Rise");
-                    ui.selectable_value(&mut wave.settings.trigger_edge, TriggerEdge::Fall, "Fall");
-                });
+            ui.add_enabled_ui(wave.settings.trigger_source.is_some(), |ui| {
+                egui::ComboBox::from_id_salt("trg_edge")
+                    .width(45.0)
+                    .selected_text(trigger_edge_label(wave.settings.trigger_edge))
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(
+                            &mut wave.settings.trigger_edge,
+                            TriggerEdge::Rise,
+                            "Rise",
+                        );
+                        ui.selectable_value(
+                            &mut wave.settings.trigger_edge,
+                            TriggerEdge::Fall,
+                            "Fall",
+                        );
+                    });
+            });
         })
     });
 
     ui.horizontal(|ui| {
+        let edge_trigger_enabled = wave.settings.trigger_source.is_some();
         ui.label("Level");
         let edit_id = ui.make_persistent_id("wave_trigger_level_edit");
         let mut value = ui
             .data_mut(|data| data.get_temp::<f32>(edit_id))
             .unwrap_or(wave.settings.trigger_level);
-        let response = ui.add(
+        let response = ui.add_enabled(
+            edge_trigger_enabled,
             egui::DragValue::new(&mut value)
                 .speed(0.1)
                 .update_while_editing(false),
@@ -267,7 +287,8 @@ pub fn show_wave_section(
         let mut value = ui
             .data_mut(|data| data.get_temp::<f32>(edit_id))
             .unwrap_or(wave.settings.trigger_hysteresis);
-        let response = ui.add(
+        let response = ui.add_enabled(
+            edge_trigger_enabled,
             egui::DragValue::new(&mut value)
                 .range(0.0..=f32::MAX)
                 .speed(0.01)

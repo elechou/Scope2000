@@ -154,6 +154,8 @@ pub const CAP_SYSTEM_CMD: u32 = 1 << 5;
 pub const CAP_NATIVE_BLOCK: u32 = 1 << 6;
 pub const CAP_CT_ZERO_CAL: u32 = 1 << 7;
 pub const CAP_ABZ_ZEROING: u32 = 1 << 8;
+pub const CAP_CAPTURE_FORCE: u32 = 1 << 9;
+pub const DAQ_FLAG_TRIGGER_DISABLED: u16 = 1 << 0;
 pub const CAL_READ_MAX: usize = 32;
 pub const NO_CAPTURE_ACK: u16 = 0xFFFF;
 
@@ -425,6 +427,7 @@ pub enum CatalogCommand {
     ReadValues(Vec<ValueRead>),
     BindChannels { channels: Vec<VarRef> },
     ConfigureScope(ScopeConfig),
+    ForceCapture,
 }
 
 #[derive(Debug)]
@@ -485,6 +488,12 @@ pub enum SourceEvent {
     },
     ScopeConfigured {
         mode: ScopeMode,
+    },
+    CaptureForceAccepted {
+        capture_state_sequence: u16,
+    },
+    CaptureForceFailed {
+        message: String,
     },
     CaptureFrame {
         capture_id: u16,

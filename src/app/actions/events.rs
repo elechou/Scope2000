@@ -4,7 +4,7 @@ use crate::app::ScopeApp;
 use crate::app::state::{AbzZeroingCommandResult, CalibrationCommandResult};
 use crate::console::LogLevel;
 use crate::source::{
-    ScopeBlock, ScopeMode, SourceEvent, SystemCommand, SystemState, VarDescriptor,
+    CatalogCommand, ScopeBlock, ScopeMode, SourceEvent, SystemCommand, SystemState, VarDescriptor,
     command_result_text,
 };
 use crate::variable::InspectorState;
@@ -60,7 +60,6 @@ impl ScopeApp {
                     self.abz_zeroing.reset_session();
                     self.wave.active = false;
                     self.wave.restart_pending = None;
-                    self.wave.auto_trigger_read_pending = None;
                     self.descriptor_catalog_ready = false;
                     // Keep the last catalog and restored refs available for
                     // offline inspection/layout edits. Connected always resets
@@ -177,7 +176,6 @@ impl ScopeApp {
                     values,
                 } => {
                     self.inspector.update_values(&indexes, values);
-                    self.finish_auto_trigger_read(&indexes);
                     self.log.push(
                         LogLevel::Debug,
                         format!("Value read sequence {read_sequence}"),
@@ -271,6 +269,26 @@ impl ScopeApp {
                     {
                         self.start_acquisition(restart_mode);
                     }
+                    if should_force_capture(mode, &self.wave.settings_snapshot) {
+                        self.send_catalog(CatalogCommand::ForceCapture);
+                    }
+                }
+                SourceEvent::CaptureForceAccepted {
+                    capture_state_sequence,
+                } => {
+                    self.log.push(
+                        LogLevel::Debug,
+                        format!(
+                            "Auto Capture force accepted for state sequence {capture_state_sequence}"
+                        ),
+                    );
+                }
+                SourceEvent::CaptureForceFailed { message } => {
+                    self.log.push(
+                        LogLevel::Warn,
+                        format!("Auto Capture force failed: {message}"),
+                    );
+                    self.stop_acquisition();
                 }
                 SourceEvent::CaptureFrame {
                     capture_id,
@@ -442,10 +460,11 @@ fn system_stopped_transition(
 }
 
 fn wave_has_active_or_pending_stop_target(wave: &WaveState) -> bool {
-    wave.active
-        || wave.restart_pending.is_some()
-        || wave.auto_trigger_read_pending.is_some()
-        || !wave.pending_binding.is_empty()
+    wave.active || wave.restart_pending.is_some() || !wave.pending_binding.is_empty()
+}
+
+fn should_force_capture(mode: ScopeMode, settings: &AcquisitionSettings) -> bool {
+    mode == ScopeMode::CaptureArmed && settings.trigger_source.is_none()
 }
 
 fn redraw_capture_frame(
@@ -721,13 +740,6 @@ mod tests {
         active.restart_pending = None;
         active.pending_binding = vec![descriptor];
         assert!(wave_has_active_or_pending_stop_target(&active));
-
-        active.pending_binding.clear();
-        active.auto_trigger_read_pending = Some(crate::wave::AutoTriggerReadPending {
-            mode: ScopeMode::CaptureArmed,
-            descriptor_index: 0,
-        });
-        assert!(wave_has_active_or_pending_stop_target(&active));
     }
 
     #[test]
@@ -747,6 +759,18 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![u32::MAX - 5, 10, 20]
         );
+    }
+
+    #[test]
+    fn auto_capture_forces_every_armed_generation_but_explicit_trigger_does_not() {
+        let auto = AcquisitionSettings::default();
+        assert!(should_force_capture(ScopeMode::CaptureArmed, &auto));
+        assert!(should_force_capture(ScopeMode::CaptureArmed, &auto));
+        assert!(!should_force_capture(ScopeMode::CapturePost, &auto));
+
+        let mut explicit = auto;
+        explicit.trigger_source = Some("speed".to_owned());
+        assert!(!should_force_capture(ScopeMode::CaptureArmed, &explicit));
     }
 
     #[test]

@@ -10,21 +10,19 @@ use crate::app::state::{
 };
 use crate::console::LogLevel;
 use crate::source::{
-    CAL_READ_MAX, CAP_ABZ_ZEROING, CAP_CAL, CAP_CT_ZERO_CAL, CAP_NATIVE_BLOCK, CAP_PRE_TRIGGER,
-    CAP_SCOPE_CAPTURE, CAP_SCOPE_STREAM, CAP_SYSTEM_CMD, CalibrationCommand, CatalogCommand,
-    NO_CAPTURE_ACK, ParamWrite, ScopeConfig, ScopeMode, SourceCommand, SystemCommand, TriggerEdge,
-    ValueRead, VarDescriptor,
+    CAL_READ_MAX, CAP_ABZ_ZEROING, CAP_CAL, CAP_CAPTURE_FORCE, CAP_CT_ZERO_CAL, CAP_NATIVE_BLOCK,
+    CAP_PRE_TRIGGER, CAP_SCOPE_CAPTURE, CAP_SCOPE_STREAM, CAP_SYSTEM_CMD, CalibrationCommand,
+    CatalogCommand, DAQ_FLAG_TRIGGER_DISABLED, NO_CAPTURE_ACK, ParamWrite, ScopeConfig, ScopeMode,
+    SourceCommand, SystemCommand, TriggerEdge, ValueRead, VarDescriptor,
 };
-use crate::wave::{
-    AutoTriggerReadPending, max_record_points_for_binding, pane::PaneKind, scope_channel_limit,
-};
+use crate::wave::{max_record_points_for_binding, pane::PaneKind, scope_channel_limit};
 
 impl ScopeApp {
     pub(in crate::app) fn send(&self, command: SourceCommand) {
         let _ = self.source.commands.send(command);
     }
 
-    fn send_catalog(&self, command: CatalogCommand) {
+    pub(in crate::app) fn send_catalog(&self, command: CatalogCommand) {
         let Some(info) = &self.hardware.info else {
             return;
         };
@@ -340,21 +338,10 @@ impl ScopeApp {
     }
 
     pub(in crate::app) fn start_acquisition(&mut self, mode: ScopeMode) {
-        self.start_acquisition_inner(mode, true);
-    }
-
-    fn start_acquisition_inner(&mut self, mode: ScopeMode, allow_auto_trigger_read: bool) {
         if !self.project_policy().wave_start {
             self.log.push(
                 LogLevel::Warn,
                 "Wave start blocked by project safety state".to_owned(),
-            );
-            return;
-        }
-        if self.wave.auto_trigger_read_pending.is_some() {
-            self.log.push(
-                LogLevel::Debug,
-                "Wave auto trigger read is pending".to_owned(),
             );
             return;
         }
@@ -388,6 +375,16 @@ impl ScopeApp {
                 LogLevel::Warn,
                 "Device does not declare PRE_TRIGGER capability".to_owned(),
             );
+        }
+        if mode == ScopeMode::CaptureArmed
+            && self.wave.settings.trigger_source.is_none()
+            && !self.has_capability(CAP_CAPTURE_FORCE)
+        {
+            self.log.push(
+                LogLevel::Warn,
+                "CAPTURE_FORCE capability is not available".to_owned(),
+            );
+            return;
         }
 
         self.wave.settings.clamp();
@@ -426,34 +423,6 @@ impl ScopeApp {
             );
         }
 
-        if allow_auto_trigger_read
-            && mode == ScopeMode::CaptureArmed
-            && self.wave.settings.trigger_source.is_none()
-            && self.auto_trigger_level(&binding).is_none()
-            && self.has_capability(CAP_CAL)
-            && let Some(descriptor_index) = binding
-                .first()
-                .and_then(|descriptor| self.inspector.index_by_name(&descriptor.name))
-            && let Some(descriptor) = self.inspector.descriptors.get(descriptor_index)
-        {
-            self.wave.auto_trigger_read_pending = Some(AutoTriggerReadPending {
-                mode,
-                descriptor_index,
-            });
-            self.send_catalog(CatalogCommand::ReadValues(vec![ValueRead {
-                descriptor_index,
-                var: descriptor.var,
-            }]));
-            self.log.push(
-                LogLevel::Debug,
-                format!(
-                    "Wave auto trigger: reading {} before capture",
-                    descriptor.name
-                ),
-            );
-            return;
-        }
-
         let start_config = self.scope_config(mode, &binding);
         self.plot_data.clear();
         self.wave.pending_binding = binding.clone();
@@ -486,17 +455,6 @@ impl ScopeApp {
         );
     }
 
-    pub(in crate::app) fn finish_auto_trigger_read(&mut self, indexes: &[usize]) {
-        let Some(pending) = self.wave.auto_trigger_read_pending else {
-            return;
-        };
-        if !indexes.contains(&pending.descriptor_index) {
-            return;
-        }
-        self.wave.auto_trigger_read_pending = None;
-        self.start_acquisition_inner(pending.mode, false);
-    }
-
     pub(in crate::app) fn stop_acquisition(&mut self) {
         self.send_catalog(CatalogCommand::ConfigureScope(ScopeConfig {
             mode: ScopeMode::Off,
@@ -512,7 +470,6 @@ impl ScopeApp {
         }));
         self.wave.active = false;
         self.wave.restart_pending = None;
-        self.wave.auto_trigger_read_pending = None;
     }
 
     pub(in crate::app) fn restart_acquisition(&mut self, mode: ScopeMode) {
@@ -558,24 +515,14 @@ impl ScopeApp {
                     .map(|index| index as u16)
             })
             .unwrap_or(0);
-        let auto_trigger_level = (mode == ScopeMode::CaptureArmed
-            && self.wave.settings.trigger_source.is_none())
-        .then(|| self.auto_trigger_level(binding))
-        .flatten();
+        let auto_capture =
+            mode == ScopeMode::CaptureArmed && self.wave.settings.trigger_source.is_none();
         ScopeConfig {
             mode,
             trigger_slot,
-            trigger_level: auto_trigger_level.unwrap_or(settings.trigger_level),
-            trigger_hysteresis: if auto_trigger_level.is_some() {
-                0.0
-            } else {
-                settings.trigger_hysteresis
-            },
-            trigger_edge: if auto_trigger_level.is_some() {
-                TriggerEdge::Rise
-            } else {
-                settings.trigger_edge
-            },
+            trigger_level: settings.trigger_level,
+            trigger_hysteresis: settings.trigger_hysteresis,
+            trigger_edge: settings.trigger_edge,
             pre_trigger_percent: settings.pre_trigger_percent,
             prescaler: settings.prescaler,
             record_points: if mode == ScopeMode::CaptureArmed {
@@ -584,16 +531,12 @@ impl ScopeApp {
                 0
             },
             ack_capture_id: NO_CAPTURE_ACK,
-            flags: 0,
+            flags: if auto_capture {
+                DAQ_FLAG_TRIGGER_DISABLED
+            } else {
+                0
+            },
         }
-    }
-
-    fn auto_trigger_level(&self, binding: &[VarDescriptor]) -> Option<f32> {
-        let trigger_name = &binding.first()?.name;
-        self.inspector
-            .value_by_name(trigger_name)
-            .or_else(|| self.plot_data.latest_finite_value(trigger_name))
-            .and_then(finite_f32)
     }
 
     fn scope_effective_settings(
@@ -755,7 +698,246 @@ fn dc_voltage_candidate_names(channel: u8) -> &'static [&'static str] {
     }
 }
 
-fn finite_f32(value: f64) -> Option<f32> {
-    let value = value as f32;
-    value.is_finite().then_some(value)
+#[cfg(test)]
+mod tests {
+    use std::{sync::mpsc, thread, time::Instant};
+
+    use eframe::egui;
+
+    use super::*;
+    use crate::app::ScopeApp;
+    use crate::app::state::{
+        AbzZeroingState, AppConfig, CalibrationState, PROJECT_MANAGER_SPLIT_DEFAULT,
+        ProjectContext, UNTITLED_PROJECT, UiState, UnresolvedRefs, WorkspaceAutosaveState,
+        WorkspaceState,
+    };
+    use crate::source::{
+        CAP_CAL, CAP_NATIVE_BLOCK, CAP_PRE_TRIGGER, CAP_SCOPE_CAPTURE, DeviceInfo,
+        MCU_MODEL_F28379D, SourceCommand, SourceEvent, SourceHandle, VarRef, VarType,
+    };
+    use crate::variable::InspectorState;
+    use crate::wave::csv::CsvState;
+    use crate::wave::data::PlotData;
+    use crate::wave::pane::PaneKind;
+    use crate::wave::{AcquisitionSettings, PLOT_MAX_POINTS, WaveState};
+
+    struct TestHarness {
+        app: ScopeApp,
+        commands: mpsc::Receiver<SourceCommand>,
+        events: mpsc::Sender<SourceEvent>,
+    }
+
+    fn descriptor(name: &str) -> VarDescriptor {
+        VarDescriptor {
+            name: name.to_owned(),
+            var: VarRef {
+                addr: 0x1000,
+                ty: VarType::F32,
+            },
+            kind: 0x0002,
+            prescaler: 1,
+        }
+    }
+
+    fn device_info() -> DeviceInfo {
+        DeviceInfo {
+            protocol_version: 10,
+            contract_version: 17,
+            build_hash: 0x1234_5678,
+            descriptor_count: 1,
+            firmware_name: "viewer2000-test".to_owned(),
+            tick_hz: 20_000,
+            capabilities: CAP_CAL
+                | CAP_SCOPE_CAPTURE
+                | CAP_PRE_TRIGGER
+                | CAP_NATIVE_BLOCK
+                | CAP_CAPTURE_FORCE,
+            project_name: UNTITLED_PROJECT.to_owned(),
+            build_time_utc: 0,
+            mcu_model: MCU_MODEL_F28379D,
+            scope_max_ch: 16,
+            scope_block_ticks: 10,
+            scope_ring_words: 0xDFF8,
+        }
+    }
+
+    fn test_harness(trigger_source: Option<&str>) -> TestHarness {
+        let (command_tx, commands) = mpsc::channel();
+        let (events, event_rx) = mpsc::channel();
+        let source = SourceHandle::new(command_tx, event_rx, thread::spawn(|| {}));
+        let mut inspector = InspectorState::default();
+        inspector.set_descriptors(vec![descriptor("signal")]);
+
+        let mut viewport = crate::app::state::ViewportState::new();
+        let tile_ids: Vec<_> = viewport.tree.tiles.tile_ids().collect();
+        for tile_id in tile_ids {
+            let Some(egui_tiles::Tile::Pane(pane)) = viewport.tree.tiles.get_mut(tile_id) else {
+                continue;
+            };
+            if pane.kind == PaneKind::TimeSeries {
+                pane.add_series("signal".to_owned(), egui::Color32::WHITE);
+                break;
+            }
+        }
+
+        let settings = AcquisitionSettings {
+            trigger_source: trigger_source.map(str::to_owned),
+            ..AcquisitionSettings::default()
+        };
+        let now = Instant::now();
+        let app = ScopeApp {
+            hardware: crate::app::state::HardwareState {
+                connected: true,
+                info: Some(device_info()),
+                ..crate::app::state::HardwareState::default()
+            },
+            abz_zeroing: AbzZeroingState::new(),
+            calibration: CalibrationState::new(),
+            source,
+            inspector,
+            viewport,
+            wave: WaveState {
+                settings: settings.clone(),
+                settings_snapshot: settings,
+                ..WaveState::default()
+            },
+            plot_data: PlotData::new(PLOT_MAX_POINTS),
+            csv: CsvState::default(),
+            log: Default::default(),
+            ui: UiState::default(),
+            config: AppConfig::default(),
+            workspace: WorkspaceState::default(),
+            project: ProjectContext {
+                registry: Default::default(),
+                active_name: None,
+                local: None,
+                unresolved: UnresolvedRefs::default(),
+                show_missing: false,
+                show_migration: false,
+                show_project_manager: false,
+                project_search: String::new(),
+                project_manager_split: PROJECT_MANAGER_SPLIT_DEFAULT,
+            },
+            project_scan: None,
+            project_metadata_scan: None,
+            local_report_path: None,
+            project_candidates: Vec::new(),
+            project_index_target: None,
+            pending_rebind: None,
+            pending_delete_project: None,
+            next_watch_read: now,
+            watch_read_pending: false,
+            next_metadata_refresh: now,
+            workspace_watch_restored: false,
+            descriptor_catalog_ready: true,
+            workspace_autosave: WorkspaceAutosaveState::new(),
+        };
+
+        TestHarness {
+            app,
+            commands,
+            events,
+        }
+    }
+
+    fn drain_catalog_commands(commands: &mpsc::Receiver<SourceCommand>) -> Vec<CatalogCommand> {
+        commands
+            .try_iter()
+            .filter_map(|command| match command {
+                SourceCommand::Catalog { command, .. } => Some(command),
+                SourceCommand::Shutdown => None,
+                other => panic!("unexpected command: {other:?}"),
+            })
+            .collect()
+    }
+
+    #[test]
+    fn auto_capture_start_does_not_read_current_value_and_forces_each_armed_generation() {
+        let mut harness = test_harness(None);
+        harness.app.start_acquisition(ScopeMode::CaptureArmed);
+
+        let commands = drain_catalog_commands(&harness.commands);
+        assert_eq!(commands.len(), 3);
+        assert!(
+            commands
+                .iter()
+                .all(|command| { !matches!(command, CatalogCommand::ReadValues(_)) })
+        );
+        assert!(matches!(
+            &commands[0],
+            CatalogCommand::ConfigureScope(config)
+                if config.mode == ScopeMode::Off && config.flags == 0
+        ));
+        assert!(
+            matches!(&commands[1], CatalogCommand::BindChannels { channels } if channels.len() == 1)
+        );
+        assert!(matches!(
+            &commands[2],
+            CatalogCommand::ConfigureScope(config)
+                if config.mode == ScopeMode::CaptureArmed
+                    && config.flags == DAQ_FLAG_TRIGGER_DISABLED
+        ));
+
+        harness
+            .events
+            .send(SourceEvent::ChannelsBound { bind_sequence: 1 })
+            .unwrap();
+        harness
+            .events
+            .send(SourceEvent::ScopeConfigured {
+                mode: ScopeMode::CaptureArmed,
+            })
+            .unwrap();
+        harness.app.poll_events();
+        let commands = drain_catalog_commands(&harness.commands);
+        assert_eq!(commands.len(), 1);
+        assert!(matches!(&commands[0], CatalogCommand::ForceCapture));
+
+        harness.app.rearm_capture(42);
+        let commands = drain_catalog_commands(&harness.commands);
+        assert_eq!(commands.len(), 1);
+        assert!(matches!(
+            &commands[0],
+            CatalogCommand::ConfigureScope(config)
+                if config.mode == ScopeMode::CaptureArmed
+                    && config.ack_capture_id == 42
+                    && config.flags == DAQ_FLAG_TRIGGER_DISABLED
+        ));
+
+        harness
+            .events
+            .send(SourceEvent::ScopeConfigured {
+                mode: ScopeMode::CaptureArmed,
+            })
+            .unwrap();
+        harness.app.poll_events();
+        let commands = drain_catalog_commands(&harness.commands);
+        assert_eq!(commands.len(), 1);
+        assert!(matches!(&commands[0], CatalogCommand::ForceCapture));
+    }
+
+    #[test]
+    fn explicit_trigger_capture_keeps_threshold_controls_and_does_not_force() {
+        let mut harness = test_harness(Some("signal"));
+        harness.app.start_acquisition(ScopeMode::CaptureArmed);
+
+        let commands = drain_catalog_commands(&harness.commands);
+        assert_eq!(commands.len(), 3);
+        assert!(matches!(
+            &commands[2],
+            CatalogCommand::ConfigureScope(config)
+                if config.mode == ScopeMode::CaptureArmed
+                    && config.trigger_slot == 0
+                    && config.flags == 0
+        ));
+
+        harness
+            .events
+            .send(SourceEvent::ScopeConfigured {
+                mode: ScopeMode::CaptureArmed,
+            })
+            .unwrap();
+        harness.app.poll_events();
+        assert!(drain_catalog_commands(&harness.commands).is_empty());
+    }
 }

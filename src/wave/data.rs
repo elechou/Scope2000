@@ -80,16 +80,6 @@ impl PlotData {
         self.trigger_time = Some(0.0);
     }
 
-    pub fn latest_finite_value(&self, name: &str) -> Option<f64> {
-        self.series
-            .get(name)?
-            .values
-            .iter()
-            .rev()
-            .copied()
-            .find(|value| value.is_finite())
-    }
-
     pub fn ensure_series(&mut self, binding: &[VarDescriptor]) {
         for descriptor in binding {
             self.series

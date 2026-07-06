@@ -14,7 +14,7 @@ use crate::source::{
     ScopeBlock, ScopeMode, SourceCommand, SourceEvent, SourceHandle, TransportEndpoint,
 };
 
-const EXPECTED_CONTRACT_VERSION: u16 = 16;
+const EXPECTED_CONTRACT_VERSION: u16 = 17;
 const ENUM_PAGE_SIZE: u8 = 8;
 #[cfg(not(test))]
 const REQUEST_TIMEOUT: Duration = Duration::from_millis(150);
@@ -610,6 +610,28 @@ impl Session {
                     self.completed_capture_id = None;
                 }
                 send_event(events, SourceEvent::ScopeConfigured { mode: config.mode });
+            }
+            CatalogCommand::ForceCapture => {
+                let response = self.request(
+                    codec::message::CAPTURE_FORCE,
+                    &codec::capture_force_request(),
+                    events,
+                )?;
+                match require_ack(&response, codec::message::CAPTURE_FORCE) {
+                    Ok(ack) => send_event(
+                        events,
+                        SourceEvent::CaptureForceAccepted {
+                            capture_state_sequence: ack.data as u16,
+                        },
+                    ),
+                    Err(error) if error.is::<DeviceNak>() => send_event(
+                        events,
+                        SourceEvent::CaptureForceFailed {
+                            message: error.to_string(),
+                        },
+                    ),
+                    Err(error) => return Err(error),
+                }
             }
         }
         Ok(())
@@ -1491,6 +1513,63 @@ mod tests {
             }
         }
         assert!(saw_abandon);
+    }
+
+    #[test]
+    fn capture_force_ack_emits_accepted_state_sequence() {
+        let response = codec::encode_frame(
+            codec::message::CAPTURE_FORCE | 0x80,
+            1,
+            &ack_payload(codec::message::CAPTURE_FORCE, 7),
+        );
+        let (event_tx, event_rx) = mpsc::channel();
+        let mut session = session(vec![response], device_info(0, 0, 0));
+
+        session
+            .handle_command(
+                SourceCommand::Catalog {
+                    build_hash: 0,
+                    command: CatalogCommand::ForceCapture,
+                },
+                &event_tx,
+            )
+            .expect("force capture accepted");
+
+        let SourceEvent::CaptureForceAccepted {
+            capture_state_sequence,
+        } = event_rx.recv().expect("force accepted event")
+        else {
+            panic!("expected force accepted event");
+        };
+        assert_eq!(capture_state_sequence, 7);
+    }
+
+    #[test]
+    fn capture_force_nak_is_reported_without_session_error() {
+        let response = codec::encode_frame(
+            codec::message::CAPTURE_FORCE | 0x80,
+            1,
+            &nak_payload(codec::message::CAPTURE_FORCE, 3),
+        );
+        let (event_tx, event_rx) = mpsc::channel();
+        let mut session = session(vec![response], device_info(0, 0, 0));
+
+        session
+            .handle_command(
+                SourceCommand::Catalog {
+                    build_hash: 0,
+                    command: CatalogCommand::ForceCapture,
+                },
+                &event_tx,
+            )
+            .expect("force NAK is session-local");
+
+        let SourceEvent::CaptureForceFailed { message } =
+            event_rx.recv().expect("force failure event")
+        else {
+            panic!("expected force failure event");
+        };
+        assert!(message.contains("bad state"), "{message}");
     }
 
     #[test]

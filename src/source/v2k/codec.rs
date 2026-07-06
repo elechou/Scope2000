@@ -19,6 +19,7 @@ pub mod message {
     pub const DAQ_CONTROL: u8 = 0x20;
     pub const CAPTURE_REPLAY: u8 = 0x21;
     pub const DAQ_BIND: u8 = 0x22;
+    pub const CAPTURE_FORCE: u8 = 0x23;
     pub const SYSTEM_COMMAND: u8 = 0x30;
     pub const STATUS_PUSH: u8 = 0x41;
     pub const SCOPE_BLOCK_PUSH: u8 = 0x42;
@@ -540,6 +541,10 @@ pub fn capture_replay_request(capture_id: u16, first_block_index: u16, max_block
     payload
 }
 
+pub fn capture_force_request() -> Vec<u8> {
+    Vec::new()
+}
+
 pub fn system_command_request(command: crate::source::SystemCommand) -> Vec<u8> {
     let code = match command {
         crate::source::SystemCommand::Start => 1,
@@ -682,7 +687,7 @@ mod tests {
                 );
             }
         }
-        assert_eq!(count, 32);
+        assert_eq!(count, 38);
     }
 
     #[test]
@@ -832,7 +837,7 @@ mod tests {
             super::super::EXPECTED_CONTRACT_VERSION
         );
         assert!(info.has(crate::source::CAP_ABZ_ZEROING));
-        assert_eq!(info.capabilities, 0x0000_01FF);
+        assert_eq!(info.capabilities, 0x0000_03FF);
     }
 
     #[test]
@@ -909,6 +914,20 @@ mod tests {
             capture_replay_request(22, 2, 4),
             vec![22, 0, 2, 0, 4, 0, 0, 0]
         );
+    }
+
+    #[test]
+    fn capture_force_vector_is_empty_request_with_state_sequence_ack() {
+        let request = load_vector_frame("capture_force_req.txt");
+        let response = load_vector_frame("ack_capture_force_req.txt");
+
+        assert_eq!(request.message_type, message::CAPTURE_FORCE);
+        assert_eq!(request.payload, capture_force_request());
+        assert_eq!(response.message_type, message::CAPTURE_FORCE | 0x80);
+        let ack = parse_ack(&response.payload).expect("parse force ACK");
+        assert_eq!(ack.echoed_type, message::CAPTURE_FORCE);
+        assert_eq!(ack.status, 0);
+        assert_eq!(ack.data, 7);
     }
 
     #[test]
