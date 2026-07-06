@@ -14,6 +14,10 @@ use super::{
 // Wave section
 // ---------------------------------------------------------------------------
 
+const TRIGGER_SOURCE_SELECTED_MAX_CHARS: usize = 20;
+const TRIGGER_SOURCE_BUTTON_WIDTH: f32 = 160.0;
+const SYSTEM_TRIGGER_SOURCE_PREFIX: &str = "SYS ";
+
 /// Actions produced by the wave panel that the caller must handle.
 pub enum WaveAction {
     ArmCapture,
@@ -33,11 +37,31 @@ fn is_system_var_name(name: &str, system_var_names: &[String]) -> bool {
         .any(|system_name| system_name == name)
 }
 
-fn trigger_source_label(name: &str, system_var_names: &[String]) -> String {
+fn truncate_from_start(name: &str, max_chars: usize) -> String {
+    let char_count = name.chars().count();
+    if char_count <= max_chars {
+        return name.to_owned();
+    }
+    let marker = "...";
+    let marker_chars = marker.chars().count();
+    if max_chars <= marker_chars {
+        return name.chars().skip(char_count - max_chars).collect();
+    }
+    let tail_chars = max_chars - marker_chars;
+    let tail: String = name.chars().skip(char_count - tail_chars).collect();
+    format!("{marker}{tail}")
+}
+
+fn trigger_source_selected_label(name: &str, system_var_names: &[String]) -> String {
     if is_system_var_name(name, system_var_names) {
-        format!("SYS {name}")
+        let name_max_chars =
+            TRIGGER_SOURCE_SELECTED_MAX_CHARS - SYSTEM_TRIGGER_SOURCE_PREFIX.chars().count();
+        format!(
+            "{SYSTEM_TRIGGER_SOURCE_PREFIX}{}",
+            truncate_from_start(name, name_max_chars)
+        )
     } else {
-        name.to_owned()
+        truncate_from_start(name, TRIGGER_SOURCE_SELECTED_MAX_CHARS)
     }
 }
 
@@ -188,17 +212,14 @@ pub fn show_wave_section(
         ui.horizontal(|ui| {
             ui.label("Trigger");
             let source_popup_width = trigger_source_popup_width(ui, &pane_vars, system_var_names);
-            let edge_width = 45.0;
-            let source_button_width =
-                (ui.available_width() - edge_width - ui.spacing().item_spacing.x)
-                    .clamp(90.0, source_popup_width);
             let ch_label: egui::WidgetText = match &wave.settings.trigger_source {
                 None => "Auto".into(),
-                Some(name) => trigger_source_label(name, system_var_names).into(),
+                Some(name) => trigger_source_selected_label(name, system_var_names).into(),
             };
             egui::ComboBox::from_id_salt("trg_ch")
-                .width(source_button_width)
+                .width(TRIGGER_SOURCE_BUTTON_WIDTH)
                 .selected_text(ch_label)
+                .truncate()
                 .show_ui(ui, |ui| {
                     ui.set_min_width(source_popup_width);
                     ui.selectable_value(&mut wave.settings.trigger_source, None, "Auto")
