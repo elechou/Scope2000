@@ -140,69 +140,72 @@ pub fn show(
                         ui.separator();
                     }
 
-                    if let Some(snapshot) = abz_zeroing {
-                        let health = snapshot.health();
-                        let color = match health.level {
-                            AbzZeroingHealthLevel::Normal => theme::TEXT_SUBDUED,
-                            AbzZeroingHealthLevel::Warning => theme::YELLOW,
-                            AbzZeroingHealthLevel::Error => theme::RED,
-                        };
-                        let text = if health.level == AbzZeroingHealthLevel::Normal {
-                            "ABZ Zeroing"
-                        } else {
-                            "⚠ ABZ Zeroing"
-                        };
-                        let status = ui.add(
-                            egui::Button::new(egui::RichText::new(text).color(color)).frame(false),
-                        );
-                        if status.clicked() {
-                            ui_state.show_abz_zeroing = !ui_state.show_abz_zeroing;
+                    if hardware.connected {
+                        if let Some(snapshot) = abz_zeroing {
+                            let health = snapshot.health();
+                            let color = match health.level {
+                                AbzZeroingHealthLevel::Normal => theme::TEXT_SUBDUED,
+                                AbzZeroingHealthLevel::Warning => theme::YELLOW,
+                                AbzZeroingHealthLevel::Error => theme::RED,
+                            };
+                            let text = if health.level == AbzZeroingHealthLevel::Normal {
+                                "ABZ Zeroing"
+                            } else {
+                                "⚠ ABZ Zeroing"
+                            };
+                            let status = ui.add(
+                                egui::Button::new(egui::RichText::new(text).color(color))
+                                    .frame(false),
+                            );
+                            if status.clicked() {
+                                ui_state.show_abz_zeroing = !ui_state.show_abz_zeroing;
+                            }
+                            status.on_hover_text(format!("{}\n{}", health.label, health.detail));
+                            ui.separator();
                         }
-                        status.on_hover_text(format!("{}\n{}", health.label, health.detail));
-                        ui.separator();
-                    }
 
-                    let calibration_health = calibration.health();
-                    let calibration_color = match calibration_health.level {
-                        CalibrationHealthLevel::Normal => theme::TEXT_SUBDUED,
-                        CalibrationHealthLevel::Warning => theme::YELLOW,
-                        CalibrationHealthLevel::Error => theme::RED,
-                    };
-                    let calibration_text =
-                        if calibration_health.level == CalibrationHealthLevel::Normal {
-                            "Current Zeroing"
-                        } else {
-                            "⚠ Current Zeroing"
+                        let calibration_health = calibration.health();
+                        let calibration_color = match calibration_health.level {
+                            CalibrationHealthLevel::Normal => theme::TEXT_SUBDUED,
+                            CalibrationHealthLevel::Warning => theme::YELLOW,
+                            CalibrationHealthLevel::Error => theme::RED,
                         };
-                    let calibration_status = ui.add(
-                        egui::Button::new(
-                            egui::RichText::new(calibration_text).color(calibration_color),
-                        )
-                        .frame(false),
-                    );
-                    if calibration_status.clicked() {
-                        ui_state.show_current_sensor_calibration =
-                            !ui_state.show_current_sensor_calibration;
-                    }
-                    calibration_status.on_hover_text(format!(
-                        "{}\n{}",
-                        calibration_health.label, calibration_health.detail
-                    ));
-                    ui.separator();
+                        let calibration_text =
+                            if calibration_health.level == CalibrationHealthLevel::Normal {
+                                "Current Zeroing"
+                            } else {
+                                "⚠ Current Zeroing"
+                            };
+                        let calibration_status = ui.add(
+                            egui::Button::new(
+                                egui::RichText::new(calibration_text).color(calibration_color),
+                            )
+                            .frame(false),
+                        );
+                        if calibration_status.clicked() {
+                            ui_state.show_current_sensor_calibration =
+                                !ui_state.show_current_sensor_calibration;
+                        }
+                        calibration_status.on_hover_text(format!(
+                            "{}\n{}",
+                            calibration_health.label, calibration_health.detail
+                        ));
+                        ui.separator();
 
-                    let voltage_warning = dc_voltage.has_warning();
-                    let voltage_color = if voltage_warning {
-                        theme::YELLOW
-                    } else {
-                        theme::TEXT_SUBDUED
-                    };
-                    let voltage_text = if voltage_warning {
-                        format!("⚠ {}", dc_voltage_text(dc_voltage))
-                    } else {
-                        dc_voltage_text(dc_voltage)
-                    };
-                    ui.label(egui::RichText::new(voltage_text).color(voltage_color))
-                        .on_hover_text(dc_voltage_hover_text(dc_voltage));
+                        let voltage_warning = dc_voltage.has_warning();
+                        let voltage_color = if voltage_warning {
+                            theme::YELLOW
+                        } else {
+                            theme::TEXT_SUBDUED
+                        };
+                        let voltage_text = if voltage_warning {
+                            format!("⚠ {}", dc_voltage_text(dc_voltage))
+                        } else {
+                            dc_voltage_text(dc_voltage)
+                        };
+                        ui.label(egui::RichText::new(voltage_text).color(voltage_color))
+                            .on_hover_text(dc_voltage_hover_text(dc_voltage));
+                    }
                 });
             });
         });

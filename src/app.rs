@@ -25,6 +25,7 @@ use self::state::{
 };
 
 const WATCH_READ_PERIOD: Duration = Duration::from_secs(1);
+const DC_VOLTAGE_READ_PERIOD: Duration = Duration::from_secs(1);
 /// How often the bound CCS project is re-scanned for a fresh build so a
 /// recompile is noticed live, without blocking the UI on a directory walk.
 pub(in crate::app) const LOCAL_METADATA_REFRESH_PERIOD: Duration = Duration::from_secs(2);
@@ -52,6 +53,7 @@ pub struct ScopeApp {
     pending_rebind: Option<state::LocalProject>,
     pending_delete_project: Option<String>,
     next_watch_read: Instant,
+    next_dc_voltage_read: Instant,
     watch_read_pending: bool,
     next_metadata_refresh: Instant,
     workspace_watch_restored: bool,
@@ -119,6 +121,7 @@ impl ScopeApp {
             pending_rebind: None,
             pending_delete_project: None,
             next_watch_read: Instant::now(),
+            next_dc_voltage_read: Instant::now(),
             watch_read_pending: false,
             next_metadata_refresh: Instant::now(),
             workspace_watch_restored: false,
@@ -478,6 +481,7 @@ impl eframe::App for ScopeApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         self.poll_events();
         self.poll_watch_reads();
+        self.poll_dc_voltage_reads();
         self.poll_current_sensor_calibration_reads();
         self.poll_abz_zeroing_reads();
         if self.hardware.connected {

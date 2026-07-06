@@ -109,6 +109,7 @@ impl ScopeApp {
         self.hardware.performance.clear();
         self.hardware.clear_system_command_state();
         self.abz_zeroing.reset_session();
+        self.next_dc_voltage_read = Instant::now();
         self.send(SourceCommand::Connect(endpoint));
     }
 
@@ -132,13 +133,28 @@ impl ScopeApp {
             for reads in self.inspector.read_batches() {
                 self.send_catalog(CatalogCommand::ReadValues(reads));
             }
-            let voltage_reads = self.dc_voltage_reads();
-            if !voltage_reads.is_empty() {
-                self.send_catalog(CatalogCommand::ReadValues(voltage_reads));
-            }
             self.watch_read_pending = false;
             self.next_watch_read = now + super::super::WATCH_READ_PERIOD;
         }
+    }
+
+    pub(in crate::app) fn poll_dc_voltage_reads(&mut self) {
+        if !self.hardware.connected
+            || !self.descriptor_catalog_ready
+            || !self.has_capability(CAP_CAL)
+        {
+            return;
+        }
+        let now = Instant::now();
+        if now < self.next_dc_voltage_read {
+            return;
+        }
+
+        let reads = self.dc_voltage_reads();
+        if !reads.is_empty() {
+            self.send_catalog(CatalogCommand::ReadValues(reads));
+        }
+        self.next_dc_voltage_read = now + super::super::DC_VOLTAGE_READ_PERIOD;
     }
 
     pub(in crate::app) fn poll_current_sensor_calibration_reads(&mut self) {
@@ -700,7 +716,11 @@ fn dc_voltage_candidate_names(channel: u8) -> &'static [&'static str] {
 
 #[cfg(test)]
 mod tests {
-    use std::{sync::mpsc, thread, time::Instant};
+    use std::{
+        sync::mpsc,
+        thread,
+        time::{Duration, Instant},
+    };
 
     use eframe::egui;
 
@@ -826,6 +846,7 @@ mod tests {
             pending_rebind: None,
             pending_delete_project: None,
             next_watch_read: now,
+            next_dc_voltage_read: now,
             watch_read_pending: false,
             next_metadata_refresh: now,
             workspace_watch_restored: false,
@@ -849,6 +870,44 @@ mod tests {
                 other => panic!("unexpected command: {other:?}"),
             })
             .collect()
+    }
+
+    #[test]
+    fn dc_voltage_poll_reads_voltage_descriptors_once_per_period() {
+        let mut harness = test_harness(None);
+        harness.app.inspector.set_descriptors(vec![
+            descriptor("signal"),
+            descriptor("v2k_adc.voltage.vt1"),
+            descriptor("v2k_adc.voltage.vt2"),
+        ]);
+        harness.app.next_dc_voltage_read = Instant::now() - Duration::from_secs(1);
+
+        harness.app.poll_dc_voltage_reads();
+        let commands = drain_catalog_commands(&harness.commands);
+        assert_eq!(commands.len(), 1);
+        assert!(matches!(
+            &commands[0],
+            CatalogCommand::ReadValues(reads)
+                if reads.iter().map(|read| read.descriptor_index).collect::<Vec<_>>() == vec![1, 2]
+        ));
+
+        harness.app.poll_dc_voltage_reads();
+        assert!(drain_catalog_commands(&harness.commands).is_empty());
+    }
+
+    #[test]
+    fn dc_voltage_poll_is_silent_when_disconnected() {
+        let mut harness = test_harness(None);
+        harness.app.hardware.connected = false;
+        harness.app.inspector.set_descriptors(vec![
+            descriptor("v2k_adc.voltage.vt1"),
+            descriptor("v2k_adc.voltage.vt2"),
+        ]);
+        harness.app.next_dc_voltage_read = Instant::now() - Duration::from_secs(1);
+
+        harness.app.poll_dc_voltage_reads();
+
+        assert!(drain_catalog_commands(&harness.commands).is_empty());
     }
 
     #[test]

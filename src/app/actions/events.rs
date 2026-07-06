@@ -47,6 +47,7 @@ impl ScopeApp {
                     self.hardware.performance.set_available(true);
                     self.calibration.reset_session();
                     self.abz_zeroing.reset_session();
+                    self.next_dc_voltage_read = Instant::now();
                     self.handle_firmware_project();
                 }
                 SourceEvent::Disconnected => {
@@ -58,6 +59,7 @@ impl ScopeApp {
                     self.hardware.clear_system_command_state();
                     self.calibration.reset_session();
                     self.abz_zeroing.reset_session();
+                    self.next_dc_voltage_read = Instant::now();
                     self.wave.active = false;
                     self.wave.restart_pending = None;
                     self.descriptor_catalog_ready = false;
@@ -83,6 +85,7 @@ impl ScopeApp {
                     self.descriptor_catalog_ready = true;
                     self.restore_workspace_watch_once();
                     self.request_watch_read();
+                    self.next_dc_voltage_read = Instant::now();
                     self.calibration.next_read = Instant::now();
                     self.abz_zeroing.next_read = Instant::now();
                 }
@@ -368,6 +371,7 @@ impl ScopeApp {
                     self.hardware.clear_system_command_state();
                     self.calibration.reset_session();
                     self.abz_zeroing.reset_session();
+                    self.next_dc_voltage_read = Instant::now();
                     self.hardware.device_summary = self.hardware.device_summary_text();
                     self.workspace_watch_restored = false;
                     self.descriptor_catalog_ready = false;
