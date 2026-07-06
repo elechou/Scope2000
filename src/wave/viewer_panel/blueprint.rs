@@ -144,7 +144,7 @@ fn scope_channel_limit_feedback(
 }
 
 /// Render the blueprint panel. Returns `Some(kind)` if the user clicked
-/// "+ Time Series" or "+ Dataframe" and the caller should create a new pane.
+/// "+ Time Series" and the caller should create a new pane.
 /// Returns (add_pane_request, drop_feedback).
 pub fn show_blueprint(
     ui: &mut egui::Ui,
@@ -166,12 +166,9 @@ pub fn show_blueprint(
 
     ui.add_space(4.0);
     ui.horizontal(|ui| {
-        let w = (ui.available_width() - ui.spacing().item_spacing.x) / 2.0;
+        let w = ui.available_width();
         if theme::icon_button(ui, theme::ICON_TIMESERIES, "+ Time Series", w).clicked() {
             actions.push(BlueprintAction::AddPane(PaneKind::TimeSeries));
-        }
-        if theme::icon_button(ui, theme::ICON_DATAFRAME, "+ Dataframe", w).clicked() {
-            actions.push(BlueprintAction::AddPane(PaneKind::Dataframe));
         }
     });
     ui.add_space(4.0);
