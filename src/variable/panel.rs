@@ -17,6 +17,8 @@ const SYSTEM_DISPLAY_NAME_MAX_CHARS: usize = 20;
 const VALUE_SIGNIFICANT_DIGITS: usize = 6;
 const VARMAP_TRASH_HEIGHT: f32 = 44.0;
 const VARMAP_TRASH_MARGIN: f32 = 6.0;
+const VAR_CTRL_ARROW_W: f32 = 24.0;
+const VAR_CTRL_MIN_TEXT_COL_W: f32 = 40.0;
 
 fn display_name(name: &str, is_system_variable: bool) -> String {
     let max_chars = if is_system_variable {
@@ -40,6 +42,195 @@ fn truncate_from_start(name: &str, max_chars: usize) -> String {
     let tail_chars = max_chars - marker_chars;
     let tail: String = name.chars().skip(char_count - tail_chars).collect();
     format!("{marker}{tail}")
+}
+
+fn text_width(ui: &egui::Ui, text: &str, font_id: &egui::FontId, color: egui::Color32) -> f32 {
+    ui.painter()
+        .layout_no_wrap(text.to_owned(), font_id.clone(), color)
+        .size()
+        .x
+}
+
+fn truncate_from_start_to_width(
+    ui: &egui::Ui,
+    text: &str,
+    font_id: &egui::FontId,
+    color: egui::Color32,
+    max_width: f32,
+) -> String {
+    if max_width <= 0.0 || text.is_empty() {
+        return String::new();
+    }
+    if text_width(ui, text, font_id, color) <= max_width {
+        return text.to_owned();
+    }
+
+    let mut char_starts: Vec<usize> = text.char_indices().map(|(idx, _)| idx).collect();
+    char_starts.push(text.len());
+    let char_count = char_starts.len().saturating_sub(1);
+    let tail_from = |tail_chars: usize| -> &str {
+        let start_idx = char_count.saturating_sub(tail_chars);
+        &text[char_starts[start_idx]..]
+    };
+
+    let marker = "...";
+    if text_width(ui, marker, font_id, color) <= max_width {
+        let mut low = 0;
+        let mut high = char_count;
+        while low < high {
+            let mid = (low + high).div_ceil(2);
+            let candidate = format!("{marker}{}", tail_from(mid));
+            if text_width(ui, &candidate, font_id, color) <= max_width {
+                low = mid;
+            } else {
+                high = mid - 1;
+            }
+        }
+        format!("{marker}{}", tail_from(low))
+    } else {
+        let mut low = 0;
+        let mut high = char_count;
+        while low < high {
+            let mid = (low + high).div_ceil(2);
+            let tail = tail_from(mid);
+            if text_width(ui, tail, font_id, color) <= max_width {
+                low = mid;
+            } else {
+                high = mid - 1;
+            }
+        }
+        tail_from(low).to_owned()
+    }
+}
+
+fn variable_name_table_cell(
+    ui: &mut egui::Ui,
+    name: &str,
+    is_system_variable: bool,
+    color: egui::Color32,
+    row_alpha: f32,
+) -> bool {
+    let available = ui.available_size_before_wrap();
+    let height = if available.y.is_finite() && available.y > 0.0 {
+        available.y
+    } else {
+        ui.text_style_height(&egui::TextStyle::Body)
+    };
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(available.x.max(0.0), height),
+        egui::Sense::hover(),
+    );
+
+    let mut text_left = rect.left();
+    if is_system_variable {
+        text_left += theme::paint_system_variable_badge(ui, rect.left_center(), row_alpha);
+    }
+    let text_rect =
+        egui::Rect::from_min_max(egui::pos2(text_left, rect.top()), rect.right_bottom());
+    let font_id = egui::TextStyle::Monospace.resolve(ui.style());
+    let display =
+        truncate_from_start_to_width(ui, name, &font_id, color, text_rect.width().max(0.0));
+
+    if ui.is_rect_visible(rect) && !display.is_empty() {
+        ui.painter().text(
+            text_rect.left_center(),
+            egui::Align2::LEFT_CENTER,
+            &display,
+            font_id,
+            color,
+        );
+    }
+
+    display != name
+}
+
+fn clamp_variable_controller_widths(mut widths: [f32; 2], flexible_w: f32) -> [f32; 2] {
+    if flexible_w <= 0.0 {
+        return [0.0, 0.0];
+    }
+
+    let min_text_w = VAR_CTRL_MIN_TEXT_COL_W.min(flexible_w * 0.5);
+    widths[0] = widths[0].clamp(min_text_w, (flexible_w - min_text_w).max(min_text_w));
+    widths[1] = widths[1].clamp(min_text_w, (flexible_w - widths[0]).max(min_text_w));
+    widths
+}
+
+fn variable_controller_column_widths(ui: &egui::Ui, flexible_w: f32) -> [f32; 2] {
+    let id = ui.id().with("var_ctrl_column_widths_v2");
+    let default_widths = [flexible_w * 0.4, flexible_w * 0.3];
+    let widths = ui
+        .data_mut(|data| data.get_temp::<[f32; 2]>(id))
+        .unwrap_or(default_widths);
+    clamp_variable_controller_widths(widths, flexible_w)
+}
+
+fn show_variable_controller_resize_handles(
+    ui: &mut egui::Ui,
+    table_left: f32,
+    table_top: f32,
+    table_bottom: f32,
+    spacing_x: f32,
+    flexible_w: f32,
+    widths: [f32; 2],
+) {
+    let id = ui.id().with("var_ctrl_column_widths_v2");
+    let [name_w, value_w] = widths;
+    let min_text_w = VAR_CTRL_MIN_TEXT_COL_W.min(flexible_w * 0.5);
+    let handle_xs = [
+        table_left + name_w + spacing_x * 0.5,
+        table_left + name_w + value_w + spacing_x * 1.5,
+    ];
+    let resize_radius = ui.style().interaction.resize_grab_radius_side;
+    let mut next_widths = widths;
+
+    for (i, handle_x) in handle_xs.into_iter().enumerate() {
+        let line_rect = egui::Rect::from_min_max(
+            egui::pos2(handle_x, table_top),
+            egui::pos2(handle_x, table_bottom),
+        )
+        .expand(resize_radius);
+        let response = ui.interact(
+            line_rect,
+            ui.id().with("var_ctrl_resize_handle").with(i),
+            egui::Sense::click_and_drag(),
+        );
+
+        if response.dragged()
+            && let Some(pointer) = ui.ctx().pointer_latest_pos()
+        {
+            let dx = pointer.x - handle_x;
+            if i == 0 {
+                let pair_w = name_w + value_w;
+                next_widths[0] = (name_w + dx).clamp(min_text_w, pair_w - min_text_w);
+                next_widths[1] = pair_w - next_widths[0];
+            } else {
+                next_widths[1] = (value_w + dx).clamp(min_text_w, flexible_w - name_w);
+            }
+            next_widths = clamp_variable_controller_widths(next_widths, flexible_w);
+            ui.data_mut(|data| data.insert_temp(id, next_widths));
+            ui.ctx().request_repaint();
+        }
+
+        let resize_hover = response.hovered() || response.dragged();
+        if resize_hover {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeColumn);
+        }
+
+        let stroke = if response.dragged() {
+            ui.style().visuals.widgets.active.bg_stroke
+        } else if response.hovered() {
+            ui.style().visuals.widgets.hovered.bg_stroke
+        } else {
+            ui.visuals().widgets.noninteractive.bg_stroke
+        };
+        ui.painter().line_segment(
+            [
+                egui::pos2(handle_x, table_top),
+                egui::pos2(handle_x, table_bottom),
+            ],
+            stroke,
+        );
+    }
 }
 
 fn trim_float_text(text: String) -> String {
@@ -901,23 +1092,24 @@ pub fn show_variables(
     let saved_hover_bg = ui.visuals().widgets.hovered.bg_fill;
     ui.visuals_mut().widgets.hovered.bg_fill = egui::Color32::TRANSPARENT;
 
-    let arrow_w = 24.0;
-    let weighted_w = (ui.available_width() - arrow_w - ui.spacing().item_spacing.x * 3.0).max(0.0);
-    let unit_w = weighted_w / 10.0;
-    let name_w = unit_w * 4.0;
-    let value_w = unit_w * 3.0;
-    let write_w = unit_w * 3.0;
+    let table_left = ui.cursor().left();
+    let table_top = ui.cursor().top();
+    let spacing_x = ui.spacing().item_spacing.x;
+    let flexible_w =
+        (ui.available_width() - VAR_CTRL_ARROW_W - ui.spacing().item_spacing.x * 3.0).max(0.0);
+    let [name_w, value_w] = variable_controller_column_widths(ui, flexible_w);
+    let input_w = (flexible_w - name_w - value_w).max(0.0);
 
     let table = TableBuilder::new(ui)
-        .id_salt("var_ctrl_table")
+        .id_salt("var_ctrl_table_v2")
         .striped(true)
         .sense(egui::Sense::click_and_drag())
         .max_scroll_height(192.0)
         .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
         .column(Column::exact(name_w))
         .column(Column::exact(value_w))
-        .column(Column::exact(arrow_w))
-        .column(Column::exact(write_w));
+        .column(Column::exact(VAR_CTRL_ARROW_W).resizable(false))
+        .column(Column::exact(input_w).resizable(false));
 
     table
         .header(row_h, |mut header| {
@@ -947,36 +1139,24 @@ pub fn show_variables(
                 let being_dragged = dragged_row_idx == Some(i);
                 let row_alpha = if being_dragged { 0.4 } else { 1.0 };
 
+                let mut name_was_truncated = false;
                 let name_resp = row
                     .col(|ui| {
                         let name_color = theme::TEXT_DEFAULT.gamma_multiply(row_alpha);
-                        if is_system_variable {
-                            ui.horizontal(|ui| {
-                                ui.spacing_mut().item_spacing.x = theme::SYSTEM_VARIABLE_BADGE_GAP;
-                                theme::system_variable_badge(ui, row_alpha);
-                                ui.add(
-                                    egui::Label::new(
-                                        egui::RichText::new(&watch.var_name)
-                                            .monospace()
-                                            .color(name_color),
-                                    )
-                                    .truncate()
-                                    .selectable(false),
-                                );
-                            });
-                        } else {
-                            ui.add(
-                                egui::Label::new(
-                                    egui::RichText::new(&watch.var_name)
-                                        .monospace()
-                                        .color(name_color),
-                                )
-                                .truncate()
-                                .selectable(false),
-                            );
-                        }
+                        name_was_truncated = variable_name_table_cell(
+                            ui,
+                            &watch.var_name,
+                            is_system_variable,
+                            name_color,
+                            row_alpha,
+                        );
                     })
                     .1;
+                let name_resp = if name_was_truncated {
+                    name_resp.on_hover_text(watch.var_name.clone())
+                } else {
+                    name_resp
+                };
                 let value_resp = row
                     .col(|ui| {
                         ui.add(
@@ -1096,6 +1276,15 @@ pub fn show_variables(
         });
 
     ui.visuals_mut().widgets.hovered.bg_fill = saved_hover_bg;
+    show_variable_controller_resize_handles(
+        ui,
+        table_left,
+        table_top,
+        ui.cursor().top(),
+        spacing_x,
+        flexible_w,
+        [name_w, value_w],
+    );
 
     let section_rect = egui::Rect::from_x_y_ranges(
         ui.min_rect().x_range(),
