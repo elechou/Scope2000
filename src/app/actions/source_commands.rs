@@ -728,8 +728,8 @@ mod tests {
     use crate::app::ScopeApp;
     use crate::app::state::{
         AbzZeroingState, AppConfig, CalibrationState, PROJECT_MANAGER_SPLIT_DEFAULT,
-        ProjectContext, UNTITLED_PROJECT, UiState, UnresolvedRefs, WorkspaceAutosaveState,
-        WorkspaceState,
+        ProjectContext, UNTITLED_PROJECT, UiState, UnresolvedRefs, UpdateCheckState,
+        WorkspaceAutosaveState, WorkspaceState,
     };
     use crate::source::{
         CAP_CAL, CAP_NATIVE_BLOCK, CAP_PRE_TRIGGER, CAP_SCOPE_CAPTURE, DeviceInfo,
@@ -845,6 +845,8 @@ mod tests {
             project_index_target: None,
             pending_rebind: None,
             pending_delete_project: None,
+            update_check: UpdateCheckState::default(),
+            update_check_rx: None,
             next_watch_read: now,
             next_dc_voltage_read: now,
             watch_read_pending: false,

@@ -2,7 +2,7 @@ use eframe::egui;
 
 use crate::app::state::{
     AbzZeroingHealthLevel, AbzZeroingSnapshot, CalibrationHealthLevel, CalibrationSnapshot,
-    HardwareState, UiState, abz_zeroing_block_label, abz_zeroing_result_label,
+    HardwareState, UiState, UpdateCheckStatus, abz_zeroing_block_label, abz_zeroing_result_label,
     abz_zeroing_state_label, applied_source_label, cal_result_label, cal_state_label,
     store_result_label,
 };
@@ -299,7 +299,7 @@ fn show_abz_zeroing_status(ui: &mut egui::Ui, snapshot: AbzZeroingSnapshot) {
 }
 
 /// "About Scope2000" modal (triggered from the menu bar).
-pub fn show_about_window(ui: &egui::Ui, ui_state: &mut UiState) {
+pub fn show_about_window(ui: &egui::Ui, ui_state: &mut UiState, update_status: &UpdateCheckStatus) {
     if ui_state.show_about_window {
         egui::Modal::new("about_modal".into()).show(ui.ctx(), |ui| {
             ui.set_width(300.0);
@@ -325,6 +325,7 @@ pub fn show_about_window(ui: &egui::Ui, ui_state: &mut UiState) {
                     "elechou/Viewer2000",
                     "https://github.com/elechou/Viewer2000",
                 );
+                show_update_status(ui, update_status);
                 ui.add_space(12.0);
                 if theme::modal_button(ui, "OK", theme::WIDGET_BG) {
                     ui_state.show_about_window = false;
@@ -332,5 +333,26 @@ pub fn show_about_window(ui: &egui::Ui, ui_state: &mut UiState) {
                 ui.add_space(4.0);
             });
         });
+    }
+}
+
+fn show_update_status(ui: &mut egui::Ui, status: &UpdateCheckStatus) {
+    match status {
+        UpdateCheckStatus::Idle | UpdateCheckStatus::UpToDate | UpdateCheckStatus::Failed => {}
+        UpdateCheckStatus::Checking => {
+            ui.add_space(8.0);
+            ui.label(egui::RichText::new("Checking for updates...").color(theme::TEXT_SUBDUED));
+        }
+        UpdateCheckStatus::UpdateAvailable(update) => {
+            ui.add_space(8.0);
+            ui.colored_label(
+                theme::YELLOW,
+                format!("Scope2000 {} is available.", update.version),
+            );
+            if update.title != update.version {
+                ui.label(egui::RichText::new(&update.title).color(theme::TEXT_SUBDUED));
+            }
+            ui.hyperlink_to("Download from GitHub Releases", &update.url);
+        }
     }
 }

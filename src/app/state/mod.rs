@@ -10,6 +10,8 @@ mod project_state;
 mod status_snapshot_state;
 #[path = "ui_state.rs"]
 mod ui_state;
+#[path = "update_state.rs"]
+mod update_state;
 #[path = "viewport_state.rs"]
 mod viewport_state;
 #[path = "workspace_state.rs"]
@@ -37,6 +39,7 @@ pub(crate) use self::{
     },
     status_snapshot_state::DcVoltageSnapshot,
     ui_state::{UiState, VARMAP_SPLIT_DEFAULT},
+    update_state::{ReleaseUpdate, UpdateCheckState, UpdateCheckStatus},
     viewport_state::ViewportState,
     workspace_state::{
         AppConfig, CsvExportConfig, WORKSPACE_AUTOSAVE_DEBOUNCE, WatchRef, WorkspaceAutosaveState,

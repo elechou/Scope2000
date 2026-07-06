@@ -8,5 +8,7 @@ mod panes;
 mod project;
 #[path = "source_commands.rs"]
 mod source_commands;
+#[path = "update.rs"]
+mod update;
 #[path = "workspace.rs"]
 mod workspace;

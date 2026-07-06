@@ -21,7 +21,8 @@ use crate::wave::{PLOT_MAX_POINTS, WaveState, pane::PaneKind};
 
 use self::state::{
     AbzZeroingState, AppConfig, CalibrationState, HardwareState, ProjectCandidate, ProjectContext,
-    UiState, ViewportState, WorkspaceAutosaveState, WorkspaceState, WorkspaceStore,
+    UiState, UpdateCheckState, UpdateCheckStatus, ViewportState, WorkspaceAutosaveState,
+    WorkspaceState, WorkspaceStore,
 };
 
 const WATCH_READ_PERIOD: Duration = Duration::from_secs(1);
@@ -52,6 +53,8 @@ pub struct ScopeApp {
     project_index_target: Option<String>,
     pending_rebind: Option<state::LocalProject>,
     pending_delete_project: Option<String>,
+    update_check: UpdateCheckState,
+    update_check_rx: Option<mpsc::Receiver<UpdateCheckStatus>>,
     next_watch_read: Instant,
     next_dc_voltage_read: Instant,
     watch_read_pending: bool,
@@ -120,6 +123,8 @@ impl ScopeApp {
             project_index_target: None,
             pending_rebind: None,
             pending_delete_project: None,
+            update_check: UpdateCheckState::default(),
+            update_check_rx: None,
             next_watch_read: Instant::now(),
             next_dc_voltage_read: Instant::now(),
             watch_read_pending: false,
@@ -498,7 +503,11 @@ impl eframe::App for ScopeApp {
         if crate::ui::modals::show_connection_settings(ui, &mut self.hardware, &mut self.ui) {
             self.connect();
         }
-        crate::ui::modals::show_about_window(ui, &mut self.ui);
+        self.poll_update_check(ui.ctx());
+        if self.ui.show_about_window {
+            self.begin_update_check_if_needed(ui.ctx());
+        }
+        crate::ui::modals::show_about_window(ui, &mut self.ui, &self.update_check.status);
         self.poll_project_scan();
         self.poll_local_project_metadata();
         self.maybe_refresh_local_project_metadata();
