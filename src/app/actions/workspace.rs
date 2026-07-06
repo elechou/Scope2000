@@ -45,6 +45,7 @@ impl ScopeApp {
             .layout
             .varmap_split
             .unwrap_or(VARMAP_SPLIT_DEFAULT);
+        self.ui.varmap_continuous_refresh = workspace.layout.varmap_continuous_refresh;
         self.ui.data_panel_width = workspace.layout.data_panel_width;
         self.ui.selection_panel_width = workspace.layout.selection_panel_width;
         self.ui.console_height = workspace.layout.console_height;
@@ -218,6 +219,7 @@ impl ScopeApp {
             .map(|id| id.0)
             .collect();
         workspace.layout.varmap_split = Some(self.ui.varmap_split);
+        workspace.layout.varmap_continuous_refresh = self.ui.varmap_continuous_refresh;
         workspace.layout.data_panel_width = self.ui.data_panel_width;
         workspace.layout.selection_panel_width = self.ui.selection_panel_width;
         workspace.layout.console_height = self.ui.console_height;

@@ -157,6 +157,7 @@ pub(crate) struct LayoutState {
     pub tree_json: Option<String>,
     pub blueprint_order: Vec<u64>,
     pub varmap_split: Option<f32>,
+    pub varmap_continuous_refresh: bool,
     pub data_panel_width: Option<f32>,
     pub selection_panel_width: Option<f32>,
     pub console_height: Option<f32>,
@@ -168,6 +169,7 @@ impl Default for LayoutState {
             tree_json: None,
             blueprint_order: Vec::new(),
             varmap_split: Some(VARMAP_SPLIT_DEFAULT),
+            varmap_continuous_refresh: true,
             data_panel_width: None,
             selection_panel_width: None,
             console_height: None,
@@ -235,6 +237,19 @@ var_name = "control_ticks"
 
         assert!(!text.contains("[workspace]"));
         assert!(text.contains("last_project_name = \"demo\""));
+    }
+
+    #[test]
+    fn workspace_layout_defaults_to_continuous_varmap_refresh() {
+        let workspace: WorkspaceState = toml::from_str(
+            r#"
+[layout]
+varmap_split = 0.42
+"#,
+        )
+        .unwrap();
+
+        assert!(workspace.layout.varmap_continuous_refresh);
     }
 
     #[test]

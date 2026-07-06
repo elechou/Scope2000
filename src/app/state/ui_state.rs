@@ -35,7 +35,7 @@ impl Default for UiState {
             show_current_sensor_calibration: false,
             show_about_window: false,
             varmap_split: VARMAP_SPLIT_DEFAULT,
-            varmap_continuous_refresh: false,
+            varmap_continuous_refresh: true,
             data_panel_width: None,
             selection_panel_width: None,
             console_height: None,
