@@ -99,19 +99,36 @@ jobs:
             tar -czf $assetPath -C dist $assetBase
           }
 
-          $checksumPath = "$assetPath.sha256"
-          $hash = (Get-FileHash -Algorithm SHA256 $assetPath).Hash.ToLowerInvariant()
-          Set-Content -Path $checksumPath -Value "$hash  $(Split-Path -Leaf $assetPath)"
-
           "asset_path=$assetPath" >> $env:GITHUB_OUTPUT
-          "checksum_path=$checksumPath" >> $env:GITHUB_OUTPUT
+
+      - name: Stash release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.artifact }}
+          path: ${{ steps.package.outputs.asset_path }}
+          retention-days: 1
+
+  publish:
+    name: Publish release assets
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download release assets
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
 
       - name: Upload release assets
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         shell: pwsh
         run: |
-          gh release upload "$env:RELEASE_TAG" `
-            "${{ steps.package.outputs.asset_path }}" `
-            "${{ steps.package.outputs.checksum_path }}" `
-            --clobber
+          $assets = Get-ChildItem -Path dist -File -Recurse |
+            Sort-Object Name
+
+          $assetPaths = $assets | ForEach-Object { $_.FullName }
+
+          gh release upload "$env:RELEASE_TAG" @assetPaths --clobber

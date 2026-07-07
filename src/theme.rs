@@ -1,4 +1,9 @@
+use std::num::NonZeroU64;
+use std::time::Duration;
+
 use eframe::egui;
+use eframe::egui_wgpu::wgpu::util::DeviceExt as _;
+use eframe::egui_wgpu::{self, wgpu};
 use egui::{Color32, Stroke, Vec2, vec2};
 
 // ---- Color tokens ----
@@ -306,6 +311,12 @@ pub fn apply_theme(ctx: &egui::Context) {
 pub const FAST_ANIMATION_TIME: f32 = 0.05;
 const SIDE_PANEL_INNER_MARGIN_X: i8 = 8;
 const SIDE_PANEL_INNER_MARGIN_Y: i8 = 0;
+const SECTION_HEADER_HEIGHT: f32 = 24.0;
+const SYSTEM_HEADER_STRIPE_WIDTH: f32 = 16.0;
+const SYSTEM_HEADER_STRIPE_PERIOD: f32 = SYSTEM_HEADER_STRIPE_WIDTH * 2.0;
+const SYSTEM_HEADER_STRIPE_SPEED: f32 = 54.0;
+const SYSTEM_HEADER_COS_30: f32 = 0.866_025_4;
+const SYSTEM_HEADER_SIN_30: f32 = 0.5;
 
 /// Pre-advance the expansion animation for an egui `Panel` at 2x speed.
 /// Call this just before `Panel::...show_animated_inside(...)` — egui's
@@ -329,16 +340,13 @@ pub fn section_header(ui: &mut egui::Ui, title: &str) -> egui::Response {
 }
 
 pub fn section_header_colored(ui: &mut egui::Ui, title: &str, fill: Color32) -> egui::Response {
-    let desired = Vec2::new(ui.max_rect().width(), 24.0);
-    let (rect, response) = ui.allocate_exact_size(desired, egui::Sense::hover());
+    let (rect, response) = allocate_section_header(ui);
 
     if ui.is_rect_visible(rect) {
-        let paint_rect = egui::Rect::from_x_y_ranges(ui.max_rect().x_range(), rect.y_range())
-            .expand2(vec2(f32::from(SIDE_PANEL_INNER_MARGIN_X), 0.0));
+        let paint_rect = section_header_paint_rect(ui, rect);
         let mut painter = ui.painter().clone();
         painter.set_clip_rect(paint_rect);
         painter.rect_filled(paint_rect, 0.0, fill);
-        let font_id = egui::TextStyle::Body.resolve(ui.style());
         let luminance =
             (u32::from(fill.r()) * 299 + u32::from(fill.g()) * 587 + u32::from(fill.b()) * 114)
                 / 1000;
@@ -347,16 +355,332 @@ pub fn section_header_colored(ui: &mut egui::Ui, title: &str, fill: Color32) -> 
         } else {
             TEXT_STRONG
         };
-        painter.text(
-            paint_rect.left_center() + vec2(8.0, 0.0),
-            egui::Align2::LEFT_CENTER,
-            title,
-            font_id,
-            text_color,
-        );
+        paint_section_header_title(ui, &painter, paint_rect, title, text_color, false);
     }
 
     response
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SystemHeaderStatus {
+    Idle,
+    Running,
+    Fault,
+}
+
+impl SystemHeaderStatus {
+    fn accent(self) -> Option<Color32> {
+        match self {
+            Self::Idle => None,
+            Self::Running => Some(YELLOW),
+            Self::Fault => Some(RED),
+        }
+    }
+}
+
+pub fn init_system_header_renderer(cc: &eframe::CreationContext<'_>) -> bool {
+    let Some(wgpu_render_state) = cc.wgpu_render_state.as_ref() else {
+        return false;
+    };
+
+    let device = &wgpu_render_state.device;
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("system_header_shader"),
+        source: wgpu::ShaderSource::Wgsl(include_str!("system_header_shader.wgsl").into()),
+    });
+
+    let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("system_header_bind_group_layout"),
+        entries: &[wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: NonZeroU64::new(SystemHeaderUniforms::BYTE_SIZE as u64),
+            },
+            count: None,
+        }],
+    });
+
+    let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+        label: Some("system_header_pipeline_layout"),
+        bind_group_layouts: &[Some(&bind_group_layout)],
+        immediate_size: 0,
+    });
+
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("system_header_pipeline"),
+        layout: Some(&pipeline_layout),
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs_main"),
+            buffers: &[],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs_main"),
+            targets: &[Some(wgpu::ColorTargetState {
+                format: wgpu_render_state.target_format,
+                blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                write_mask: wgpu::ColorWrites::ALL,
+            })],
+            compilation_options: wgpu::PipelineCompilationOptions::default(),
+        }),
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview_mask: None,
+        cache: None,
+    });
+
+    let initial_uniforms = SystemHeaderUniforms::default();
+    let uniform_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("system_header_uniform_buffer"),
+        contents: &initial_uniforms.to_bytes(),
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::UNIFORM,
+    });
+
+    let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some("system_header_bind_group"),
+        layout: &bind_group_layout,
+        entries: &[wgpu::BindGroupEntry {
+            binding: 0,
+            resource: uniform_buffer.as_entire_binding(),
+        }],
+    });
+
+    wgpu_render_state
+        .renderer
+        .write()
+        .callback_resources
+        .insert(SystemHeaderRenderResources {
+            pipeline,
+            bind_group,
+            uniform_buffer,
+        });
+
+    true
+}
+
+pub fn system_section_header(
+    ui: &mut egui::Ui,
+    title: &str,
+    status: SystemHeaderStatus,
+    gpu_ready: bool,
+) -> egui::Response {
+    let Some(accent) = status.accent() else {
+        return section_header(ui, title);
+    };
+
+    let (rect, response) = allocate_section_header(ui);
+    if ui.is_rect_visible(rect) {
+        let paint_rect = section_header_paint_rect(ui, rect);
+        let phase = ui.input(|input| input.time as f32) * SYSTEM_HEADER_STRIPE_SPEED;
+        ui.ctx().request_repaint_after(Duration::from_millis(16));
+
+        if gpu_ready {
+            paint_system_header_gpu(ui, paint_rect, phase, accent);
+        } else {
+            let mut painter = ui.painter().clone();
+            painter.set_clip_rect(paint_rect);
+            paint_system_header_cpu(&painter, paint_rect, phase, accent);
+        }
+
+        let mut painter = ui.painter().clone();
+        painter.set_clip_rect(paint_rect);
+        paint_section_header_title(ui, &painter, paint_rect, title, TEXT_STRONG, true);
+    }
+
+    response
+}
+
+fn allocate_section_header(ui: &mut egui::Ui) -> (egui::Rect, egui::Response) {
+    let desired = Vec2::new(ui.max_rect().width(), SECTION_HEADER_HEIGHT);
+    ui.allocate_exact_size(desired, egui::Sense::hover())
+}
+
+fn section_header_paint_rect(ui: &egui::Ui, rect: egui::Rect) -> egui::Rect {
+    egui::Rect::from_x_y_ranges(ui.max_rect().x_range(), rect.y_range())
+        .expand2(vec2(f32::from(SIDE_PANEL_INNER_MARGIN_X), 0.0))
+}
+
+fn paint_section_header_title(
+    ui: &egui::Ui,
+    painter: &egui::Painter,
+    rect: egui::Rect,
+    title: &str,
+    color: Color32,
+    shadow: bool,
+) {
+    let font_id = egui::TextStyle::Body.resolve(ui.style());
+    let pos = rect.left_center() + vec2(8.0, 0.0);
+    if shadow {
+        painter.text(
+            pos + vec2(0.0, 1.0),
+            egui::Align2::LEFT_CENTER,
+            title,
+            font_id.clone(),
+            Color32::from_black_alpha(180),
+        );
+    }
+    painter.text(pos, egui::Align2::LEFT_CENTER, title, font_id, color);
+}
+
+fn paint_system_header_gpu(ui: &egui::Ui, rect: egui::Rect, phase: f32, accent: Color32) {
+    ui.painter().add(egui_wgpu::Callback::new_paint_callback(
+        rect,
+        SystemHeaderPaintCallback {
+            width: rect.width(),
+            height: rect.height(),
+            phase,
+            pixels_per_point: ui.ctx().pixels_per_point(),
+            accent,
+        },
+    ));
+}
+
+fn paint_system_header_cpu(painter: &egui::Painter, rect: egui::Rect, phase: f32, accent: Color32) {
+    painter.rect_filled(rect, 0.0, Color32::BLACK);
+
+    let phase = phase.rem_euclid(SYSTEM_HEADER_STRIPE_PERIOD);
+    let min_coord = -rect.height() * SYSTEM_HEADER_SIN_30;
+    let max_coord = rect.width() * SYSTEM_HEADER_COS_30;
+    let mut coord = phase
+        + (min_coord / SYSTEM_HEADER_STRIPE_PERIOD).floor() * SYSTEM_HEADER_STRIPE_PERIOD
+        - SYSTEM_HEADER_STRIPE_PERIOD;
+
+    while coord <= max_coord + SYSTEM_HEADER_STRIPE_PERIOD {
+        let x0_top = rect.left() + coord / SYSTEM_HEADER_COS_30;
+        let x1_top = rect.left() + (coord + SYSTEM_HEADER_STRIPE_WIDTH) / SYSTEM_HEADER_COS_30;
+        let x1_bottom = rect.left()
+            + (coord + SYSTEM_HEADER_STRIPE_WIDTH + rect.height() * SYSTEM_HEADER_SIN_30)
+                / SYSTEM_HEADER_COS_30;
+        let x0_bottom =
+            rect.left() + (coord + rect.height() * SYSTEM_HEADER_SIN_30) / SYSTEM_HEADER_COS_30;
+
+        painter.add(egui::Shape::convex_polygon(
+            vec![
+                egui::pos2(x0_top, rect.top()),
+                egui::pos2(x1_top, rect.top()),
+                egui::pos2(x1_bottom, rect.bottom()),
+                egui::pos2(x0_bottom, rect.bottom()),
+            ],
+            accent,
+            Stroke::NONE,
+        ));
+        coord += SYSTEM_HEADER_STRIPE_PERIOD;
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+#[repr(C)]
+struct SystemHeaderUniforms {
+    params0: [f32; 4],
+    params1: [f32; 4],
+}
+
+impl Default for SystemHeaderUniforms {
+    fn default() -> Self {
+        Self {
+            params0: [0.0; 4],
+            params1: [0.0; 4],
+        }
+    }
+}
+
+impl SystemHeaderUniforms {
+    const BYTE_SIZE: usize = 32;
+
+    fn to_bytes(self) -> [u8; Self::BYTE_SIZE] {
+        let values = [
+            self.params0[0],
+            self.params0[1],
+            self.params0[2],
+            self.params0[3],
+            self.params1[0],
+            self.params1[1],
+            self.params1[2],
+            self.params1[3],
+        ];
+        let mut bytes = [0_u8; Self::BYTE_SIZE];
+        for (idx, value) in values.into_iter().enumerate() {
+            let start = idx * 4;
+            bytes[start..start + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        bytes
+    }
+}
+
+struct SystemHeaderRenderResources {
+    pipeline: wgpu::RenderPipeline,
+    bind_group: wgpu::BindGroup,
+    uniform_buffer: wgpu::Buffer,
+}
+
+impl SystemHeaderRenderResources {
+    fn prepare(&self, queue: &wgpu::Queue, uniforms: SystemHeaderUniforms) {
+        queue.write_buffer(&self.uniform_buffer, 0, &uniforms.to_bytes());
+    }
+
+    fn paint(&self, render_pass: &mut wgpu::RenderPass<'_>) {
+        render_pass.set_pipeline(&self.pipeline);
+        render_pass.set_bind_group(0, &self.bind_group, &[]);
+        render_pass.draw(0..6, 0..1);
+    }
+}
+
+struct SystemHeaderPaintCallback {
+    width: f32,
+    height: f32,
+    phase: f32,
+    pixels_per_point: f32,
+    accent: Color32,
+}
+
+impl egui_wgpu::CallbackTrait for SystemHeaderPaintCallback {
+    fn prepare(
+        &self,
+        _device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        _screen_descriptor: &egui_wgpu::ScreenDescriptor,
+        _egui_encoder: &mut wgpu::CommandEncoder,
+        resources: &mut egui_wgpu::CallbackResources,
+    ) -> Vec<wgpu::CommandBuffer> {
+        let Some(resources) = resources.get::<SystemHeaderRenderResources>() else {
+            return Vec::new();
+        };
+        resources.prepare(
+            queue,
+            SystemHeaderUniforms {
+                params0: [self.width, self.height, self.phase, self.pixels_per_point],
+                params1: color_to_shader_rgba(self.accent),
+            },
+        );
+        Vec::new()
+    }
+
+    fn paint(
+        &self,
+        _info: egui::PaintCallbackInfo,
+        render_pass: &mut wgpu::RenderPass<'static>,
+        resources: &egui_wgpu::CallbackResources,
+    ) {
+        let Some(resources) = resources.get::<SystemHeaderRenderResources>() else {
+            return;
+        };
+        resources.paint(render_pass);
+    }
+}
+
+fn color_to_shader_rgba(color: Color32) -> [f32; 4] {
+    [
+        f32::from(color.r()) / 255.0,
+        f32::from(color.g()) / 255.0,
+        f32::from(color.b()) / 255.0,
+        f32::from(color.a()) / 255.0,
+    ]
 }
 
 /// Unified action button height across side-panel sections.

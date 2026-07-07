@@ -43,6 +43,7 @@ pub struct ScopeApp {
     csv: CsvState,
     log: LogBuffer,
     ui: UiState,
+    system_header_gpu_ready: bool,
     config: AppConfig,
     workspace: WorkspaceState,
     project: ProjectContext,
@@ -68,6 +69,7 @@ impl ScopeApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         theme::setup_fonts_and_icons(&cc.egui_ctx);
         theme::apply_theme(&cc.egui_ctx);
+        let system_header_gpu_ready = theme::init_system_header_renderer(cc);
 
         let config = AppConfig::load();
         let legacy_backup_error = config
@@ -113,6 +115,7 @@ impl ScopeApp {
             },
             log: LogBuffer::default(),
             ui: UiState::default(),
+            system_header_gpu_ready,
             config,
             workspace,
             project,
@@ -158,13 +161,18 @@ impl ScopeApp {
     }
 
     fn system_panel(&mut self, ui: &mut egui::Ui) {
-        theme::section_header(ui, "System");
-        ui.add_space(4.0);
         let system_state = self
             .hardware
             .status
             .as_ref()
             .map(|status| status.system_state);
+        let header_status = match system_state {
+            Some(SystemState::Running) => theme::SystemHeaderStatus::Running,
+            Some(SystemState::Fault) => theme::SystemHeaderStatus::Fault,
+            _ => theme::SystemHeaderStatus::Idle,
+        };
+        theme::system_section_header(ui, "System", header_status, self.system_header_gpu_ready);
+        ui.add_space(4.0);
         let system_command_pending = self.hardware.pending_system_command.is_some();
         let can_send_system_command = self.hardware.connected
             && self.has_capability(CAP_SYSTEM_CMD)
@@ -181,7 +189,7 @@ impl ScopeApp {
             if theme::action_button_w(
                 ui,
                 "Clear Fault",
-                theme::GREEN,
+                theme::RED,
                 can_send_system_command,
                 clear_w,
             ) {

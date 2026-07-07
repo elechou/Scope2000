@@ -825,6 +825,7 @@ mod tests {
             csv: CsvState::default(),
             log: Default::default(),
             ui: UiState::default(),
+            system_header_gpu_ready: false,
             config: AppConfig::default(),
             workspace: WorkspaceState::default(),
             project: ProjectContext {
