@@ -14,7 +14,7 @@ use crate::source::{
     ScopeBlock, ScopeMode, SourceCommand, SourceEvent, SourceHandle, TransportEndpoint,
 };
 
-const EXPECTED_CONTRACT_VERSION: u16 = 18;
+const EXPECTED_CONTRACT_VERSION: u16 = 19;
 const ENUM_PAGE_SIZE: u8 = 8;
 #[cfg(not(test))]
 const REQUEST_TIMEOUT: Duration = Duration::from_millis(150);

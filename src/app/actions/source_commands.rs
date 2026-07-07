@@ -17,6 +17,8 @@ use crate::source::{
 };
 use crate::wave::{max_record_points_for_binding, scope_channel_limit};
 
+const CAL_WRITE_MAX: usize = 32;
+
 impl ScopeApp {
     pub(in crate::app) fn send(&self, command: SourceCommand) {
         let _ = self.source.commands.send(command);
@@ -336,11 +338,11 @@ impl ScopeApp {
         if param_writes.is_empty() {
             return;
         }
-        if param_writes.len() > 16 {
+        if param_writes.len() > CAL_WRITE_MAX {
             self.log.push(
                 LogLevel::Error,
                 format!(
-                    "Parameter commit rejected: {} writes exceed the native batch limit of 16",
+                    "Parameter commit rejected: {} writes exceed the native batch limit of {CAL_WRITE_MAX}",
                     param_writes.len()
                 ),
             );
@@ -762,7 +764,7 @@ mod tests {
     fn device_info() -> DeviceInfo {
         DeviceInfo {
             protocol_version: 10,
-            contract_version: 18,
+            contract_version: 19,
             build_hash: 0x1234_5678,
             descriptor_count: 1,
             firmware_name: "viewer2000-test".to_owned(),

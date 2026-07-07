@@ -270,7 +270,7 @@ mod tests {
     fn max_record_points_accounts_for_native_width_and_block_headers() {
         let info = DeviceInfo {
             protocol_version: 10,
-            contract_version: 18,
+            contract_version: 19,
             build_hash: 0,
             descriptor_count: 0,
             firmware_name: "viewer2000".to_owned(),
@@ -306,7 +306,7 @@ mod tests {
     fn max_record_points_uses_hello_scope_resources() {
         let mut info = DeviceInfo {
             protocol_version: 10,
-            contract_version: 18,
+            contract_version: 19,
             build_hash: 0,
             descriptor_count: 0,
             firmware_name: "viewer2000".to_owned(),
