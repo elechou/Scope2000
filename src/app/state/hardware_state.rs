@@ -278,8 +278,8 @@ mod tests {
                 project_name: String::new(),
                 build_time_utc: 0,
                 mcu_model: 2,
-                scope_max_ch: 16,
-                scope_block_ticks: 10,
+                scope_max_ch: 32,
+                scope_block_ticks: 7,
                 scope_ring_words: 0x7000,
             }),
             ..HardwareState::default()
@@ -305,8 +305,8 @@ mod tests {
                 project_name: "untitled".to_owned(),
                 build_time_utc: 0,
                 mcu_model: 1,
-                scope_max_ch: 16,
-                scope_block_ticks: 10,
+                scope_max_ch: 32,
+                scope_block_ticks: 7,
                 scope_ring_words: 0x7000,
             }),
             ..HardwareState::default()

@@ -270,7 +270,7 @@ mod tests {
     fn max_record_points_accounts_for_native_width_and_block_headers() {
         let info = DeviceInfo {
             protocol_version: 10,
-            contract_version: 14,
+            contract_version: 18,
             build_hash: 0,
             descriptor_count: 0,
             firmware_name: "viewer2000".to_owned(),
@@ -279,8 +279,8 @@ mod tests {
             project_name: "phase4-demo".to_owned(),
             build_time_utc: 0,
             mcu_model: 1,
-            scope_max_ch: 16,
-            scope_block_ticks: 10,
+            scope_max_ch: 32,
+            scope_block_ticks: 7,
             scope_ring_words: 0x7000,
         };
         let one_f32 = vec![descriptor("f32", VarType::F32)];
@@ -293,12 +293,12 @@ mod tests {
             descriptor("f32", VarType::F32),
         ];
 
-        assert_eq!(max_record_points_for_binding(&one_f32, &info), Some(10_230));
+        assert_eq!(max_record_points_for_binding(&one_f32, &info), Some(9_114));
         assert_eq!(
             max_record_points_for_binding(&eight_f32, &info),
-            Some(1_690)
+            Some(1_659)
         );
-        assert_eq!(max_record_points_for_binding(&mixed, &info), Some(4_930));
+        assert_eq!(max_record_points_for_binding(&mixed, &info), Some(4_550));
         assert_eq!(max_record_points_for_binding(&[], &info), None);
     }
 
@@ -306,7 +306,7 @@ mod tests {
     fn max_record_points_uses_hello_scope_resources() {
         let mut info = DeviceInfo {
             protocol_version: 10,
-            contract_version: 14,
+            contract_version: 18,
             build_hash: 0,
             descriptor_count: 0,
             firmware_name: "viewer2000".to_owned(),
@@ -315,8 +315,8 @@ mod tests {
             project_name: "phase4-demo".to_owned(),
             build_time_utc: 0,
             mcu_model: 2,
-            scope_max_ch: 16,
-            scope_block_ticks: 10,
+            scope_max_ch: 32,
+            scope_block_ticks: 7,
             scope_ring_words: 0xDFF8,
         };
         let eight_f32 = (0..8)
@@ -325,15 +325,22 @@ mod tests {
         let sixteen_f32 = (0..16)
             .map(|index| descriptor(&format!("f32_{index}"), VarType::F32))
             .collect::<Vec<_>>();
+        let thirty_two_f32 = (0..32)
+            .map(|index| descriptor(&format!("f32_{index}"), VarType::F32))
+            .collect::<Vec<_>>();
 
-        assert_eq!(scope_channel_limit(Some(&info)), 16);
+        assert_eq!(scope_channel_limit(Some(&info)), 32);
         assert_eq!(
             max_record_points_for_binding(&eight_f32, &info),
-            Some(3_400)
+            Some(3_332)
         );
         assert_eq!(
             max_record_points_for_binding(&sixteen_f32, &info),
-            Some(1_730)
+            Some(1_722)
+        );
+        assert_eq!(
+            max_record_points_for_binding(&thirty_two_f32, &info),
+            Some(868)
         );
 
         info.scope_block_ticks = 0;

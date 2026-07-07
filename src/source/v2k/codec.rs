@@ -820,8 +820,8 @@ mod tests {
         assert_eq!(info.project_name, "phase4-demo");
         assert_eq!(info.build_time_utc, 1_781_913_600);
         assert_eq!(info.mcu_model, 2);
-        assert_eq!(info.scope_max_ch, 16);
-        assert_eq!(info.scope_block_ticks, 10);
+        assert_eq!(info.scope_max_ch, 32);
+        assert_eq!(info.scope_block_ticks, 7);
         assert_eq!(info.scope_ring_words, 0xDFF8);
     }
 

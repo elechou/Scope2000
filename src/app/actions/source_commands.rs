@@ -762,7 +762,7 @@ mod tests {
     fn device_info() -> DeviceInfo {
         DeviceInfo {
             protocol_version: 10,
-            contract_version: 17,
+            contract_version: 18,
             build_hash: 0x1234_5678,
             descriptor_count: 1,
             firmware_name: "viewer2000-test".to_owned(),
@@ -775,8 +775,8 @@ mod tests {
             project_name: UNTITLED_PROJECT.to_owned(),
             build_time_utc: 0,
             mcu_model: MCU_MODEL_F28379D,
-            scope_max_ch: 16,
-            scope_block_ticks: 10,
+            scope_max_ch: 32,
+            scope_block_ticks: 7,
             scope_ring_words: 0xDFF8,
         }
     }
@@ -933,7 +933,7 @@ mod tests {
     #[test]
     fn wave_start_rejects_scope_bindings_over_device_channel_limit() {
         let mut harness = test_harness(None);
-        let names = (0..17)
+        let names = (0..33)
             .map(|index| format!("signal_{index}"))
             .collect::<Vec<_>>();
         harness
@@ -950,7 +950,7 @@ mod tests {
             entry.level == LogLevel::Warn
                 && entry
                     .message
-                    .contains("17 scope channel(s) exceed the Viewer2000 limit of 16")
+                    .contains("33 scope channel(s) exceed the Viewer2000 limit of 32")
         }));
     }
 

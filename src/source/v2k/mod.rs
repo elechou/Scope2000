@@ -14,7 +14,7 @@ use crate::source::{
     ScopeBlock, ScopeMode, SourceCommand, SourceEvent, SourceHandle, TransportEndpoint,
 };
 
-const EXPECTED_CONTRACT_VERSION: u16 = 17;
+const EXPECTED_CONTRACT_VERSION: u16 = 18;
 const ENUM_PAGE_SIZE: u8 = 8;
 #[cfg(not(test))]
 const REQUEST_TIMEOUT: Duration = Duration::from_millis(150);
@@ -1104,8 +1104,8 @@ mod tests {
             project_name: "phase4-demo".to_owned(),
             build_time_utc: 1_781_913_600,
             mcu_model: 1,
-            scope_max_ch: 16,
-            scope_block_ticks: 10,
+            scope_max_ch: 32,
+            scope_block_ticks: 7,
             scope_ring_words: 0x7000,
         }
     }
