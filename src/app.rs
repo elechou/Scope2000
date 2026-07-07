@@ -10,7 +10,7 @@ use crate::console::{LogBuffer, LogLevel};
 use crate::source::v2k::{V2kSource, transport};
 use crate::source::{
     CAP_SYSTEM_CMD, DataSource, ScopeMode, SourceHandle, SystemCommand, SystemState,
-    fault_code_text,
+    fault_status_text,
 };
 use crate::theme;
 use crate::variable::InspectorState;
@@ -226,14 +226,7 @@ impl ScopeApp {
         if let Some(status) = &self.hardware.status
             && status.fault_code != 0
         {
-            ui.colored_label(
-                theme::RED,
-                format!(
-                    "Fault: {} ({})",
-                    fault_code_text(status.fault_code),
-                    status.fault_code
-                ),
-            );
+            ui.colored_label(theme::RED, fault_status_text(status.fault_code));
         }
         self.performance_panel(ui);
     }

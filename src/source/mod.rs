@@ -158,6 +158,7 @@ pub const CAP_CAPTURE_FORCE: u32 = 1 << 9;
 pub const DAQ_FLAG_TRIGGER_DISABLED: u16 = 1 << 0;
 pub const CAL_READ_MAX: usize = 32;
 pub const NO_CAPTURE_ACK: u16 = 0xFFFF;
+pub const FAULT_USER_BASE: u16 = 256;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ScopeMode {
@@ -375,6 +376,39 @@ impl CalibrationCommand {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FaultSource {
+    None,
+    System,
+    User,
+}
+
+impl FaultSource {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::None => "None",
+            Self::System => "System",
+            Self::User => "User",
+        }
+    }
+}
+
+pub fn fault_source(code: u16) -> FaultSource {
+    match code {
+        0 => FaultSource::None,
+        1..=255 => FaultSource::System,
+        _ => FaultSource::User,
+    }
+}
+
+pub fn fault_user_code(code: u16) -> Option<u16> {
+    if fault_source(code) == FaultSource::User {
+        Some(code - FAULT_USER_BASE)
+    } else {
+        None
+    }
+}
+
 pub fn fault_code_text(code: u16) -> String {
     match code {
         0 => "NONE".to_owned(),
@@ -382,7 +416,21 @@ pub fn fault_code_text(code: u16) -> String {
         2 => "OVERCURRENT".to_owned(),
         3 => "OVERVOLTAGE".to_owned(),
         4 => "OVERTEMP".to_owned(),
-        other => format!("FAULT_{other}"),
+        other => fault_user_code(other)
+            .map(|user_code| format!("USER_{user_code}"))
+            .unwrap_or_else(|| format!("FAULT_{other}")),
+    }
+}
+
+pub fn fault_status_text(code: u16) -> String {
+    match fault_source(code) {
+        FaultSource::None => "No fault (0)".to_owned(),
+        source => format!(
+            "{} fault: {} ({})",
+            source.label(),
+            fault_code_text(code),
+            code
+        ),
     }
 }
 
@@ -569,6 +617,28 @@ mod tests {
         assert_eq!(fault_code_text(3), "OVERVOLTAGE");
         assert_eq!(fault_code_text(4), "OVERTEMP");
         assert_eq!(fault_code_text(99), "FAULT_99");
+        assert_eq!(fault_code_text(256), "USER_0");
+        assert_eq!(fault_code_text(257), "USER_1");
+        assert_eq!(fault_code_text(u16::MAX), "USER_65279");
+    }
+
+    #[test]
+    fn fault_source_distinguishes_system_and_user_ranges() {
+        assert_eq!(fault_source(0), FaultSource::None);
+        assert_eq!(fault_source(1), FaultSource::System);
+        assert_eq!(fault_source(255), FaultSource::System);
+        assert_eq!(fault_source(256), FaultSource::User);
+        assert_eq!(fault_source(u16::MAX), FaultSource::User);
+        assert_eq!(fault_user_code(255), None);
+        assert_eq!(fault_user_code(256), Some(0));
+        assert_eq!(fault_user_code(u16::MAX), Some(65279));
+    }
+
+    #[test]
+    fn fault_status_text_includes_source() {
+        assert_eq!(fault_status_text(0), "No fault (0)");
+        assert_eq!(fault_status_text(2), "System fault: OVERCURRENT (2)");
+        assert_eq!(fault_status_text(257), "User fault: USER_1 (257)");
     }
 
     #[test]

@@ -7,7 +7,7 @@ use crate::app::state::{
     store_result_label,
 };
 use crate::source::v2k::transport;
-use crate::source::{command_result_text, fault_code_text};
+use crate::source::{command_result_text, fault_code_text, fault_source};
 use crate::theme;
 
 /// Cancel a close request while the board is Running and surface the stop warning.
@@ -185,9 +185,10 @@ pub fn show_device_info_window(
             if let Some(status) = &hardware.status {
                 ui.separator();
                 ui.monospace(format!(
-                    "state={}({}) fault={}({}) flags=0x{:04X}",
+                    "state={}({}) fault={}:{}({}) flags=0x{:04X}",
                     status.system_state,
                     status.system_state.wire_value(),
+                    fault_source(status.fault_code).label(),
                     fault_code_text(status.fault_code),
                     status.fault_code,
                     status.status_flags
