@@ -158,6 +158,9 @@ pub(crate) struct LayoutState {
     pub blueprint_order: Vec<u64>,
     pub varmap_split: Option<f32>,
     pub varmap_continuous_refresh: bool,
+    pub show_system_panel: bool,
+    pub show_console_panel: bool,
+    pub show_selection_panel: bool,
     pub data_panel_width: Option<f32>,
     pub selection_panel_width: Option<f32>,
     pub console_height: Option<f32>,
@@ -170,6 +173,9 @@ impl Default for LayoutState {
             blueprint_order: Vec::new(),
             varmap_split: Some(VARMAP_SPLIT_DEFAULT),
             varmap_continuous_refresh: true,
+            show_system_panel: true,
+            show_console_panel: false,
+            show_selection_panel: true,
             data_panel_width: None,
             selection_panel_width: None,
             console_height: None,
@@ -250,6 +256,21 @@ varmap_split = 0.42
         .unwrap();
 
         assert!(workspace.layout.varmap_continuous_refresh);
+    }
+
+    #[test]
+    fn workspace_layout_defaults_to_standard_panel_visibility() {
+        let workspace: WorkspaceState = toml::from_str(
+            r#"
+[layout]
+varmap_split = 0.42
+"#,
+        )
+        .unwrap();
+
+        assert!(workspace.layout.show_system_panel);
+        assert!(!workspace.layout.show_console_panel);
+        assert!(workspace.layout.show_selection_panel);
     }
 
     #[test]
