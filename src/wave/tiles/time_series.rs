@@ -249,7 +249,11 @@ impl<'a> MyTilesDelegate<'a> {
                         LegendCorner::LeftBottom => egui_plot::Corner::LeftBottom,
                         LegendCorner::RightBottom => egui_plot::Corner::RightBottom,
                     };
-                    plot = plot.legend(Legend::default().position(corner));
+                    plot = plot.legend(
+                        Legend::default()
+                            .position(corner)
+                            .follow_insertion_order(true),
+                    );
                 }
 
                 let plot_resp = plot.show(ui, |plot_ui| {

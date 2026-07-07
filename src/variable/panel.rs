@@ -144,24 +144,29 @@ fn variable_name_table_cell(
     display != name
 }
 
-fn clamp_variable_controller_widths(mut widths: [f32; 2], flexible_w: f32) -> [f32; 2] {
-    if flexible_w <= 0.0 {
-        return [0.0, 0.0];
-    }
-
-    let min_text_w = VAR_CTRL_MIN_TEXT_COL_W.min(flexible_w * 0.5);
-    widths[0] = widths[0].clamp(min_text_w, (flexible_w - min_text_w).max(min_text_w));
-    widths[1] = widths[1].clamp(min_text_w, (flexible_w - widths[0]).max(min_text_w));
-    widths
+fn variable_controller_min_text_width(flexible_w: f32) -> f32 {
+    VAR_CTRL_MIN_TEXT_COL_W.min(flexible_w / 3.0)
 }
 
-fn variable_controller_column_widths(ui: &egui::Ui, flexible_w: f32) -> [f32; 2] {
-    let id = ui.id().with("var_ctrl_column_widths_v2");
-    let default_widths = [flexible_w * 0.4, flexible_w * 0.3];
-    let widths = ui
-        .data_mut(|data| data.get_temp::<[f32; 2]>(id))
-        .unwrap_or(default_widths);
-    clamp_variable_controller_widths(widths, flexible_w)
+fn clamp_variable_controller_name_width(name_w: f32, flexible_w: f32) -> f32 {
+    if flexible_w <= 0.0 {
+        return 0.0;
+    }
+
+    let min_text_w = variable_controller_min_text_width(flexible_w);
+    let max_name_w = (flexible_w - min_text_w * 2.0).max(min_text_w);
+    name_w.clamp(min_text_w, max_name_w)
+}
+
+fn variable_controller_column_widths(ui: &egui::Ui, flexible_w: f32) -> [f32; 3] {
+    let id = ui.id().with("var_ctrl_name_width_v1");
+    let default_name_w = flexible_w * 0.4;
+    let name_w = ui
+        .data_mut(|data| data.get_temp::<f32>(id))
+        .unwrap_or(default_name_w);
+    let name_w = clamp_variable_controller_name_width(name_w, flexible_w);
+    let shared_w = ((flexible_w - name_w) * 0.5).max(0.0);
+    [name_w, shared_w, shared_w]
 }
 
 fn show_variable_controller_resize_handles(
@@ -171,66 +176,50 @@ fn show_variable_controller_resize_handles(
     table_bottom: f32,
     spacing_x: f32,
     flexible_w: f32,
-    widths: [f32; 2],
+    name_w: f32,
 ) {
-    let id = ui.id().with("var_ctrl_column_widths_v2");
-    let [name_w, value_w] = widths;
-    let min_text_w = VAR_CTRL_MIN_TEXT_COL_W.min(flexible_w * 0.5);
-    let handle_xs = [
-        table_left + name_w + spacing_x * 0.5,
-        table_left + name_w + value_w + spacing_x * 1.5,
-    ];
+    let id = ui.id().with("var_ctrl_name_width_v1");
+    let handle_x = table_left + name_w + spacing_x * 0.5;
     let resize_radius = ui.style().interaction.resize_grab_radius_side;
-    let mut next_widths = widths;
 
-    for (i, handle_x) in handle_xs.into_iter().enumerate() {
-        let line_rect = egui::Rect::from_min_max(
+    let line_rect = egui::Rect::from_min_max(
+        egui::pos2(handle_x, table_top),
+        egui::pos2(handle_x, table_bottom),
+    )
+    .expand(resize_radius);
+    let response = ui.interact(
+        line_rect,
+        ui.id().with("var_ctrl_resize_handle"),
+        egui::Sense::click_and_drag(),
+    );
+
+    if response.dragged()
+        && let Some(pointer) = ui.ctx().pointer_latest_pos()
+    {
+        let dx = pointer.x - handle_x;
+        let next_name_w = clamp_variable_controller_name_width(name_w + dx, flexible_w);
+        ui.data_mut(|data| data.insert_temp(id, next_name_w));
+        ui.ctx().request_repaint();
+    }
+
+    if response.hovered() || response.dragged() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeColumn);
+    }
+
+    let stroke = if response.dragged() {
+        ui.style().visuals.widgets.active.bg_stroke
+    } else if response.hovered() {
+        ui.style().visuals.widgets.hovered.bg_stroke
+    } else {
+        ui.visuals().widgets.noninteractive.bg_stroke
+    };
+    ui.painter().line_segment(
+        [
             egui::pos2(handle_x, table_top),
             egui::pos2(handle_x, table_bottom),
-        )
-        .expand(resize_radius);
-        let response = ui.interact(
-            line_rect,
-            ui.id().with("var_ctrl_resize_handle").with(i),
-            egui::Sense::click_and_drag(),
-        );
-
-        if response.dragged()
-            && let Some(pointer) = ui.ctx().pointer_latest_pos()
-        {
-            let dx = pointer.x - handle_x;
-            if i == 0 {
-                let pair_w = name_w + value_w;
-                next_widths[0] = (name_w + dx).clamp(min_text_w, pair_w - min_text_w);
-                next_widths[1] = pair_w - next_widths[0];
-            } else {
-                next_widths[1] = (value_w + dx).clamp(min_text_w, flexible_w - name_w);
-            }
-            next_widths = clamp_variable_controller_widths(next_widths, flexible_w);
-            ui.data_mut(|data| data.insert_temp(id, next_widths));
-            ui.ctx().request_repaint();
-        }
-
-        let resize_hover = response.hovered() || response.dragged();
-        if resize_hover {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeColumn);
-        }
-
-        let stroke = if response.dragged() {
-            ui.style().visuals.widgets.active.bg_stroke
-        } else if response.hovered() {
-            ui.style().visuals.widgets.hovered.bg_stroke
-        } else {
-            ui.visuals().widgets.noninteractive.bg_stroke
-        };
-        ui.painter().line_segment(
-            [
-                egui::pos2(handle_x, table_top),
-                egui::pos2(handle_x, table_bottom),
-            ],
-            stroke,
-        );
-    }
+        ],
+        stroke,
+    );
 }
 
 fn trim_float_text(text: String) -> String {
@@ -1097,8 +1086,7 @@ pub fn show_variables(
     let spacing_x = ui.spacing().item_spacing.x;
     let flexible_w =
         (ui.available_width() - VAR_CTRL_ARROW_W - ui.spacing().item_spacing.x * 3.0).max(0.0);
-    let [name_w, value_w] = variable_controller_column_widths(ui, flexible_w);
-    let input_w = (flexible_w - name_w - value_w).max(0.0);
+    let [name_w, value_w, input_w] = variable_controller_column_widths(ui, flexible_w);
 
     let table = TableBuilder::new(ui)
         .id_salt("var_ctrl_table_v2")
@@ -1283,7 +1271,7 @@ pub fn show_variables(
         ui.cursor().top(),
         spacing_x,
         flexible_w,
-        [name_w, value_w],
+        name_w,
     );
 
     let section_rect = egui::Rect::from_x_y_ranges(
