@@ -6,6 +6,8 @@ use serde::{Deserialize, Serialize};
 use crate::app::state::VARMAP_SPLIT_DEFAULT;
 use crate::wave::AcquisitionSettings;
 
+use super::hardware_state::DEFAULT_SERIAL_BAUD;
+
 pub(crate) const WORKSPACE_AUTOSAVE_DEBOUNCE: Duration = Duration::from_secs(2);
 
 #[derive(Debug)]
@@ -73,7 +75,7 @@ impl Default for AppConfig {
         Self {
             format_version: 1,
             port: String::new(),
-            baud: 115_200,
+            baud: DEFAULT_SERIAL_BAUD,
             last_project_name: None,
             legacy_migration_complete: false,
             legacy_workspace: None,
@@ -206,6 +208,14 @@ impl Default for CsvExportConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn app_config_default_uses_viewer2000_native_baud() {
+        let config = AppConfig::default();
+
+        assert_eq!(config.baud, DEFAULT_SERIAL_BAUD);
+        assert_eq!(config.baud, 3_125_000);
+    }
 
     #[test]
     fn old_global_workspace_deserializes_as_legacy() {

@@ -3,6 +3,8 @@ use crate::source::{
     command_result_text,
 };
 
+pub(crate) const DEFAULT_SERIAL_BAUD: u32 = 3_125_000;
+
 #[derive(Default)]
 pub struct PerformanceState {
     available: bool,
@@ -69,7 +71,7 @@ impl Default for HardwareState {
     fn default() -> Self {
         Self {
             port: String::new(),
-            baud: 115_200,
+            baud: DEFAULT_SERIAL_BAUD,
             serial_ports: Vec::new(),
             connected: false,
             connecting: false,
@@ -249,6 +251,14 @@ mod tests {
             scope_trigger_tick: 0,
             scope_bind_seq: 0,
         }
+    }
+
+    #[test]
+    fn default_baud_is_viewer2000_native_rate() {
+        let hardware = HardwareState::default();
+
+        assert_eq!(hardware.baud, DEFAULT_SERIAL_BAUD);
+        assert_eq!(hardware.baud, 3_125_000);
     }
 
     #[test]

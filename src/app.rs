@@ -146,7 +146,22 @@ impl ScopeApp {
                 format!("Failed to back up the legacy workspace: {error}"),
             );
         }
+        app.auto_connect_on_startup();
         app
+    }
+
+    fn auto_connect_on_startup(&mut self) {
+        if self.hardware.port.is_empty() {
+            let Some(port) = self.hardware.serial_ports.first().cloned() else {
+                return;
+            };
+            self.hardware.port = port;
+        }
+        self.log.push(
+            LogLevel::Info,
+            format!("Auto-connecting to {}", self.hardware.endpoint_label()),
+        );
+        self.connect();
     }
 
     fn has_capability(&self, capability: u32) -> bool {
