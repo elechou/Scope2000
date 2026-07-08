@@ -13,6 +13,12 @@ const GRID_SPACING_MIN_PX: f64 = 8.0;
 const Y_AXIS_SIDE_MARGIN: f32 = 4.0;
 const MIN_X_AXIS_THICKNESS: f32 = 18.0;
 const MIN_Y_AXIS_THICKNESS: f32 = 36.0;
+const TRIGGER_ITEM_LABEL: &str = "Trigger";
+const TRIGGER_ITEM_ID_SALT: &str = "scope2000_trigger_marker";
+
+fn trigger_item_id(tile_id: TileId) -> egui::Id {
+    egui::Id::new((TRIGGER_ITEM_ID_SALT, tile_id.0))
+}
 
 fn axis_bounds_for_layout(
     axis_range: &AxisRange,
@@ -106,14 +112,22 @@ impl<'a> MyTilesDelegate<'a> {
         pane: &mut crate::wave::pane::ViewPane,
     ) -> egui_tiles::UiResponse {
         let plot_id = egui::Id::new(("scope2000_plot", tile_id));
+        let trigger_item_id = trigger_item_id(tile_id);
 
-        if let Some(mut mem) = egui_plot::PlotMemory::load(ui.ctx(), plot_id) {
+        let had_plot_memory = if let Some(mut mem) = egui_plot::PlotMemory::load(ui.ctx(), plot_id)
+        {
             mem.hidden_items.clear();
+            if !pane.properties.trigger_visible {
+                mem.hidden_items.insert(trigger_item_id);
+            }
             for s in pane.series.iter().filter(|s| !s.visible) {
                 mem.hidden_items.insert(egui::Id::new(s.label()));
             }
             mem.store(ui.ctx(), plot_id);
-        }
+            true
+        } else {
+            false
+        };
 
         let trigger_x = self.data.trigger_time;
 
@@ -269,7 +283,8 @@ impl<'a> MyTilesDelegate<'a> {
 
                     if let Some(x) = trigger_x {
                         plot_ui.vline(
-                            VLine::new("Trigger", x)
+                            VLine::new(TRIGGER_ITEM_LABEL, x)
+                                .id(trigger_item_id)
                                 .color(theme::YELLOW)
                                 .style(LineStyle::dashed_dense())
                                 .width(1.0)
@@ -330,7 +345,10 @@ impl<'a> MyTilesDelegate<'a> {
             }
         };
 
-        if let Some(mem) = egui_plot::PlotMemory::load(ui.ctx(), plot_id) {
+        if had_plot_memory && let Some(mem) = egui_plot::PlotMemory::load(ui.ctx(), plot_id) {
+            if trigger_x.is_some() {
+                pane.properties.trigger_visible = !mem.hidden_items.contains(&trigger_item_id);
+            }
             for s in pane.series.iter_mut() {
                 let id = egui::Id::new(s.label());
                 s.visible = !mem.hidden_items.contains(&id);

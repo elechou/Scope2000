@@ -138,6 +138,7 @@ pub struct ViewProperties {
     pub background: egui::Color32,
     pub show_grid: bool,
     pub legend_visible: bool,
+    pub trigger_visible: bool,
     pub legend_corner: LegendCorner,
     pub sync_time_axis: bool,
     pub time_axis_range: AxisRange,
@@ -162,6 +163,7 @@ impl Default for ViewProperties {
             background: egui::Color32::from_rgb(0, 0, 0),
             show_grid: true,
             legend_visible: true,
+            trigger_visible: true,
             legend_corner: LegendCorner::default(),
             sync_time_axis: true,
             time_axis_range: AxisRange::Auto,
@@ -231,5 +233,12 @@ mod tests {
         let props: ViewProperties = serde_json::from_str("{}").expect("properties");
 
         assert!(props.sync_time_axis);
+    }
+
+    #[test]
+    fn missing_trigger_visibility_defaults_to_visible() {
+        let props: ViewProperties = serde_json::from_str("{}").expect("properties");
+
+        assert!(props.trigger_visible);
     }
 }
