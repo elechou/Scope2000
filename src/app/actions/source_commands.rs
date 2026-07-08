@@ -292,17 +292,14 @@ impl ScopeApp {
     }
 
     pub(in crate::app) fn zeroing_start_ready(&self) -> bool {
-        self.current_zeroing_start_ready() && self.abz_zeroing_start_ready()
+        self.current_zeroing_start_ready()
     }
 
     pub(in crate::app) fn zeroing_start_block_reason(&self) -> Option<&'static str> {
-        let current_ready = self.current_zeroing_start_ready();
-        let abz_ready = self.abz_zeroing_start_ready();
-        match (current_ready, abz_ready) {
-            (false, false) => Some("Start requires Current Zeroing and ABZ Zeroing ready"),
-            (false, true) => Some("Start requires Current Zeroing ready"),
-            (true, false) => Some("Start requires ABZ Zeroing ready"),
-            (true, true) => None,
+        if self.current_zeroing_start_ready() {
+            None
+        } else {
+            Some("Start requires Current Zeroing ready")
         }
     }
 
@@ -626,14 +623,6 @@ impl ScopeApp {
         self.current_sensor_calibration_snapshot().start_ready()
     }
 
-    fn abz_zeroing_start_ready(&self) -> bool {
-        if !self.has_capability(CAP_ABZ_ZEROING) {
-            return true;
-        }
-        self.abz_zeroing_snapshot()
-            .is_some_and(AbzZeroingSnapshot::start_ready)
-    }
-
     fn catalog_value_dc_voltage(&self, channel: u8) -> Option<f64> {
         let index = self.dc_voltage_descriptor_index(channel)?;
         self.inspector
@@ -892,6 +881,47 @@ mod tests {
                 return;
             }
         }
+    }
+
+    #[test]
+    fn start_system_allows_unready_abz_zeroing_but_keeps_current_zeroing_gate() {
+        let mut harness = test_harness(None);
+        harness.app.hardware.info.as_mut().unwrap().capabilities |=
+            CAP_SYSTEM_CMD | CAP_CT_ZERO_CAL | CAP_ABZ_ZEROING;
+        harness.app.inspector.set_descriptors(vec![
+            descriptor("v2k_cal.state"),
+            descriptor("v2k_cal.result"),
+            descriptor("v2k_cal.applied_src"),
+            descriptor("v2k_abz_zeroing.ready"),
+            descriptor("v2k_abz_zeroing.state"),
+            descriptor("v2k_abz_zeroing.result"),
+        ]);
+        harness.app.inspector.values = vec![
+            Some(2.0),
+            Some(1.0),
+            Some(2.0),
+            Some(0.0),
+            Some(0.0),
+            Some(0.0),
+        ];
+
+        assert!(harness.app.zeroing_start_ready());
+        assert_eq!(harness.app.zeroing_start_block_reason(), None);
+        harness.app.start_system();
+        assert!(matches!(
+            harness.commands.try_recv().unwrap(),
+            SourceCommand::SystemCommand(SystemCommand::Start)
+        ));
+
+        harness.app.hardware.clear_system_command_state();
+        harness.app.inspector.values[1] = Some(0.0);
+        assert!(!harness.app.zeroing_start_ready());
+        assert_eq!(
+            harness.app.zeroing_start_block_reason(),
+            Some("Start requires Current Zeroing ready")
+        );
+        harness.app.start_system();
+        assert!(harness.commands.try_recv().is_err());
     }
 
     #[test]

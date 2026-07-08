@@ -175,13 +175,6 @@ impl ScopeApp {
                                 "Start refused: Current Zeroing is not trusted.".to_owned(),
                             );
                         }
-                        if completed.command == SystemCommand::Start && completed.result == 3 {
-                            self.log.push(
-                                LogLevel::Warn,
-                                "Start refused: ABZ Zeroing is not ready.".to_owned(),
-                            );
-                            self.abz_zeroing.next_read = Instant::now();
-                        }
                     }
                     if let Some(expired) = self.hardware.expire_pending_system_command(now) {
                         match expired.sequence {

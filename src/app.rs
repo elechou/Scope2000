@@ -583,7 +583,6 @@ impl eframe::App for ScopeApp {
             &self.hardware,
             self.inspector.descriptors.len(),
             calibration_snapshot,
-            abz_zeroing_snapshot,
             &mut self.ui,
         );
         crate::ui::abz_zeroing::show(ui, &mut self.ui, abz_zeroing_snapshot);

@@ -71,12 +71,12 @@ pub(crate) struct AbzZeroingSnapshot {
 }
 
 impl AbzZeroingSnapshot {
-    pub fn start_ready(self) -> bool {
+    pub fn ready(self) -> bool {
         self.ready == Some(1) || matches!((self.state, self.result), (Some(2), Some(1)))
     }
 
     pub fn health(self) -> AbzZeroingHealth {
-        if self.start_ready() {
+        if self.ready() {
             return AbzZeroingHealth {
                 level: AbzZeroingHealthLevel::Normal,
                 label: "Ready",
@@ -110,9 +110,9 @@ impl AbzZeroingSnapshot {
                 };
             }
             return AbzZeroingHealth {
-                level: AbzZeroingHealthLevel::Error,
+                level: AbzZeroingHealthLevel::Warning,
                 label: "Waiting for Z",
-                detail: "The passive ABZ observer is waiting for two qualified Z events. Rotate the shaft externally; firmware will not energize the motor.",
+                detail: "The passive ABZ observer is waiting for two qualified Z events. User code remains responsible for ABZ behavior while running.",
             };
         }
 
@@ -143,9 +143,9 @@ impl AbzZeroingSnapshot {
                 detail: "ABZ zeroing was cancelled before the reference became ready.",
             },
             (Some(0), _, _) | (None, _, _) if self.ready == Some(0) => AbzZeroingHealth {
-                level: AbzZeroingHealthLevel::Error,
-                label: "Required",
-                detail: "ABZ angle-reference zeroing is required before Start.",
+                level: AbzZeroingHealthLevel::Warning,
+                label: "Not Ready",
+                detail: "ABZ angle-reference zeroing is not ready. User code remains responsible for ABZ behavior while running.",
             },
             (Some(_), _, _) => AbzZeroingHealth {
                 level: AbzZeroingHealthLevel::Warning,
@@ -153,9 +153,9 @@ impl AbzZeroingSnapshot {
                 detail: "Viewer2000 reported an unknown ABZ zeroing state.",
             },
             (None, _, _) => AbzZeroingHealth {
-                level: AbzZeroingHealthLevel::Error,
-                label: "Required",
-                detail: "ABZ angle-reference zeroing is not ready.",
+                level: AbzZeroingHealthLevel::Warning,
+                label: "Not Ready",
+                detail: "ABZ angle-reference zeroing is not ready. User code remains responsible for ABZ behavior while running.",
             },
         }
     }
@@ -322,7 +322,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_health_tracks_ready_required_and_failed_states() {
+    fn snapshot_health_tracks_ready_unready_and_failed_states() {
         let ready = AbzZeroingSnapshot {
             ready: Some(1),
             state: Some(2),
@@ -338,7 +338,7 @@ mod tests {
             block_reason: Some(0),
             ..AbzZeroingSnapshot::default()
         };
-        assert_eq!(required.health().level, AbzZeroingHealthLevel::Error);
+        assert_eq!(required.health().level, AbzZeroingHealthLevel::Warning);
         assert_eq!(required.health().label, "Waiting for Z");
 
         let failed = AbzZeroingSnapshot {
