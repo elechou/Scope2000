@@ -1,8 +1,9 @@
 name: Release
 
 on:
-  release:
-    types: [published]
+  push:
+    tags:
+      - "v*"
   workflow_dispatch:
     inputs:
       tag:
@@ -16,7 +17,7 @@ permissions:
 env:
   APP_NAME: scope2000
   CARGO_TERM_COLOR: always
-  RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
+  RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
   build:
@@ -131,4 +132,19 @@ jobs:
 
           $assetPaths = $assets | ForEach-Object { $_.FullName }
 
-          gh release upload "$env:RELEASE_TAG" @assetPaths --clobber
+          $releaseTitle = "Scope2000 $env:RELEASE_TAG"
+          $releaseExists = $false
+          try {
+            gh release view "$env:RELEASE_TAG" *> $null
+            $releaseExists = $LASTEXITCODE -eq 0
+          } catch {
+            $releaseExists = $false
+          }
+
+          if ($releaseExists) {
+            gh release upload "$env:RELEASE_TAG" @assetPaths --clobber
+          } else {
+            gh release create "$env:RELEASE_TAG" @assetPaths `
+              --title $releaseTitle `
+              --notes $releaseTitle
+          }
