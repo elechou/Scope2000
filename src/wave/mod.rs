@@ -198,6 +198,22 @@ pub fn format_record_duration(seconds: f64) -> String {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WaveControlSettings {
+    pub capture_on_system_start: bool,
+    pub stop_on_system_stop: bool,
+}
+
+impl Default for WaveControlSettings {
+    fn default() -> Self {
+        Self {
+            capture_on_system_start: true,
+            stop_on_system_stop: true,
+        }
+    }
+}
+
 pub struct WaveState {
     pub active: bool,
     pub restart_pending: Option<ScopeMode>,
@@ -206,6 +222,8 @@ pub struct WaveState {
     pub bind_sequence: Option<u16>,
     pub settings: AcquisitionSettings,
     pub settings_snapshot: AcquisitionSettings,
+    pub control: WaveControlSettings,
+    pub show_control_settings: bool,
     pub pane_vars_snapshot: Vec<String>,
     pub mode: ScopeMode,
 }
@@ -220,6 +238,8 @@ impl Default for WaveState {
             bind_sequence: None,
             settings: AcquisitionSettings::default(),
             settings_snapshot: AcquisitionSettings::default(),
+            control: WaveControlSettings::default(),
+            show_control_settings: false,
             pane_vars_snapshot: Vec::new(),
             mode: ScopeMode::Off,
         }

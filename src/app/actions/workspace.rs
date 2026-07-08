@@ -19,6 +19,7 @@ impl ScopeApp {
         self.wave.settings = workspace.acquisition.clone();
         self.wave.settings.clamp();
         self.wave.settings_snapshot = self.wave.settings.clone();
+        self.wave.control = workspace.wave_control;
 
         self.csv.snapshot_dir = workspace.csv_export.snapshot_dir.clone();
         self.csv.filename_template = if workspace.csv_export.filename_template.is_empty() {
@@ -196,6 +197,7 @@ impl ScopeApp {
     pub(in crate::app) fn snapshot_workspace(&self) -> WorkspaceState {
         let mut workspace = self.workspace.clone();
         workspace.acquisition = self.wave.settings.clone();
+        workspace.wave_control = self.wave.control;
 
         // Before a matching descriptor catalog has been reconciled, keep the
         // loaded name-based refs untouched. This prevents a mismatch catalog

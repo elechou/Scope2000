@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use serde::{Deserialize, Serialize};
 
 use crate::app::state::VARMAP_SPLIT_DEFAULT;
-use crate::wave::AcquisitionSettings;
+use crate::wave::{AcquisitionSettings, WaveControlSettings};
 
 use super::hardware_state::DEFAULT_SERIAL_BAUD;
 
@@ -123,6 +123,7 @@ pub(crate) fn write_toml_atomic<T: Serialize>(path: &Path, value: &T) -> anyhow:
 #[derive(Default)]
 pub(crate) struct WorkspaceState {
     pub acquisition: AcquisitionSettings,
+    pub wave_control: WaveControlSettings,
     pub watch: Vec<WatchRef>,
     pub pinned: Vec<WatchRef>,
     pub layout: LayoutState,
@@ -283,6 +284,20 @@ varmap_split = 0.42
         assert!(workspace.layout.show_system_panel);
         assert!(!workspace.layout.show_console_panel);
         assert!(workspace.layout.show_selection_panel);
+    }
+
+    #[test]
+    fn workspace_wave_control_defaults_follow_system_commands() {
+        let workspace: WorkspaceState = toml::from_str(
+            r#"
+[acquisition]
+prescaler = 2
+"#,
+        )
+        .unwrap();
+
+        assert!(workspace.wave_control.capture_on_system_start);
+        assert!(workspace.wave_control.stop_on_system_stop);
     }
 
     #[test]

@@ -104,6 +104,7 @@ impl ScopeApp {
             wave: WaveState {
                 settings: workspace.acquisition.clone(),
                 settings_snapshot: workspace.acquisition.clone(),
+                control: workspace.wave_control,
                 ..WaveState::default()
             },
             plot_data: PlotData::new(PLOT_MAX_POINTS),

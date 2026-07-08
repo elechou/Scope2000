@@ -18,6 +18,9 @@ use super::{
 const TRIGGER_SOURCE_SELECTED_MAX_CHARS: usize = 20;
 const TRIGGER_SOURCE_BUTTON_WIDTH: f32 = 160.0;
 const SYSTEM_TRIGGER_SOURCE_PREFIX: &str = "SYS ";
+const GLYPH_SETTINGS: &str = "\u{eb52}";
+const WAVE_CONTROL_SETTINGS_POPUP_WIDTH: f32 = 280.0;
+const SETTINGS_POPUP_GAP: f32 = 10.0;
 
 /// Actions produced by the wave panel that the caller must handle.
 pub enum WaveAction {
@@ -156,27 +159,40 @@ pub fn show_wave_section(
     theme::section_header(ui, "Wave");
     ui.add_space(4.0);
 
-    ui.horizontal(|ui| {
-        let w = (ui.available_width() - ui.spacing().item_spacing.x) / 2.0;
-        if theme::action_button_w(
-            ui,
-            "Capture",
-            theme::SELECT_BG,
-            connected && can_start && !wave.active,
-            w,
-        ) {
-            action = Some(WaveAction::ArmCapture);
-        }
-        if theme::action_button_w(
-            ui,
-            "Stop",
-            theme::RED,
-            wave.active || wave.restart_pending.is_some(),
-            w,
-        ) {
-            action = Some(WaveAction::Stop);
-        }
-    });
+    let gear_rect = ui
+        .horizontal(|ui| {
+            let spacing = ui.spacing().item_spacing.x;
+            let gear_w = theme::ACTION_BUTTON_HEIGHT + 4.0;
+            let button_w = ((ui.available_width() - gear_w - spacing * 2.0) / 2.0).max(0.0);
+            if theme::action_button_w(
+                ui,
+                "Capture",
+                theme::SELECT_BG,
+                connected && can_start && !wave.active,
+                button_w,
+            ) {
+                action = Some(WaveAction::ArmCapture);
+            }
+            if theme::action_button_w(
+                ui,
+                "Stop",
+                theme::RED,
+                wave.active || wave.restart_pending.is_some(),
+                button_w,
+            ) {
+                action = Some(WaveAction::Stop);
+            }
+
+            let resp =
+                theme::action_button_response_w(ui, GLYPH_SETTINGS, theme::WIDGET_BG, true, gear_w)
+                    .on_hover_text("Wave control settings");
+            if resp.clicked() {
+                wave.show_control_settings = !wave.show_control_settings;
+            }
+            resp.rect
+        })
+        .inner;
+    show_wave_control_settings_popup(ui, wave, gear_rect);
     if wave.active {
         let mode = if wave.settings_snapshot.trigger_source.is_none()
             && matches!(
@@ -336,6 +352,86 @@ pub fn show_wave_section(
     }
 
     action
+}
+
+fn show_wave_control_settings_popup(ui: &egui::Ui, wave: &mut WaveState, anchor: egui::Rect) {
+    if !wave.show_control_settings {
+        return;
+    }
+
+    let popup_id = egui::Id::new("wave_control_settings_popup");
+    let popup_width = WAVE_CONTROL_SETTINGS_POPUP_WIDTH;
+    let pos = settings_popup_pos(ui, anchor, popup_width);
+
+    let resp = egui::Area::new(popup_id)
+        .order(egui::Order::Foreground)
+        .fixed_pos(pos)
+        .pivot(egui::Align2::LEFT_TOP)
+        .default_width(popup_width)
+        .show(ui.ctx(), |ui| {
+            egui::Frame::popup(ui.style())
+                .shadow(settings_popup_shadow())
+                .show(ui, |ui| {
+                    ui.set_width(popup_width);
+
+                    theme::modal_title(ui, "Wave Control Settings");
+                    ui.add_space(8.0);
+                    ui.checkbox(
+                        &mut wave.control.capture_on_system_start,
+                        "Capture follows System Start",
+                    );
+                    ui.add_space(4.0);
+                    ui.checkbox(
+                        &mut wave.control.stop_on_system_stop,
+                        "Stop follows System Stop",
+                    );
+                });
+        });
+
+    if settings_popup_clicked_outside(ui, resp.response.rect, anchor) {
+        wave.show_control_settings = false;
+    }
+}
+
+fn settings_popup_pos(ui: &egui::Ui, anchor: egui::Rect, width: f32) -> egui::Pos2 {
+    let content_rect = ui.ctx().content_rect();
+    let right_x = anchor.right() + SETTINGS_POPUP_GAP;
+    let left_x = anchor.left() - SETTINGS_POPUP_GAP - width;
+    let popup_x = if right_x + width <= content_rect.right() || left_x < content_rect.left() {
+        right_x
+    } else {
+        left_x
+    }
+    .clamp(
+        content_rect.left(),
+        (content_rect.right() - width).max(content_rect.left()),
+    );
+    egui::pos2(popup_x, anchor.top().max(content_rect.top()))
+}
+
+fn settings_popup_shadow() -> egui::Shadow {
+    egui::Shadow {
+        blur: 40,
+        offset: [0, 10],
+        spread: 0,
+        color: egui::Color32::from_black_alpha(192),
+    }
+}
+
+fn settings_popup_clicked_outside(
+    ui: &egui::Ui,
+    popup_rect: egui::Rect,
+    anchor: egui::Rect,
+) -> bool {
+    ui.ctx().input(|input| input.pointer.any_pressed())
+        && !popup_rect.contains(
+            ui.ctx()
+                .input(|input| input.pointer.interact_pos().unwrap_or_default()),
+        )
+        && !anchor.contains(
+            ui.ctx()
+                .input(|input| input.pointer.interact_pos().unwrap_or_default()),
+        )
 }
 
 fn commit_deferred_edit<T>(
@@ -560,9 +656,7 @@ fn trigger_edge_label(edge: TriggerEdge) -> &'static str {
 // CSV Export section
 // ---------------------------------------------------------------------------
 
-const GLYPH_SETTINGS: &str = "\u{eb52}";
 const CSV_SETTINGS_POPUP_WIDTH: f32 = 480.0;
-const CSV_SETTINGS_POPUP_GAP: f32 = 10.0;
 
 /// Actions produced by the CSV export panel.
 pub enum CsvAction {
@@ -641,21 +735,7 @@ fn show_csv_settings_popup(ui: &egui::Ui, csv: &mut CsvState, anchor: egui::Rect
     }
 
     let popup_id = egui::Id::new("csv_settings_popup");
-    let content_rect = ui.ctx().content_rect();
-    let right_x = anchor.right() + CSV_SETTINGS_POPUP_GAP;
-    let left_x = anchor.left() - CSV_SETTINGS_POPUP_GAP - CSV_SETTINGS_POPUP_WIDTH;
-    let popup_x = if right_x + CSV_SETTINGS_POPUP_WIDTH <= content_rect.right()
-        || left_x < content_rect.left()
-    {
-        right_x
-    } else {
-        left_x
-    }
-    .clamp(
-        content_rect.left(),
-        (content_rect.right() - CSV_SETTINGS_POPUP_WIDTH).max(content_rect.left()),
-    );
-    let pos = egui::pos2(popup_x, anchor.top().max(content_rect.top()));
+    let pos = settings_popup_pos(ui, anchor, CSV_SETTINGS_POPUP_WIDTH);
 
     let resp = egui::Area::new(popup_id)
         .order(egui::Order::Foreground)
@@ -664,12 +744,7 @@ fn show_csv_settings_popup(ui: &egui::Ui, csv: &mut CsvState, anchor: egui::Rect
         .default_width(CSV_SETTINGS_POPUP_WIDTH)
         .show(ui.ctx(), |ui| {
             egui::Frame::popup(ui.style())
-                .shadow(egui::Shadow {
-                    blur: 40,
-                    offset: [0, 10],
-                    spread: 0,
-                    color: egui::Color32::from_black_alpha(192),
-                })
+                .shadow(settings_popup_shadow())
                 .show(ui, |ui| {
                     ui.set_width(CSV_SETTINGS_POPUP_WIDTH);
 
@@ -725,17 +800,7 @@ fn show_csv_settings_popup(ui: &egui::Ui, csv: &mut CsvState, anchor: egui::Rect
         });
 
     // Close when clicking outside the popup (but not on the gear button itself)
-    let popup_rect = resp.response.rect;
-    if ui.ctx().input(|i| i.pointer.any_pressed())
-        && !popup_rect.contains(
-            ui.ctx()
-                .input(|i| i.pointer.interact_pos().unwrap_or_default()),
-        )
-        && !anchor.contains(
-            ui.ctx()
-                .input(|i| i.pointer.interact_pos().unwrap_or_default()),
-        )
-    {
+    if settings_popup_clicked_outside(ui, resp.response.rect, anchor) {
         csv.show_settings = false;
     }
 }

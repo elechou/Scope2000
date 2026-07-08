@@ -9,7 +9,7 @@ use crate::source::{
 };
 use crate::variable::InspectorState;
 use crate::wave::{
-    AcquisitionSettings, WaveState,
+    AcquisitionSettings, WaveControlSettings, WaveState,
     data::{PlotData, relative_time_from_ticks},
 };
 
@@ -125,16 +125,30 @@ impl ScopeApp {
                             ),
                         );
                     }
+                    let pending_system_start = self
+                        .hardware
+                        .pending_system_command
+                        .as_ref()
+                        .is_some_and(|pending| pending.command == SystemCommand::Start);
                     let completed_command = self.hardware.complete_pending_system_command(&status);
                     let completed_calibration =
                         self.calibration.complete_measure_from_status(&status);
                     let completed_abz_zeroing = self.abz_zeroing.complete_from_status(&status);
-                    let system_stopped =
-                        system_stopped_transition(previous_state, status.system_state);
-                    let stop_wave =
-                        system_stopped && wave_has_active_or_pending_stop_target(&self.wave);
-                    let entered_running = status.system_state.is_running()
-                        && !previous_state.is_some_and(|previous| previous.is_running());
+                    let stop_wave = should_stop_on_system_stop(
+                        &self.wave.control,
+                        previous_state,
+                        status.system_state,
+                        &self.wave,
+                    );
+                    let start_wave = should_capture_on_system_start(
+                        &self.wave.control,
+                        previous_state,
+                        status.system_state,
+                        pending_system_start,
+                        &self.wave,
+                    );
+                    let entered_running =
+                        system_started_transition(previous_state, status.system_state);
                     let performance = status.performance;
                     self.hardware.status = Some(status);
                     self.hardware.performance.ingest_status(performance);
@@ -201,6 +215,9 @@ impl ScopeApp {
                             LogLevel::Info,
                             "Wave stopped because user system stopped".to_owned(),
                         );
+                    }
+                    if start_wave {
+                        self.start_acquisition(ScopeMode::CaptureArmed);
                     }
                     if entered_running {
                         self.request_watch_read();
@@ -514,6 +531,37 @@ fn system_stopped_transition(
     previous_state.is_some_and(|previous| previous.is_running()) && !current_state.is_running()
 }
 
+fn system_started_transition(
+    previous_state: Option<SystemState>,
+    current_state: SystemState,
+) -> bool {
+    current_state.is_running() && !previous_state.is_some_and(|previous| previous.is_running())
+}
+
+fn should_capture_on_system_start(
+    control: &WaveControlSettings,
+    previous_state: Option<SystemState>,
+    current_state: SystemState,
+    pending_system_start: bool,
+    wave: &WaveState,
+) -> bool {
+    control.capture_on_system_start
+        && pending_system_start
+        && system_started_transition(previous_state, current_state)
+        && !wave_has_active_or_pending_stop_target(wave)
+}
+
+fn should_stop_on_system_stop(
+    control: &WaveControlSettings,
+    previous_state: Option<SystemState>,
+    current_state: SystemState,
+    wave: &WaveState,
+) -> bool {
+    control.stop_on_system_stop
+        && system_stopped_transition(previous_state, current_state)
+        && wave_has_active_or_pending_stop_target(wave)
+}
+
 fn wave_has_active_or_pending_stop_target(wave: &WaveState) -> bool {
     wave.active || wave.restart_pending.is_some() || !wave.pending_binding.is_empty()
 }
@@ -801,6 +849,82 @@ mod tests {
             SystemState::Idle
         ));
         assert!(!system_stopped_transition(None, SystemState::Idle));
+    }
+
+    #[test]
+    fn capture_follow_system_start_requires_setting_pending_start_and_idle_wave() {
+        let control = WaveControlSettings::default();
+        assert!(should_capture_on_system_start(
+            &control,
+            Some(SystemState::Idle),
+            SystemState::Running,
+            true,
+            &WaveState::default()
+        ));
+
+        assert!(!should_capture_on_system_start(
+            &control,
+            Some(SystemState::Idle),
+            SystemState::Running,
+            false,
+            &WaveState::default()
+        ));
+
+        let disabled = WaveControlSettings {
+            capture_on_system_start: false,
+            ..WaveControlSettings::default()
+        };
+        assert!(!should_capture_on_system_start(
+            &disabled,
+            Some(SystemState::Idle),
+            SystemState::Running,
+            true,
+            &WaveState::default()
+        ));
+
+        let active = WaveState {
+            active: true,
+            ..WaveState::default()
+        };
+        assert!(!should_capture_on_system_start(
+            &control,
+            Some(SystemState::Idle),
+            SystemState::Running,
+            true,
+            &active
+        ));
+    }
+
+    #[test]
+    fn stop_follow_system_stop_requires_setting_and_active_or_pending_wave() {
+        let control = WaveControlSettings::default();
+        let active = WaveState {
+            active: true,
+            ..WaveState::default()
+        };
+        assert!(should_stop_on_system_stop(
+            &control,
+            Some(SystemState::Running),
+            SystemState::Idle,
+            &active
+        ));
+
+        let disabled = WaveControlSettings {
+            stop_on_system_stop: false,
+            ..WaveControlSettings::default()
+        };
+        assert!(!should_stop_on_system_stop(
+            &disabled,
+            Some(SystemState::Running),
+            SystemState::Idle,
+            &active
+        ));
+        assert!(!should_stop_on_system_stop(
+            &control,
+            Some(SystemState::Running),
+            SystemState::Idle,
+            &WaveState::default()
+        ));
     }
 
     #[test]
