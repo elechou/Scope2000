@@ -581,7 +581,9 @@ pub fn show_csv_export(
     theme::section_header(ui, "CSV Export");
     ui.add_space(4.0);
 
-    let saving = csv.save_rx.is_some();
+    let saving = csv.save_rx.is_some()
+        || csv.pending_screenshot_path.is_some()
+        || csv.screenshot_save_rx.is_some();
 
     // ---- Button row: [Save Data / Ultra Fast Snapshot (wide)] [gear (icon)] ----
     let gear_rect = ui
@@ -674,6 +676,10 @@ fn show_csv_settings_popup(ui: &egui::Ui, csv: &mut CsvState, anchor: egui::Rect
                     theme::modal_title(ui, "CSV Export Settings");
                     ui.add_space(8.0);
 
+                    ui.checkbox(&mut csv.save_with_screenshot, "Save with screenshot");
+                    ui.add_space(4.0);
+                    ui.separator();
+                    ui.add_space(4.0);
                     ui.checkbox(&mut csv.ultra_fast, "Ultra Fast Snapshot");
                     ui.add_space(4.0);
 

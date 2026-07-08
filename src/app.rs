@@ -111,6 +111,7 @@ impl ScopeApp {
                 snapshot_dir: workspace.csv_export.snapshot_dir.clone(),
                 filename_template: workspace.csv_export.filename_template.clone(),
                 ultra_fast: workspace.csv_export.ultra_fast,
+                save_with_screenshot: workspace.csv_export.save_with_screenshot,
                 ..CsvState::default()
             },
             log: LogBuffer::default(),
@@ -680,6 +681,7 @@ impl eframe::App for ScopeApp {
                     None
                 };
                 self.poll_csv_save();
+                self.poll_csv_screenshot(ui.ctx());
                 if let Some(action) = crate::wave::panel::show_csv_export(
                     ui,
                     &mut self.csv,
@@ -688,8 +690,8 @@ impl eframe::App for ScopeApp {
                 ) {
                     use crate::wave::panel::CsvAction;
                     match action {
-                        CsvAction::QuickSnapshot => self.quick_snapshot(),
-                        CsvAction::SaveWithDialog => self.save_csv_with_dialog(),
+                        CsvAction::QuickSnapshot => self.quick_snapshot(ui.ctx()),
+                        CsvAction::SaveWithDialog => self.save_csv_with_dialog(ui.ctx()),
                     }
                 }
                 self.show_overwrite_modal(ui);

@@ -12,7 +12,8 @@ pub struct CsvSnapshot {
 
 /// Pending overwrite confirmation for Quick Snapshot.
 pub struct OverwritePending {
-    pub path: PathBuf,
+    pub csv_path: PathBuf,
+    pub screenshot_path: Option<PathBuf>,
     pub snapshot: CsvSnapshot,
 }
 
@@ -24,11 +25,17 @@ pub struct CsvState {
     pub filename_template: String,
     /// When true, "Save Data" uses ultra-fast snapshot instead of file dialog.
     pub ultra_fast: bool,
+    /// When true, saving CSV also saves a PNG screenshot beside it.
+    pub save_with_screenshot: bool,
 
     /// Whether the settings window is open.
     pub show_settings: bool,
     /// Receiver for the background CSV write thread's result.
     pub save_rx: Option<std::sync::mpsc::Receiver<Result<PathBuf, String>>>,
+    /// Target path waiting for egui's screenshot event.
+    pub pending_screenshot_path: Option<PathBuf>,
+    /// Receiver for the background PNG screenshot write thread's result.
+    pub screenshot_save_rx: Option<std::sync::mpsc::Receiver<Result<PathBuf, String>>>,
     /// Set when a Quick Snapshot would overwrite an existing file.
     pub overwrite_pending: Option<OverwritePending>,
 }
@@ -39,8 +46,11 @@ impl Default for CsvState {
             snapshot_dir: String::new(),
             filename_template: "wave_{$DateTime}".to_string(),
             ultra_fast: false,
+            save_with_screenshot: false,
             show_settings: false,
             save_rx: None,
+            pending_screenshot_path: None,
+            screenshot_save_rx: None,
             overwrite_pending: None,
         }
     }

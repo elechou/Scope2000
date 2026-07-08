@@ -27,6 +27,7 @@ impl ScopeApp {
             workspace.csv_export.filename_template.clone()
         };
         self.csv.ultra_fast = workspace.csv_export.ultra_fast;
+        self.csv.save_with_screenshot = workspace.csv_export.save_with_screenshot;
 
         if let Some(ref json) = workspace.layout.tree_json {
             self.viewport.tree =
@@ -213,6 +214,7 @@ impl ScopeApp {
             snapshot_dir: self.csv.snapshot_dir.clone(),
             filename_template: self.csv.filename_template.clone(),
             ultra_fast: self.csv.ultra_fast,
+            save_with_screenshot: self.csv.save_with_screenshot,
         };
         workspace.layout.tree_json = serde_json::to_string_pretty(&self.viewport.tree).ok();
         workspace.layout.blueprint_order = self

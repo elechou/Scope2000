@@ -1,4 +1,5 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::sync::mpsc;
 
 use eframe::egui;
@@ -51,9 +52,49 @@ impl ScopeApp {
                     .push(LogLevel::Error, format!("CSV save failed: {error}")),
             }
         }
+
+        let result = self
+            .csv
+            .screenshot_save_rx
+            .as_ref()
+            .and_then(|rx| rx.try_recv().ok());
+        if let Some(result) = result {
+            self.csv.screenshot_save_rx = None;
+            match result {
+                Ok(path) => self.log.push(
+                    LogLevel::Notice,
+                    format!("Screenshot saved: {}", path.display()),
+                ),
+                Err(error) => self
+                    .log
+                    .push(LogLevel::Error, format!("Screenshot save failed: {error}")),
+            }
+        }
     }
 
-    pub(in crate::app) fn save_csv_with_dialog(&mut self) {
+    pub(in crate::app) fn poll_csv_screenshot(&mut self, ctx: &egui::Context) {
+        let image = ctx.input(|input| {
+            input
+                .events
+                .iter()
+                .filter_map(|event| {
+                    if let egui::Event::Screenshot { image, .. } = event {
+                        Some(Arc::clone(image))
+                    } else {
+                        None
+                    }
+                })
+                .next_back()
+        });
+
+        if let Some(image) = image
+            && let Some(path) = self.csv.pending_screenshot_path.take()
+        {
+            self.csv.screenshot_save_rx = Some(spawn_screenshot_write(path, image));
+        }
+    }
+
+    pub(in crate::app) fn save_csv_with_dialog(&mut self, ctx: &egui::Context) {
         let Some(snapshot) = self.snapshot_wave_data() else {
             self.log
                 .push(LogLevel::Warn, "No wave data to save".to_owned());
@@ -67,11 +108,12 @@ impl ScopeApp {
             .set_directory(dialog_dir);
 
         if let Some(path) = dialog.save_file() {
-            self.csv.save_rx = Some(spawn_csv_write(path, snapshot));
+            let screenshot_path = screenshot_path_for_csv(&path, self.csv.save_with_screenshot);
+            self.begin_csv_export(ctx, path, snapshot, screenshot_path);
         }
     }
 
-    pub(in crate::app) fn quick_snapshot(&mut self) {
+    pub(in crate::app) fn quick_snapshot(&mut self, ctx: &egui::Context) {
         let Some(snapshot) = self.snapshot_wave_data() else {
             self.log
                 .push(LogLevel::Warn, "No wave data to save".to_owned());
@@ -87,11 +129,31 @@ impl ScopeApp {
                 return;
             }
         };
-        let path = resolve_snapshot_dir(&self.csv.snapshot_dir).join(format!("{filename}.csv"));
-        if path.exists() {
-            self.csv.overwrite_pending = Some(OverwritePending { path, snapshot });
+        let csv_path = resolve_snapshot_dir(&self.csv.snapshot_dir).join(format!("{filename}.csv"));
+        let screenshot_path = screenshot_path_for_csv(&csv_path, self.csv.save_with_screenshot);
+        if csv_path.exists() || screenshot_path.as_ref().is_some_and(|path| path.exists()) {
+            self.csv.overwrite_pending = Some(OverwritePending {
+                csv_path,
+                screenshot_path,
+                snapshot,
+            });
         } else {
-            self.csv.save_rx = Some(spawn_csv_write(path, snapshot));
+            self.begin_csv_export(ctx, csv_path, snapshot, screenshot_path);
+        }
+    }
+
+    fn begin_csv_export(
+        &mut self,
+        ctx: &egui::Context,
+        csv_path: PathBuf,
+        snapshot: CsvSnapshot,
+        screenshot_path: Option<PathBuf>,
+    ) {
+        self.csv.save_rx = Some(spawn_csv_write(csv_path, snapshot));
+        if let Some(path) = screenshot_path {
+            self.csv.pending_screenshot_path = Some(path);
+            ctx.send_viewport_cmd(egui::ViewportCommand::Screenshot(egui::UserData::default()));
+            ctx.request_repaint();
         }
     }
 
@@ -108,7 +170,16 @@ impl ScopeApp {
                 theme::modal_title(ui, "File already exists");
                 ui.add_space(4.0);
                 if let Some(ref pending) = self.csv.overwrite_pending {
-                    ui.label(pending.path.display().to_string());
+                    if pending.csv_path.exists() {
+                        ui.label(pending.csv_path.display().to_string());
+                    }
+                    if let Some(path) = pending
+                        .screenshot_path
+                        .as_ref()
+                        .filter(|path| path.exists())
+                    {
+                        ui.label(path.display().to_string());
+                    }
                 }
                 ui.add_space(12.0);
                 ui.horizontal(|ui| {
@@ -133,7 +204,12 @@ impl ScopeApp {
                     .overwrite_pending
                     .take()
                     .expect("pending overwrite");
-                self.csv.save_rx = Some(spawn_csv_write(pending.path, pending.snapshot));
+                self.begin_csv_export(
+                    ui.ctx(),
+                    pending.csv_path,
+                    pending.snapshot,
+                    pending.screenshot_path,
+                );
             }
             Some(false) => {
                 self.csv.overwrite_pending = None;
@@ -153,6 +229,43 @@ fn resolve_snapshot_dir(configured_dir: &str) -> PathBuf {
         .or_else(dirs::home_dir)
         .or_else(|| std::env::current_dir().ok())
         .unwrap_or_else(|| PathBuf::from("."))
+}
+
+fn screenshot_path_for_csv(csv_path: &Path, enabled: bool) -> Option<PathBuf> {
+    enabled.then(|| csv_path.with_extension("png"))
+}
+
+fn write_screenshot_png(path: &Path, image: &egui::ColorImage) -> Result<(), String> {
+    let width = u32::try_from(image.size[0])
+        .map_err(|_| format!("Screenshot width is too large: {}", image.size[0]))?;
+    let height = u32::try_from(image.size[1])
+        .map_err(|_| format!("Screenshot height is too large: {}", image.size[1]))?;
+    let mut rgba = Vec::with_capacity(image.pixels.len() * 4);
+    for pixel in &image.pixels {
+        rgba.extend_from_slice(&pixel.to_srgba_unmultiplied());
+    }
+
+    image::save_buffer_with_format(
+        path,
+        &rgba,
+        width,
+        height,
+        image::ColorType::Rgba8,
+        image::ImageFormat::Png,
+    )
+    .map_err(|error| error.to_string())
+}
+
+fn spawn_screenshot_write(
+    path: PathBuf,
+    image: Arc<egui::ColorImage>,
+) -> mpsc::Receiver<Result<PathBuf, String>> {
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let result = write_screenshot_png(&path, &image).map(|()| path);
+        let _ = tx.send(result);
+    });
+    rx
 }
 
 #[cfg(test)]
@@ -183,6 +296,17 @@ mod tests {
 
         assert_eq!(resolve_snapshot_dir(""), expected);
         assert_eq!(resolve_snapshot_dir(" \t"), expected);
+    }
+
+    #[test]
+    fn screenshot_path_uses_csv_stem_when_enabled() {
+        let csv_path = PathBuf::from("scope_20260708_120000.csv");
+
+        assert_eq!(
+            screenshot_path_for_csv(&csv_path, true),
+            Some(PathBuf::from("scope_20260708_120000.png"))
+        );
+        assert_eq!(screenshot_path_for_csv(&csv_path, false), None);
     }
 }
 

@@ -189,6 +189,7 @@ pub(crate) struct CsvExportConfig {
     pub snapshot_dir: String,
     pub filename_template: String,
     pub ultra_fast: bool,
+    pub save_with_screenshot: bool,
 }
 
 impl Default for CsvExportConfig {
@@ -197,6 +198,7 @@ impl Default for CsvExportConfig {
             snapshot_dir: String::new(),
             filename_template: "scope_{$DateTime}".to_owned(),
             ultra_fast: false,
+            save_with_screenshot: false,
         }
     }
 }
