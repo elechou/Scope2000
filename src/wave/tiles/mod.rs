@@ -11,6 +11,7 @@ use super::dnd::{DragSource, VarDragPayload};
 use super::pane::{self, PaneKind, ViewPane};
 use super::selection::Selection;
 use crate::theme;
+use crate::variable::InspectorState;
 use crate::wave::data::PlotData;
 
 /// Returns true if `selection` points at the pane with id `tile_id`
@@ -26,13 +27,10 @@ fn is_pane_selected(selection: &Selection, tile_id: TileId) -> bool {
 /// The egui_tiles behavior delegate — renders each pane based on its kind.
 pub struct MyTilesDelegate<'a> {
     pub data: &'a PlotData,
+    pub inspector: &'a InspectorState,
     pub selection: &'a mut Selection,
-    pub var_names: &'a [String],
-    pub var_values: &'a [f64],
-    pub system_var_names: &'a [String],
     pub scope_channel_limit: usize,
     pub scope_channel_names: HashSet<String>,
-    pub scope_capable_var_names: HashSet<String>,
     /// Set when a pane's drop zone is hovered with a valid drag payload.
     pub drop_hover_tile: Option<TileId>,
     /// Which curve to highlight: (pane_id, var_id). Merged from blueprint hover + plot hover.
@@ -304,12 +302,6 @@ impl<'a> egui_tiles::Behavior<ViewPane> for MyTilesDelegate<'a> {
 }
 
 impl<'a> MyTilesDelegate<'a> {
-    pub(crate) fn is_system_variable_name(&self, name: &str) -> bool {
-        self.system_var_names
-            .iter()
-            .any(|system_name| system_name == name)
-    }
-
     /// Apply a VarDragPayload drop to a pane. Returns feedback for the status bar.
     pub(crate) fn apply_drop(
         &mut self,
@@ -412,7 +404,10 @@ impl<'a> MyTilesDelegate<'a> {
 
     fn adds_scope_channel(&self, pane: &ViewPane, var_name: &str) -> bool {
         pane.kind == PaneKind::TimeSeries
-            && self.scope_capable_var_names.contains(var_name)
+            && self
+                .inspector
+                .descriptor_by_name(var_name)
+                .is_some_and(|descriptor| descriptor.is_scope())
             && !self.scope_channel_names.contains(var_name)
     }
 }

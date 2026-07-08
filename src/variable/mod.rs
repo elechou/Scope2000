@@ -41,17 +41,6 @@ impl DescriptorEntry {
             }
         }
     }
-
-    pub fn leaf_indexes(&self, out: &mut Vec<usize>) {
-        match self {
-            Self::Var { index, .. } => out.push(*index),
-            Self::Group { members, .. } => {
-                for member in members {
-                    member.leaf_indexes(out);
-                }
-            }
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -147,31 +136,9 @@ impl InspectorState {
             .is_some_and(|descriptor| !descriptor.is_user())
     }
 
-    pub fn system_var_names(&self) -> Vec<String> {
-        self.descriptors
-            .iter()
-            .filter(|descriptor| !descriptor.is_user())
-            .map(|descriptor| descriptor.name.clone())
-            .collect()
-    }
-
     pub fn value_by_name(&self, name: &str) -> Option<f64> {
         self.index_by_name(name)
             .and_then(|index| self.values.get(index).copied().flatten())
-    }
-
-    pub fn var_names(&self) -> Vec<String> {
-        self.descriptors
-            .iter()
-            .map(|descriptor| descriptor.name.clone())
-            .collect()
-    }
-
-    pub fn display_values(&self) -> Vec<f64> {
-        self.values
-            .iter()
-            .map(|value| value.unwrap_or(f64::NAN))
-            .collect()
     }
 
     pub fn update_values(&mut self, indexes: &[usize], values: Vec<u32>) {
@@ -635,7 +602,6 @@ mod tests {
         assert_eq!(system_names, ["sys_state"]);
         assert!(state.is_system_variable_name("sys_state"));
         assert!(state.is_system_variable_index(0));
-        assert_eq!(state.system_var_names(), ["sys_state"]);
         assert!(!state.is_system_variable_name("offset[0]"));
     }
 

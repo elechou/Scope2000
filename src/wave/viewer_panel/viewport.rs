@@ -23,9 +23,6 @@ pub fn show_viewport(
     can_edit_variable_refs: bool,
 ) -> Option<dnd::DropFeedback> {
     let mut viewport_drop_feedback: Option<dnd::DropFeedback> = None;
-    let var_names = inspector.var_names();
-    let var_values = inspector.display_values();
-    let system_var_names = inspector.system_var_names();
     let scope_channel_names = crate::wave::collect_time_series_vars(&vp.tree.tiles)
         .into_iter()
         .filter(|name| {
@@ -34,25 +31,16 @@ pub fn show_viewport(
                 .is_some_and(|descriptor| descriptor.is_scope())
         })
         .collect();
-    let scope_capable_var_names = inspector
-        .descriptors
-        .iter()
-        .filter(|descriptor| descriptor.is_scope())
-        .map(|descriptor| descriptor.name.clone())
-        .collect();
     // Blueprint hover (same frame) takes priority over plot hover (prev frame)
     let highlight_var = vp.hovered_blueprint_var.or(*vp.hovered_plot_var);
     let time_axis_sync_group = time_axis_sync_group_id(vp, plot_data);
     let (drop_hover_tile, pending_move, drop_feedback) = {
         let mut delegate = MyTilesDelegate {
             data: plot_data,
+            inspector,
             selection: vp.selection,
-            var_names: &var_names,
-            var_values: &var_values,
-            system_var_names: &system_var_names,
             scope_channel_limit,
             scope_channel_names,
-            scope_capable_var_names,
             drop_hover_tile: None,
             highlight_var,
             hovered_plot_var: None,

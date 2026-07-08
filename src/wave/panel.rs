@@ -2,6 +2,7 @@ use eframe::egui;
 
 use crate::source::{ScopeMode, TriggerEdge};
 use crate::theme;
+use crate::variable::InspectorState;
 
 use super::csv::CsvState;
 use super::{
@@ -31,10 +32,8 @@ pub struct WavePermissions {
     pub can_edit_variable_refs: bool,
 }
 
-fn is_system_var_name(name: &str, system_var_names: &[String]) -> bool {
-    system_var_names
-        .iter()
-        .any(|system_name| system_name == name)
+fn is_system_var_name(name: &str, inspector: &InspectorState) -> bool {
+    inspector.is_system_variable_name(name)
 }
 
 fn truncate_from_start(name: &str, max_chars: usize) -> String {
@@ -52,8 +51,8 @@ fn truncate_from_start(name: &str, max_chars: usize) -> String {
     format!("{marker}{tail}")
 }
 
-fn trigger_source_selected_label(name: &str, system_var_names: &[String]) -> String {
-    if is_system_var_name(name, system_var_names) {
+fn trigger_source_selected_label(name: &str, inspector: &InspectorState) -> String {
+    if is_system_var_name(name, inspector) {
         let name_max_chars =
             TRIGGER_SOURCE_SELECTED_MAX_CHARS - SYSTEM_TRIGGER_SOURCE_PREFIX.chars().count();
         format!(
@@ -65,14 +64,14 @@ fn trigger_source_selected_label(name: &str, system_var_names: &[String]) -> Str
     }
 }
 
-fn trigger_source_width(ui: &egui::Ui, name: &str, system_var_names: &[String]) -> f32 {
+fn trigger_source_width(ui: &egui::Ui, name: &str, inspector: &InspectorState) -> f32 {
     let font_id = egui::TextStyle::Button.resolve(ui.style());
     let text_width = ui
         .painter()
         .layout_no_wrap(name.to_owned(), font_id, theme::TEXT_DEFAULT)
         .size()
         .x;
-    if is_system_var_name(name, system_var_names) {
+    if is_system_var_name(name, inspector) {
         text_width + theme::system_variable_badge_size().x + theme::SYSTEM_VARIABLE_BADGE_GAP
     } else {
         text_width
@@ -82,15 +81,15 @@ fn trigger_source_width(ui: &egui::Ui, name: &str, system_var_names: &[String]) 
 fn trigger_source_popup_width(
     ui: &egui::Ui,
     pane_vars: &[String],
-    system_var_names: &[String],
+    inspector: &InspectorState,
 ) -> f32 {
     const MIN_WIDTH: f32 = 90.0;
     const OUTER_MARGIN: f32 = 24.0;
 
-    let auto_width = trigger_source_width(ui, "Auto", system_var_names);
+    let auto_width = trigger_source_width(ui, "Auto", inspector);
     let var_width = pane_vars
         .iter()
-        .map(|name| trigger_source_width(ui, name, system_var_names))
+        .map(|name| trigger_source_width(ui, name, inspector))
         .fold(auto_width, f32::max);
     let padded = var_width + ui.spacing().button_padding.x * 2.0 + 24.0;
     let content_max = (ui.ctx().content_rect().width() - OUTER_MARGIN).max(MIN_WIDTH);
@@ -101,7 +100,7 @@ fn selectable_trigger_source(
     ui: &mut egui::Ui,
     selected: bool,
     name: &str,
-    system_var_names: &[String],
+    inspector: &InspectorState,
 ) -> egui::Response {
     let height = ui.spacing().interact_size.y;
     let (rect, response) = ui.allocate_exact_size(
@@ -116,7 +115,7 @@ fn selectable_trigger_source(
                 .rect_filled(bg_rect, visuals.corner_radius, visuals.weak_bg_fill);
         }
 
-        let is_system_variable = is_system_var_name(name, system_var_names);
+        let is_system_variable = is_system_var_name(name, inspector);
         let mut text_x = rect.left() + ui.spacing().button_padding.x;
         if is_system_variable {
             text_x +=
@@ -143,7 +142,7 @@ pub fn show_wave_section(
     connected: bool,
     tick_hz: Option<u32>,
     tiles: &egui_tiles::Tiles<crate::wave::pane::ViewPane>,
-    system_var_names: &[String],
+    inspector: &InspectorState,
     record_max_points: Option<u16>,
     permissions: WavePermissions,
 ) -> Option<WaveAction> {
@@ -211,10 +210,10 @@ pub fn show_wave_section(
     ui.add_enabled_ui(can_edit_variable_refs, |ui| {
         ui.horizontal(|ui| {
             ui.label("Trigger");
-            let source_popup_width = trigger_source_popup_width(ui, &pane_vars, system_var_names);
+            let source_popup_width = trigger_source_popup_width(ui, &pane_vars, inspector);
             let ch_label: egui::WidgetText = match &wave.settings.trigger_source {
                 None => "Auto".into(),
-                Some(name) => trigger_source_selected_label(name, system_var_names).into(),
+                Some(name) => trigger_source_selected_label(name, inspector).into(),
             };
             egui::ComboBox::from_id_salt("trg_ch")
                 .width(TRIGGER_SOURCE_BUTTON_WIDTH)
@@ -228,8 +227,7 @@ pub fn show_wave_section(
                         );
                     for name in &pane_vars {
                         let selected = wave.settings.trigger_source.as_ref() == Some(name);
-                        let mut response =
-                            selectable_trigger_source(ui, selected, name, system_var_names);
+                        let mut response = selectable_trigger_source(ui, selected, name, inspector);
                         if response.clicked() && !selected {
                             wave.settings.trigger_source = Some(name.clone());
                             response.mark_changed();

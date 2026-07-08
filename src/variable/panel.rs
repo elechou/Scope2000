@@ -793,19 +793,25 @@ pub fn show_variable_map(
     });
 
     let filter = filter_text.to_lowercase();
-    let entries = inspector.entries.clone();
-    let system_entries = inspector.system_entries.clone();
+    let inspector = &*inspector;
 
     egui::ScrollArea::vertical()
         .id_salt("sources_scroll")
         .auto_shrink([false, false])
         .show(ui, |ui| {
-            if !system_entries.is_empty() {
+            if !inspector.system_entries.is_empty() {
                 egui::CollapsingHeader::new("System Variables")
                     .default_open(false)
                     .show(ui, |ui| {
-                        for entry in &system_entries {
-                            show_map_entry(ui, entry, &filter, inspector, can_edit_variable_refs);
+                        for entry in &inspector.system_entries {
+                            show_map_entry(
+                                ui,
+                                entry,
+                                &filter,
+                                inspector,
+                                can_edit_variable_refs,
+                                true,
+                            );
                         }
                     });
                 ui.add_space(4.0);
@@ -816,11 +822,11 @@ pub fn show_variable_map(
                 ui.add_space(4.0);
                 ui.strong("User Variables:");
             });
-            if entries.is_empty() {
+            if inspector.entries.is_empty() {
                 ui.weak("No user variables enumerated");
             } else {
-                for entry in &entries {
-                    show_map_entry(ui, entry, &filter, inspector, can_edit_variable_refs);
+                for entry in &inspector.entries {
+                    show_map_entry(ui, entry, &filter, inspector, can_edit_variable_refs, false);
                 }
             }
         });
@@ -908,12 +914,31 @@ fn variable_map_trash_drop(
     }
 }
 
+fn descriptor_name_matches_filter(name: &str, filter: &str) -> bool {
+    name.to_lowercase().contains(filter)
+}
+
+fn entry_matches_filter(entry: &DescriptorEntry, filter: &str) -> bool {
+    match entry {
+        DescriptorEntry::Var { full_name, .. } => descriptor_name_matches_filter(full_name, filter),
+        DescriptorEntry::Group {
+            full_name, members, ..
+        } => {
+            descriptor_name_matches_filter(full_name, filter)
+                || members
+                    .iter()
+                    .any(|member| entry_matches_filter(member, filter))
+        }
+    }
+}
+
 fn show_map_entry(
     ui: &mut egui::Ui,
     entry: &DescriptorEntry,
     filter: &str,
     inspector: &InspectorState,
     can_edit_variable_refs: bool,
+    is_system_tree: bool,
 ) {
     match entry {
         DescriptorEntry::Var {
@@ -921,13 +946,13 @@ fn show_map_entry(
             full_name,
             index,
         } => {
-            if !filter.is_empty() && !full_name.to_lowercase().contains(filter) {
+            if !filter.is_empty() && !descriptor_name_matches_filter(full_name, filter) {
                 return;
             }
             if inspector.descriptors.get(*index).is_none() {
                 return;
             }
-            let is_system_variable = inspector.is_system_variable_index(*index);
+            let is_system_variable = is_system_tree || inspector.is_system_variable_index(*index);
             let value = inspector.values.get(*index).copied().flatten();
             let resp = map_item_ui(ui, label, is_system_variable)
                 .on_hover_text(variable_hover_text(full_name, value));
@@ -943,25 +968,22 @@ fn show_map_entry(
             full_name,
             members,
         } => {
-            let mut leaf_names = Vec::new();
-            entry.flatten_names(&mut leaf_names);
-            let mut leaf_indexes = Vec::new();
-            entry.leaf_indexes(&mut leaf_indexes);
-
-            if !filter.is_empty() {
-                let group_matches = full_name.to_lowercase().contains(filter);
-                let any_leaf_matches = leaf_names
-                    .iter()
-                    .any(|name| name.to_lowercase().contains(filter));
-                if !group_matches && !any_leaf_matches {
-                    return;
+            let filtering = !filter.is_empty();
+            let group_matches = filtering && descriptor_name_matches_filter(full_name, filter);
+            if filtering && !group_matches && !entry_matches_filter(entry, filter) {
+                return;
+            }
+            let has_visible_member = members.iter().any(|member| {
+                if !filtering || group_matches {
+                    true
+                } else {
+                    entry_matches_filter(member, filter)
                 }
+            });
+            if !has_visible_member {
+                return;
             }
 
-            let is_system_group = leaf_indexes
-                .iter()
-                .any(|index| inspector.is_system_variable_index(*index));
-            let filtering = !filter.is_empty();
             let header_id = ui.make_persistent_id((full_name, filtering));
             let mut state = egui::collapsing_header::CollapsingState::load_with_default_open(
                 ui.ctx(),
@@ -985,7 +1007,7 @@ fn show_map_entry(
                     };
                     ui.painter().rect_filled(rect, 4.0, bg);
                     let mut text_offset = 0.0;
-                    if is_system_group {
+                    if is_system_tree {
                         text_offset = theme::paint_system_variable_badge(
                             ui,
                             rect.left_center() + egui::vec2(2.0, 0.0),
@@ -995,28 +1017,35 @@ fn show_map_entry(
                     ui.painter().text(
                         rect.left_center() + egui::vec2(2.0 + text_offset, 0.0),
                         egui::Align2::LEFT_CENTER,
-                        display_name(label, is_system_group),
+                        display_name(label, is_system_tree),
                         egui::TextStyle::Monospace.resolve(ui.style()),
                         theme::TEXT_DEFAULT,
                     );
                 }
                 let resp = resp.on_hover_text(full_name.clone());
-                if can_edit_variable_refs {
-                    resp.dnd_set_drag_payload(VarDragPayload {
-                        names: leaf_names,
-                        source: DragSource::VariableMap,
-                    });
+                if can_edit_variable_refs && resp.drag_started() {
+                    let mut leaf_names = Vec::new();
+                    entry.flatten_names(&mut leaf_names);
+                    egui::DragAndDrop::set_payload(
+                        ui.ctx(),
+                        VarDragPayload {
+                            names: leaf_names,
+                            source: DragSource::VariableMap,
+                        },
+                    );
                 }
             });
             state.show_body_indented(&header_out.response, ui, |ui| {
                 for member in members {
-                    let child_filter =
-                        if !filter.is_empty() && full_name.to_lowercase().contains(filter) {
-                            ""
-                        } else {
-                            filter
-                        };
-                    show_map_entry(ui, member, child_filter, inspector, can_edit_variable_refs);
+                    let child_filter = if group_matches { "" } else { filter };
+                    show_map_entry(
+                        ui,
+                        member,
+                        child_filter,
+                        inspector,
+                        can_edit_variable_refs,
+                        is_system_tree,
+                    );
                 }
             });
         }

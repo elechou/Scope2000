@@ -15,25 +15,38 @@ impl<'a> MyTilesDelegate<'a> {
         pane: &mut ViewPane,
     ) -> egui_tiles::UiResponse {
         let display_data: Vec<_> = if pane.series.is_empty() {
-            self.var_names
+            self.inspector
+                .descriptors
                 .iter()
                 .enumerate()
-                .map(|(i, name)| {
-                    let val = self.var_values.get(i).copied().unwrap_or(0.0);
-                    (name.clone(), val)
+                .map(|(i, descriptor)| {
+                    let val = self
+                        .inspector
+                        .values
+                        .get(i)
+                        .copied()
+                        .flatten()
+                        .unwrap_or(0.0);
+                    (descriptor.name.as_str(), val, !descriptor.is_user())
                 })
                 .collect()
         } else {
             pane.series
                 .iter()
                 .filter_map(|s| {
-                    self.var_names
-                        .iter()
-                        .position(|n| *n == s.var_name)
-                        .map(|i| {
-                            let val = self.var_values.get(i).copied().unwrap_or(0.0);
-                            (s.var_name.clone(), val)
-                        })
+                    let i = self.inspector.index_by_name(&s.var_name)?;
+                    let val = self
+                        .inspector
+                        .values
+                        .get(i)
+                        .copied()
+                        .flatten()
+                        .unwrap_or(0.0);
+                    Some((
+                        s.var_name.as_str(),
+                        val,
+                        self.inspector.is_system_variable_index(i),
+                    ))
                 })
                 .collect()
         };
@@ -50,21 +63,21 @@ impl<'a> MyTilesDelegate<'a> {
                             ui.strong("Value");
                             ui.end_row();
 
-                            for (name, value) in &display_data {
-                                if self.is_system_variable_name(name) {
+                            for (name, value, is_system_variable) in &display_data {
+                                if *is_system_variable {
                                     ui.horizontal(|ui| {
                                         ui.spacing_mut().item_spacing.x =
                                             theme::SYSTEM_VARIABLE_BADGE_GAP;
                                         theme::system_variable_badge(ui, 1.0);
                                         ui.label(
-                                            egui::RichText::new(name.as_str())
+                                            egui::RichText::new(*name)
                                                 .monospace()
                                                 .color(theme::TEXT_DEFAULT),
                                         );
                                     });
                                 } else {
                                     ui.label(
-                                        egui::RichText::new(name.as_str())
+                                        egui::RichText::new(*name)
                                             .monospace()
                                             .color(theme::TEXT_DEFAULT),
                                     );
