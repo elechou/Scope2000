@@ -764,7 +764,7 @@ mod tests {
     fn device_info() -> DeviceInfo {
         DeviceInfo {
             protocol_version: 10,
-            contract_version: 19,
+            contract_version: 20,
             build_hash: 0x1234_5678,
             descriptor_count: 1,
             firmware_name: "viewer2000-test".to_owned(),
@@ -779,7 +779,7 @@ mod tests {
             mcu_model: MCU_MODEL_F28379D,
             scope_max_ch: 32,
             scope_block_ticks: 7,
-            scope_ring_words: 0xDFF8,
+            scope_ring_words: 0xF838,
         }
     }
 

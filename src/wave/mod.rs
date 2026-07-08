@@ -270,7 +270,7 @@ mod tests {
     fn max_record_points_accounts_for_native_width_and_block_headers() {
         let info = DeviceInfo {
             protocol_version: 10,
-            contract_version: 19,
+            contract_version: 20,
             build_hash: 0,
             descriptor_count: 0,
             firmware_name: "viewer2000".to_owned(),
@@ -306,7 +306,7 @@ mod tests {
     fn max_record_points_uses_hello_scope_resources() {
         let mut info = DeviceInfo {
             protocol_version: 10,
-            contract_version: 19,
+            contract_version: 20,
             build_hash: 0,
             descriptor_count: 0,
             firmware_name: "viewer2000".to_owned(),
@@ -317,7 +317,7 @@ mod tests {
             mcu_model: 2,
             scope_max_ch: 32,
             scope_block_ticks: 7,
-            scope_ring_words: 0xDFF8,
+            scope_ring_words: 0xF838,
         };
         let eight_f32 = (0..8)
             .map(|index| descriptor(&format!("f32_{index}"), VarType::F32))
@@ -332,15 +332,15 @@ mod tests {
         assert_eq!(scope_channel_limit(Some(&info)), 32);
         assert_eq!(
             max_record_points_for_binding(&eight_f32, &info),
-            Some(3_332)
+            Some(3_696)
         );
         assert_eq!(
             max_record_points_for_binding(&sixteen_f32, &info),
-            Some(1_722)
+            Some(1_904)
         );
         assert_eq!(
             max_record_points_for_binding(&thirty_two_f32, &info),
-            Some(868)
+            Some(966)
         );
 
         info.scope_block_ticks = 0;
