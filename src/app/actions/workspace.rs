@@ -1,13 +1,14 @@
 use std::collections::BTreeSet;
 use std::hash::{DefaultHasher, Hash, Hasher};
+use std::path::PathBuf;
 use std::time::Instant;
 
 use eframe::egui;
 
 use crate::app::ScopeApp;
 use crate::app::state::{
-    CsvExportConfig, VARMAP_SPLIT_DEFAULT, WORKSPACE_AUTOSAVE_DEBOUNCE, WatchRef, WorkspaceState,
-    WorkspaceStore,
+    CsvExportConfig, UNTITLED_PROJECT, UnresolvedRefs, VARMAP_SPLIT_DEFAULT,
+    WORKSPACE_AUTOSAVE_DEBOUNCE, WatchRef, WorkspaceState, WorkspaceStore,
 };
 use crate::console::LogLevel;
 use crate::variable::WatchEntry;
@@ -118,6 +119,103 @@ impl ScopeApp {
         self.save_workspace();
         self.log
             .push(LogLevel::Notice, "Workspace saved".to_owned());
+    }
+
+    pub(in crate::app) fn export_workspace_configuration_with_dialog(&mut self) {
+        let project_name = self.export_project_name();
+        let dialog = rfd::FileDialog::new()
+            .add_filter("Viewer2000 Configuration", &["v2k"])
+            .set_file_name(workspace_export_filename(&project_name));
+
+        let Some(path) = dialog.save_file() else {
+            return;
+        };
+        let path = with_v2k_extension(path);
+        let workspace = self.snapshot_workspace();
+        match WorkspaceStore::export_file(&path, &project_name, &workspace) {
+            Ok(()) => self.log.push(
+                LogLevel::Notice,
+                format!("Configuration exported: {}", path.display()),
+            ),
+            Err(error) => self.log.push(
+                LogLevel::Error,
+                format!("Configuration export failed: {error}"),
+            ),
+        }
+    }
+
+    pub(in crate::app) fn import_workspace_configuration_with_dialog(&mut self) {
+        if self.hardware.is_running()
+            || self.wave.active
+            || self.wave.restart_pending.is_some()
+            || !self.wave.pending_binding.is_empty()
+        {
+            self.log.push(
+                LogLevel::Warn,
+                "Stop the user system and Wave acquisition before importing configuration"
+                    .to_owned(),
+            );
+            return;
+        }
+
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("Viewer2000 Configuration", &["v2k"])
+            .pick_file()
+        else {
+            return;
+        };
+
+        match WorkspaceStore::import_file(&path) {
+            Ok(imported) => {
+                let imported_project = imported.project_name;
+                self.apply_imported_workspace(imported.workspace);
+                self.save_workspace();
+                self.reset_workspace_autosave_baseline();
+                self.log.push(
+                    LogLevel::Notice,
+                    format!("Configuration imported: {}", path.display()),
+                );
+                if imported_project != self.export_project_name() {
+                    self.log.push(
+                        LogLevel::Info,
+                        format!("Imported configuration was exported from {imported_project}"),
+                    );
+                }
+            }
+            Err(error) => self.log.push(
+                LogLevel::Error,
+                format!("Configuration import failed: {error}"),
+            ),
+        }
+    }
+
+    fn apply_imported_workspace(&mut self, mut workspace: WorkspaceState) {
+        workspace.acquisition.clamp();
+        self.workspace = workspace;
+        self.wave.clear_binding();
+        self.plot_data.clear();
+        self.inspector.pinned.clear();
+        self.inspector.watch_vars.clear();
+        self.project.unresolved = UnresolvedRefs::default();
+        self.workspace_watch_restored = false;
+        self.restore_workspace_layout();
+        self.restore_workspace_watch_once();
+        if self.workspace_watch_restored {
+            self.request_watch_read();
+        }
+    }
+
+    fn export_project_name(&self) -> String {
+        self.project
+            .active_name
+            .clone()
+            .or_else(|| {
+                self.hardware
+                    .info
+                    .as_ref()
+                    .map(|info| info.project_name.clone())
+            })
+            .unwrap_or_else(|| UNTITLED_PROJECT.to_owned())
     }
 
     pub(in crate::app) fn save_workspace(&mut self) {
@@ -350,11 +448,40 @@ fn restore_watch_refs(
     (missing_pinned, missing_watch)
 }
 
+fn with_v2k_extension(mut path: PathBuf) -> PathBuf {
+    if !path
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("v2k"))
+    {
+        path.set_extension("v2k");
+    }
+    path
+}
+
+fn workspace_export_filename(project_name: &str) -> String {
+    let stem: String = project_name
+        .chars()
+        .map(|ch| match ch {
+            '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*' => '_',
+            ch if ch.is_ascii_control() => '_',
+            ch => ch,
+        })
+        .collect();
+    let stem = stem.trim_matches([' ', '.']).trim();
+    if stem.is_empty() {
+        "scope2000.v2k".to_owned()
+    } else {
+        format!("{stem}.v2k")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::source::{VarDescriptor, VarRef, VarType};
     use crate::variable::InspectorState;
+    use std::path::Path;
 
     fn descriptor(name: &str) -> VarDescriptor {
         VarDescriptor {
@@ -442,5 +569,28 @@ mod tests {
 
         assert_eq!(missing_pinned, vec!["kept.pin"]);
         assert_eq!(missing_watch, vec!["kept.watch"]);
+    }
+
+    #[test]
+    fn v2k_extension_is_added_for_export_paths() {
+        assert_eq!(
+            with_v2k_extension(PathBuf::from("demo")).as_path(),
+            Path::new("demo.v2k")
+        );
+        assert_eq!(
+            with_v2k_extension(PathBuf::from("demo.V2K")).as_path(),
+            Path::new("demo.V2K")
+        );
+        assert_eq!(
+            with_v2k_extension(PathBuf::from("demo.toml")).as_path(),
+            Path::new("demo.v2k")
+        );
+    }
+
+    #[test]
+    fn workspace_export_filename_sanitizes_project_name() {
+        assert_eq!(workspace_export_filename("phase4-demo"), "phase4-demo.v2k");
+        assert_eq!(workspace_export_filename("bad:name"), "bad_name.v2k");
+        assert_eq!(workspace_export_filename(" . "), "scope2000.v2k");
     }
 }

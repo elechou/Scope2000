@@ -363,6 +363,12 @@ struct WorkspaceFile {
     workspace: WorkspaceState,
 }
 
+#[derive(Debug, Clone)]
+pub(crate) struct ImportedWorkspace {
+    pub project_name: String,
+    pub workspace: WorkspaceState,
+}
+
 pub(crate) struct WorkspaceStore;
 
 impl WorkspaceStore {
@@ -406,6 +412,42 @@ impl WorkspaceStore {
                 workspace: workspace.clone(),
             },
         )
+    }
+
+    pub fn export_file(
+        path: &Path,
+        project_name: &str,
+        workspace: &WorkspaceState,
+    ) -> anyhow::Result<()> {
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        std::fs::write(
+            path,
+            toml::to_string_pretty(&WorkspaceFile {
+                format_version: FORMAT_VERSION,
+                project_name: project_name.to_owned(),
+                workspace: workspace.clone(),
+            })?,
+        )?;
+        Ok(())
+    }
+
+    pub fn import_file(path: &Path) -> anyhow::Result<ImportedWorkspace> {
+        let text = std::fs::read_to_string(path)
+            .with_context(|| format!("cannot read {}", path.display()))?;
+        let file: WorkspaceFile = toml::from_str(&text)
+            .with_context(|| format!("invalid Scope2000 configuration file {}", path.display()))?;
+        if file.format_version != FORMAT_VERSION {
+            bail!(
+                "unsupported Scope2000 configuration version {}",
+                file.format_version
+            );
+        }
+        Ok(ImportedWorkspace {
+            project_name: file.project_name,
+            workspace: file.workspace,
+        })
     }
 
     pub fn save_legacy(workspace: &WorkspaceState) -> anyhow::Result<()> {
@@ -1048,5 +1090,60 @@ verified = true
     fn workspace_path_uses_project_name_bytes_not_build_hash() {
         let path = WorkspaceStore::workspace_path("phase4-demo").unwrap();
         assert!(path.ends_with("7068617365342d64656d6f/workspace.toml"));
+    }
+
+    #[test]
+    fn v2k_workspace_file_round_trips() {
+        let dir = TempDir::new();
+        let path = dir.0.join("demo.v2k");
+        let mut workspace = WorkspaceState::default();
+        workspace.acquisition.prescaler = 7;
+        workspace.wave_control.stop_on_system_stop = false;
+        workspace.pinned = vec![crate::app::state::WatchRef {
+            var_name: "motor.speed".to_owned(),
+            ..crate::app::state::WatchRef::default()
+        }];
+
+        WorkspaceStore::export_file(&path, "demo", &workspace).unwrap();
+        let imported = WorkspaceStore::import_file(&path).unwrap();
+
+        assert_eq!(imported.project_name, "demo");
+        assert_eq!(imported.workspace.acquisition.prescaler, 7);
+        assert!(!imported.workspace.wave_control.stop_on_system_stop);
+        assert_eq!(imported.workspace.pinned[0].var_name, "motor.speed");
+    }
+
+    #[test]
+    fn v2k_workspace_export_overwrites_existing_file() {
+        let dir = TempDir::new();
+        let path = dir.0.join("demo.v2k");
+        std::fs::write(&path, "old").unwrap();
+        let mut workspace = WorkspaceState::default();
+        workspace.acquisition.prescaler = 11;
+
+        WorkspaceStore::export_file(&path, "demo", &workspace).unwrap();
+        let imported = WorkspaceStore::import_file(&path).unwrap();
+
+        assert_eq!(imported.workspace.acquisition.prescaler, 11);
+    }
+
+    #[test]
+    fn v2k_workspace_import_rejects_unsupported_version() {
+        let dir = TempDir::new();
+        let path = dir.0.join("future.v2k");
+        std::fs::write(
+            &path,
+            r#"
+format_version = 999
+project_name = "future"
+
+[workspace]
+"#,
+        )
+        .unwrap();
+
+        let error = WorkspaceStore::import_file(&path).unwrap_err();
+
+        assert!(error.to_string().contains("unsupported Scope2000"));
     }
 }

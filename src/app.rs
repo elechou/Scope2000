@@ -409,6 +409,12 @@ impl ScopeApp {
             crate::ui::menu_bar::MenuAction::ManageProjects => {
                 self.project.show_project_manager = true;
             }
+            crate::ui::menu_bar::MenuAction::ImportConfiguration => {
+                self.import_workspace_configuration_with_dialog()
+            }
+            crate::ui::menu_bar::MenuAction::ExportConfiguration => {
+                self.export_workspace_configuration_with_dialog()
+            }
             crate::ui::menu_bar::MenuAction::SaveWorkspace => self.save_workspace_with_log(),
             crate::ui::menu_bar::MenuAction::ResetLayout => {
                 self.viewport.reset_layout();

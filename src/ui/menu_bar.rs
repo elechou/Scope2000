@@ -7,6 +7,8 @@ pub enum MenuAction {
     OpenProject,
     OpenRecentProject(String),
     ManageProjects,
+    ImportConfiguration,
+    ExportConfiguration,
     SaveWorkspace,
     ResetLayout,
 }
@@ -51,6 +53,15 @@ pub fn show(
                     });
                     if ui.button("Project Manager").clicked() {
                         action = Some(MenuAction::ManageProjects);
+                        ui.close_kind(egui::UiKind::Menu);
+                    }
+                    ui.separator();
+                    if ui.button("Import Configuration...").clicked() {
+                        action = Some(MenuAction::ImportConfiguration);
+                        ui.close_kind(egui::UiKind::Menu);
+                    }
+                    if ui.button("Export Configuration...").clicked() {
+                        action = Some(MenuAction::ExportConfiguration);
                         ui.close_kind(egui::UiKind::Menu);
                     }
                     ui.separator();
