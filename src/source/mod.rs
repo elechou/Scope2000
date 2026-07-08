@@ -416,6 +416,9 @@ pub fn fault_code_text(code: u16) -> String {
         2 => "OVERCURRENT".to_owned(),
         3 => "OVERVOLTAGE".to_owned(),
         4 => "OVERTEMP".to_owned(),
+        5 => "STACK_GUARD".to_owned(),
+        6 => "WD_RESET".to_owned(),
+        7 => "ITRAP".to_owned(),
         other => fault_user_code(other)
             .map(|user_code| format!("USER_{user_code}"))
             .unwrap_or_else(|| format!("FAULT_{other}")),
@@ -616,6 +619,9 @@ mod tests {
         assert_eq!(fault_code_text(2), "OVERCURRENT");
         assert_eq!(fault_code_text(3), "OVERVOLTAGE");
         assert_eq!(fault_code_text(4), "OVERTEMP");
+        assert_eq!(fault_code_text(5), "STACK_GUARD");
+        assert_eq!(fault_code_text(6), "WD_RESET");
+        assert_eq!(fault_code_text(7), "ITRAP");
         assert_eq!(fault_code_text(99), "FAULT_99");
         assert_eq!(fault_code_text(256), "USER_0");
         assert_eq!(fault_code_text(257), "USER_1");

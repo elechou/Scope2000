@@ -4,8 +4,8 @@ use crate::app::ScopeApp;
 use crate::app::state::{AbzZeroingCommandResult, CalibrationCommandResult};
 use crate::console::LogLevel;
 use crate::source::{
-    CatalogCommand, ScopeBlock, ScopeMode, SourceEvent, SystemCommand, SystemState, VarDescriptor,
-    command_result_text,
+    CatalogCommand, DeviceStatus, ScopeBlock, ScopeMode, SourceEvent, SystemCommand, SystemState,
+    VarDescriptor, command_result_text,
 };
 use crate::variable::InspectorState;
 use crate::wave::{
@@ -90,15 +90,45 @@ impl ScopeApp {
                     self.abz_zeroing.next_read = Instant::now();
                 }
                 SourceEvent::Status(status) => {
-                    let completed_command = self.hardware.complete_pending_system_command(&status);
-                    let completed_calibration =
-                        self.calibration.complete_measure_from_status(&status);
-                    let completed_abz_zeroing = self.abz_zeroing.complete_from_status(&status);
+                    let now = Instant::now();
                     let previous_state = self
                         .hardware
                         .status
                         .as_ref()
                         .map(|previous| previous.system_state);
+                    let previous_cpu1_heartbeat = self
+                        .hardware
+                        .status
+                        .as_ref()
+                        .map_or(0, |previous| previous.cpu1_heartbeat);
+                    let previous_tick = self
+                        .hardware
+                        .status
+                        .as_ref()
+                        .map_or(0, |previous| previous.tick);
+                    let cpu1_restarted = self
+                        .hardware
+                        .status
+                        .as_ref()
+                        .is_some_and(|previous| cpu1_status_restarted(previous, &status));
+                    if cpu1_restarted {
+                        self.hardware.clear_system_command_state();
+                        self.calibration.reset_session();
+                        self.abz_zeroing.reset_session();
+                        self.wave.active = false;
+                        self.wave.restart_pending = None;
+                        self.log.push(
+                            LogLevel::Warn,
+                            format!(
+                                "Viewer2000 CPU1 status restarted: hb {}/{} tick {}/{}; cleared pending host commands",
+                                previous_cpu1_heartbeat, status.cpu1_heartbeat, previous_tick, status.tick
+                            ),
+                        );
+                    }
+                    let completed_command = self.hardware.complete_pending_system_command(&status);
+                    let completed_calibration =
+                        self.calibration.complete_measure_from_status(&status);
+                    let completed_abz_zeroing = self.abz_zeroing.complete_from_status(&status);
                     let system_stopped =
                         system_stopped_transition(previous_state, status.system_state);
                     let stop_wave =
@@ -137,6 +167,24 @@ impl ScopeApp {
                                 "Start refused: ABZ Zeroing is not ready.".to_owned(),
                             );
                             self.abz_zeroing.next_read = Instant::now();
+                        }
+                    }
+                    if let Some(expired) = self.hardware.expire_pending_system_command(now) {
+                        match expired.sequence {
+                            Some(sequence) => self.log.push(
+                                LogLevel::Warn,
+                                format!(
+                                    "System command {} pending seq {sequence} timed out; released host command state",
+                                    expired.command.label()
+                                ),
+                            ),
+                            None => self.log.push(
+                                LogLevel::Warn,
+                                format!(
+                                    "System command {} send timed out; released host command state",
+                                    expired.command.label()
+                                ),
+                            ),
                         }
                     }
                     if let Some(result) = completed_calibration {
@@ -194,7 +242,10 @@ impl ScopeApp {
                     );
                 }
                 SourceEvent::SystemCommandAccepted { command, sequence } => {
-                    if self.hardware.accept_system_command(command, sequence) {
+                    if self
+                        .hardware
+                        .accept_system_command(command, sequence, Instant::now())
+                    {
                         self.log.push(
                             LogLevel::Info,
                             format!(
@@ -467,6 +518,10 @@ fn wave_has_active_or_pending_stop_target(wave: &WaveState) -> bool {
     wave.active || wave.restart_pending.is_some() || !wave.pending_binding.is_empty()
 }
 
+fn cpu1_status_restarted(previous: &DeviceStatus, current: &DeviceStatus) -> bool {
+    current.cpu1_heartbeat < previous.cpu1_heartbeat && current.tick < previous.tick
+}
+
 fn should_force_capture(mode: ScopeMode, settings: &AcquisitionSettings) -> bool {
     mode == ScopeMode::CaptureArmed && settings.trigger_source.is_none()
 }
@@ -674,6 +729,30 @@ mod tests {
         }
     }
 
+    fn status(tick: u32, cpu1_heartbeat: u32) -> DeviceStatus {
+        DeviceStatus {
+            system_state: SystemState::Idle,
+            fault_code: 0,
+            status_flags: 0,
+            tick,
+            cpu1_heartbeat,
+            cpu2_heartbeat: 0,
+            applied_seq: 0,
+            calibration_result: 0,
+            calibration_fail_index: 0,
+            build_hash: 0,
+            scope_mode: ScopeMode::Off,
+            scope_flags: 0,
+            command_ack_seq: Some(0),
+            command_result: Some(0),
+            performance: None,
+            scope_state_seq: 0,
+            scope_frozen_count: 0,
+            scope_trigger_tick: 0,
+            scope_bind_seq: 0,
+        }
+    }
+
     fn f32_block_samples(
         start_tick: u32,
         block_seq: u16,
@@ -722,6 +801,16 @@ mod tests {
             SystemState::Idle
         ));
         assert!(!system_stopped_transition(None, SystemState::Idle));
+    }
+
+    #[test]
+    fn cpu1_status_restart_requires_heartbeat_and_tick_rollback() {
+        let previous = status(20_000, 100_000);
+
+        assert!(cpu1_status_restarted(&previous, &status(100, 500)));
+        assert!(!cpu1_status_restarted(&previous, &status(20_100, 500)));
+        assert!(!cpu1_status_restarted(&previous, &status(100, 100_100)));
+        assert!(!cpu1_status_restarted(&previous, &status(20_100, 100_100)));
     }
 
     #[test]

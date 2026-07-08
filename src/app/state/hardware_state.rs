@@ -1,9 +1,12 @@
+use std::time::{Duration, Instant};
+
 use crate::source::{
     DeviceInfo, DeviceStatus, PerformanceSample, ScopeMode, SystemCommand, TransportEndpoint,
     command_result_text,
 };
 
 pub(crate) const DEFAULT_SERIAL_BAUD: u32 = 3_125_000;
+const SYSTEM_COMMAND_TIMEOUT: Duration = Duration::from_secs(3);
 
 #[derive(Default)]
 pub struct PerformanceState {
@@ -58,6 +61,8 @@ pub(crate) struct HardwareState {
 pub(crate) struct PendingSystemCommand {
     pub command: SystemCommand,
     pub sequence: Option<u32>,
+    sent_at: Instant,
+    accepted_at: Option<Instant>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -65,6 +70,12 @@ pub(crate) struct CompletedSystemCommand {
     pub command: SystemCommand,
     pub sequence: u32,
     pub result: u16,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ExpiredSystemCommand {
+    pub command: SystemCommand,
+    pub sequence: Option<u32>,
 }
 
 impl Default for HardwareState {
@@ -148,14 +159,21 @@ impl HardwareState {
         }
     }
 
-    pub fn begin_system_command(&mut self, command: SystemCommand) {
+    pub fn begin_system_command(&mut self, command: SystemCommand, now: Instant) {
         self.pending_system_command = Some(PendingSystemCommand {
             command,
             sequence: None,
+            sent_at: now,
+            accepted_at: None,
         });
     }
 
-    pub fn accept_system_command(&mut self, command: SystemCommand, sequence: u32) -> bool {
+    pub fn accept_system_command(
+        &mut self,
+        command: SystemCommand,
+        sequence: u32,
+        now: Instant,
+    ) -> bool {
         let Some(pending) = &mut self.pending_system_command else {
             return false;
         };
@@ -163,6 +181,7 @@ impl HardwareState {
             return false;
         }
         pending.sequence = Some(sequence);
+        pending.accepted_at = Some(now);
         true
     }
 
@@ -183,6 +202,19 @@ impl HardwareState {
         self.pending_system_command = None;
         self.last_system_command = Some(completed);
         Some(completed)
+    }
+
+    pub fn expire_pending_system_command(&mut self, now: Instant) -> Option<ExpiredSystemCommand> {
+        let pending = self.pending_system_command?;
+        let reference = pending.accepted_at.unwrap_or(pending.sent_at);
+        if now.saturating_duration_since(reference) < SYSTEM_COMMAND_TIMEOUT {
+            return None;
+        }
+        self.pending_system_command = None;
+        Some(ExpiredSystemCommand {
+            command: pending.command,
+            sequence: pending.sequence,
+        })
     }
 
     pub fn clear_system_command_state(&mut self) {
@@ -390,13 +422,14 @@ mod tests {
     #[test]
     fn pending_system_command_completes_on_matching_status_sequence() {
         let mut hardware = HardwareState::default();
-        hardware.begin_system_command(SystemCommand::Start);
+        let now = Instant::now();
+        hardware.begin_system_command(SystemCommand::Start, now);
         assert_eq!(
             hardware.pending_system_command_text().as_deref(),
             Some("Command: Start sending...")
         );
 
-        assert!(hardware.accept_system_command(SystemCommand::Start, 42));
+        assert!(hardware.accept_system_command(SystemCommand::Start, 42, now));
         assert_eq!(
             hardware.pending_system_command_text().as_deref(),
             Some("Command: Start pending seq 42")
@@ -419,8 +452,9 @@ mod tests {
     #[test]
     fn non_matching_status_sequence_does_not_complete_pending_command() {
         let mut hardware = HardwareState::default();
-        hardware.begin_system_command(SystemCommand::Start);
-        assert!(hardware.accept_system_command(SystemCommand::Start, 42));
+        let now = Instant::now();
+        hardware.begin_system_command(SystemCommand::Start, now);
+        assert!(hardware.accept_system_command(SystemCommand::Start, 42, now));
 
         assert_eq!(
             hardware.complete_pending_system_command(&device_status(Some(41), Some(0))),
@@ -433,18 +467,40 @@ mod tests {
     #[test]
     fn system_command_state_clear_drops_pending_and_last_command() {
         let mut hardware = HardwareState::default();
-        hardware.begin_system_command(SystemCommand::Stop);
-        assert!(hardware.accept_system_command(SystemCommand::Stop, 7));
+        let now = Instant::now();
+        hardware.begin_system_command(SystemCommand::Stop, now);
+        assert!(hardware.accept_system_command(SystemCommand::Stop, 7, now));
         assert!(
             hardware
                 .complete_pending_system_command(&device_status(Some(7), Some(4)))
                 .is_some()
         );
-        hardware.begin_system_command(SystemCommand::ClearFault);
+        hardware.begin_system_command(SystemCommand::ClearFault, now);
 
         hardware.clear_system_command_state();
 
         assert_eq!(hardware.pending_system_command, None);
         assert_eq!(hardware.last_system_command, None);
+    }
+
+    #[test]
+    fn pending_system_command_expires_when_status_ack_never_matches() {
+        let mut hardware = HardwareState::default();
+        let now = Instant::now();
+        hardware.begin_system_command(SystemCommand::ClearFault, now);
+        assert!(hardware.accept_system_command(SystemCommand::ClearFault, 99, now));
+
+        assert_eq!(
+            hardware.expire_pending_system_command(now + Duration::from_secs(1)),
+            None
+        );
+
+        let expired = hardware
+            .expire_pending_system_command(now + SYSTEM_COMMAND_TIMEOUT)
+            .expect("pending command expires");
+
+        assert_eq!(expired.command, SystemCommand::ClearFault);
+        assert_eq!(expired.sequence, Some(99));
+        assert_eq!(hardware.pending_system_command, None);
     }
 }

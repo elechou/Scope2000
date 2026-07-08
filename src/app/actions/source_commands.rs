@@ -53,7 +53,7 @@ impl ScopeApp {
             );
             return;
         }
-        self.hardware.begin_system_command(command);
+        self.hardware.begin_system_command(command, Instant::now());
         self.send(SourceCommand::SystemCommand(command));
     }
 
