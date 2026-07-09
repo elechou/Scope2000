@@ -201,7 +201,7 @@ fn show_summary(ui: &mut egui::Ui, snapshot: Option<AbzZeroingSnapshot>) {
                         hex_u32_text(snapshot.eqep2_error_flags),
                         hex_u32_text(snapshot.npe_last_error_flags)
                     ),
-                    error_flag_color(snapshot),
+                    theme::TEXT_DEFAULT,
                 );
             }
             if snapshot.eqep2_index_event.is_some() || snapshot.eqep2_dir_change.is_some() {
@@ -339,20 +339,8 @@ fn block_color(value: Option<u16>) -> egui::Color32 {
 }
 
 fn reset_color(snapshot: AbzZeroingSnapshot) -> egui::Color32 {
-    if snapshot.npe_error_resets.unwrap_or_default() != 0 {
-        theme::RED
-    } else if snapshot.npe_dir_resets.unwrap_or_default() != 0 {
+    if snapshot.npe_dir_resets.unwrap_or_default() != 0 {
         theme::YELLOW
-    } else {
-        theme::TEXT_DEFAULT
-    }
-}
-
-fn error_flag_color(snapshot: AbzZeroingSnapshot) -> egui::Color32 {
-    if snapshot.eqep2_error_flags.unwrap_or_default() != 0
-        || snapshot.npe_last_error_flags.unwrap_or_default() != 0
-    {
-        theme::RED
     } else {
         theme::TEXT_DEFAULT
     }

@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use crate::source::DeviceStatus;
 
-pub(crate) const ABZ_ZEROING_READ_PERIOD: Duration = Duration::from_millis(250);
+pub(crate) const ABZ_ZEROING_READ_PERIOD: Duration = Duration::from_secs(1);
 pub(crate) const ABZ_ZEROING_STATUS_READ_PERIOD: Duration = Duration::from_secs(1);
 pub(crate) const ABZ_ZEROING_STATUS_READ_NAMES: &[&str] = &["v2k_abz_zeroing.ready"];
 pub(crate) const ABZ_ZEROING_READ_NAMES: &[&str] = &[
@@ -85,16 +85,6 @@ impl AbzZeroingSnapshot {
         }
 
         if self.ready == Some(0) && matches!(self.state, Some(0) | None) {
-            if self.eqep2_error_flags.unwrap_or_default() != 0
-                || self.npe_error_resets.unwrap_or_default() != 0
-                || self.npe_last_error_flags.unwrap_or_default() != 0
-            {
-                return AbzZeroingHealth {
-                    level: AbzZeroingHealthLevel::Error,
-                    label: "eQEP Error",
-                    detail: "The passive ABZ observer is seeing eQEP error flags.",
-                };
-            }
             if self.npe_dir_resets.unwrap_or_default() != 0 {
                 return AbzZeroingHealth {
                     level: AbzZeroingHealthLevel::Error,
@@ -340,6 +330,18 @@ mod tests {
         };
         assert_eq!(required.health().level, AbzZeroingHealthLevel::Warning);
         assert_eq!(required.health().label, "Waiting for Z");
+
+        let eqep_error = AbzZeroingSnapshot {
+            ready: Some(0),
+            state: Some(0),
+            result: Some(0),
+            eqep2_error_flags: Some(0xFFFF),
+            npe_error_resets: Some(1),
+            npe_last_error_flags: Some(0xFFFF),
+            ..AbzZeroingSnapshot::default()
+        };
+        assert_eq!(eqep_error.health().level, AbzZeroingHealthLevel::Warning);
+        assert_eq!(eqep_error.health().label, "Waiting for Z");
 
         let failed = AbzZeroingSnapshot {
             ready: Some(0),
