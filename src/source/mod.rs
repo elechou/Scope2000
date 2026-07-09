@@ -492,6 +492,7 @@ pub enum SourceCommand {
     },
     SystemCommand(SystemCommand),
     CalibrationCommand(CalibrationCommand),
+    SrmOpenLoopAbz,
     #[cfg(test)]
     AbzZeroing,
 }
@@ -529,6 +530,12 @@ pub enum SourceEvent {
         command: CalibrationCommand,
         message: String,
     },
+    SrmOpenLoopAbzAccepted {
+        sequence: u32,
+    },
+    SrmOpenLoopAbzCommandFailed {
+        message: String,
+    },
     #[cfg(test)]
     AbzZeroingAccepted {
         sequence: u32,
@@ -562,6 +569,9 @@ pub enum SourceEvent {
     PushFrameGap {
         expected: u16,
         received: u16,
+    },
+    ValueReadFailed {
+        message: String,
     },
     DeviceChanged {
         old_hash: u32,

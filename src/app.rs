@@ -21,8 +21,8 @@ use crate::wave::{PLOT_MAX_POINTS, WaveState, pane::PaneKind};
 
 use self::state::{
     AbzZeroingState, AppConfig, CalibrationState, HardwareState, ProjectCandidate, ProjectContext,
-    UiState, UpdateCheckState, UpdateCheckStatus, ViewportState, WorkspaceAutosaveState,
-    WorkspaceState, WorkspaceStore,
+    SrmOpenLoopState, UiState, UpdateCheckState, UpdateCheckStatus, ViewportState,
+    WorkspaceAutosaveState, WorkspaceState, WorkspaceStore,
 };
 
 const WATCH_READ_PERIOD: Duration = Duration::from_secs(1);
@@ -34,6 +34,7 @@ pub(in crate::app) const LOCAL_METADATA_REFRESH_PERIOD: Duration = Duration::fro
 pub struct ScopeApp {
     hardware: HardwareState,
     abz_zeroing: AbzZeroingState,
+    srm_open_loop: SrmOpenLoopState,
     calibration: CalibrationState,
     source: SourceHandle,
     inspector: InspectorState,
@@ -97,6 +98,7 @@ impl ScopeApp {
         let mut app = Self {
             hardware,
             abz_zeroing: AbzZeroingState::new(),
+            srm_open_loop: SrmOpenLoopState::new(),
             calibration: CalibrationState::new(),
             source: Box::new(V2kSource).spawn(),
             inspector: InspectorState::default(),
@@ -514,6 +516,7 @@ impl eframe::App for ScopeApp {
         self.poll_dc_voltage_reads();
         self.poll_current_sensor_calibration_reads();
         self.poll_abz_zeroing_reads();
+        self.poll_srm_open_loop_reads();
         if self.hardware.connected {
             ui.ctx().request_repaint_after(Duration::from_millis(16));
         }
@@ -562,6 +565,7 @@ impl eframe::App for ScopeApp {
         let calibration_snapshot = self.current_sensor_calibration_snapshot();
         let dc_voltage_snapshot = self.dc_voltage_snapshot();
         let abz_zeroing_snapshot = self.abz_zeroing_snapshot();
+        let srm_open_loop_snapshot = self.srm_open_loop_snapshot();
         if let Some(action) = crate::ui::status_bar::show(
             ui,
             &mut self.hardware,
@@ -570,6 +574,7 @@ impl eframe::App for ScopeApp {
             dc_voltage_snapshot,
             calibration_snapshot,
             abz_zeroing_snapshot,
+            srm_open_loop_snapshot,
         ) {
             use crate::ui::status_bar::StatusBarAction;
             match action {
@@ -585,7 +590,21 @@ impl eframe::App for ScopeApp {
             calibration_snapshot,
             &mut self.ui,
         );
-        crate::ui::abz_zeroing::show(ui, &mut self.ui, abz_zeroing_snapshot);
+        let srm_open_loop_gate = self.srm_open_loop_gate();
+        if let Some(action) = crate::ui::abz_zeroing::show(
+            ui,
+            &mut self.ui,
+            &mut self.srm_open_loop,
+            abz_zeroing_snapshot,
+            srm_open_loop_snapshot,
+            srm_open_loop_gate,
+        ) {
+            match action {
+                crate::ui::abz_zeroing::AbzZeroingAction::RunSrmOpenLoopAbz => {
+                    self.send_srm_open_loop_abz_command();
+                }
+            }
+        }
         let calibration_gate = self.current_sensor_calibration_gate();
         if let Some(action) = crate::ui::current_sensor_calibration::show(
             ui,

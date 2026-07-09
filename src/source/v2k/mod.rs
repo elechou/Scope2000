@@ -444,6 +444,9 @@ impl Session {
             SourceCommand::CalibrationCommand(command) => {
                 self.handle_calibration_command(command, events)?;
             }
+            SourceCommand::SrmOpenLoopAbz => {
+                self.handle_srm_open_loop_abz_command(events)?;
+            }
             #[cfg(test)]
             SourceCommand::AbzZeroing => {
                 self.handle_abz_zeroing_command(events)?;
@@ -486,6 +489,35 @@ impl Session {
                     events,
                     SourceEvent::CalibrationCommandFailed {
                         command,
+                        message: error.to_string(),
+                    },
+                );
+            }
+            Err(error) => return Err(error),
+        }
+        Ok(())
+    }
+
+    fn handle_srm_open_loop_abz_command(
+        &mut self,
+        events: &mpsc::Sender<SourceEvent>,
+    ) -> Result<()> {
+        let response = self.request(
+            codec::message::SYSTEM_COMMAND,
+            &codec::srm_open_loop_abz_command_request(),
+            events,
+        )?;
+        match require_ack(&response, codec::message::SYSTEM_COMMAND) {
+            Ok(ack) => {
+                send_event(
+                    events,
+                    SourceEvent::SrmOpenLoopAbzAccepted { sequence: ack.data },
+                );
+            }
+            Err(error) if error.is::<DeviceNak>() => {
+                send_event(
+                    events,
+                    SourceEvent::SrmOpenLoopAbzCommandFailed {
                         message: error.to_string(),
                     },
                 );
@@ -561,11 +593,17 @@ impl Session {
                     && ack.echoed_type == codec::message::CAL_READ
                     && ack.status != 0
                 {
-                    return Err(DeviceNak {
-                        request_type: codec::message::CAL_READ,
-                        status: ack.status,
-                    }
-                    .into());
+                    send_event(
+                        events,
+                        SourceEvent::ValueReadFailed {
+                            message: DeviceNak {
+                                request_type: codec::message::CAL_READ,
+                                status: ack.status,
+                            }
+                            .to_string(),
+                        },
+                    );
+                    return Ok(());
                 }
                 let (read_sequence, values) = codec::parse_cal_values(&response.payload)?;
                 if values.len() != reads.len() {
@@ -1573,13 +1611,13 @@ mod tests {
     }
 
     #[test]
-    fn cal_read_nak_is_reported_as_device_nak() {
+    fn cal_read_nak_is_reported_without_session_error() {
         let response = codec::encode_frame(
             codec::message::CAL_READ | 0x80,
             1,
             &nak_payload(codec::message::CAL_READ, 5),
         );
-        let (event_tx, _event_rx) = mpsc::channel();
+        let (event_tx, event_rx) = mpsc::channel();
         let mut session = session(vec![response], device_info(0, 1, CAP_ENUM));
         let command = SourceCommand::Catalog {
             build_hash: 0,
@@ -1592,10 +1630,16 @@ mod tests {
             }]),
         };
 
-        let error = session
+        session
             .handle_command(command, &event_tx)
-            .expect_err("CAL_READ NAK surfaces as an error");
-        assert!(error.is::<DeviceNak>());
+            .expect("CAL_READ NAK is session-local");
+
+        let SourceEvent::ValueReadFailed { message } =
+            event_rx.recv().expect("value read failure event")
+        else {
+            panic!("expected value read failure event");
+        };
+        assert!(message.contains("internal error"), "{message}");
     }
 
     #[test]
@@ -1848,6 +1892,28 @@ mod tests {
     }
 
     #[test]
+    fn srm_open_loop_abz_ack_data_is_emitted_as_sequence() {
+        let response = codec::encode_frame(
+            codec::message::SYSTEM_COMMAND | 0x80,
+            1,
+            &ack_payload(codec::message::SYSTEM_COMMAND, 88),
+        );
+        let (event_tx, event_rx) = mpsc::channel();
+        let mut session = session(vec![response], device_info(0, 0, 0));
+
+        session
+            .handle_command(SourceCommand::SrmOpenLoopAbz, &event_tx)
+            .expect("SRM open-loop accepted");
+
+        let SourceEvent::SrmOpenLoopAbzAccepted { sequence } =
+            event_rx.recv().expect("SRM open-loop accepted event")
+        else {
+            panic!("expected SRM open-loop accepted event");
+        };
+        assert_eq!(sequence, 88);
+    }
+
+    #[test]
     fn calibration_measure_ack_data_is_emitted_as_sequence() {
         let response = codec::encode_frame(
             codec::message::SYSTEM_COMMAND | 0x80,
@@ -1963,6 +2029,28 @@ mod tests {
             event_rx.recv().expect("ABZ zeroing failure event")
         else {
             panic!("expected ABZ zeroing failure event");
+        };
+        assert!(message.contains("bad state"), "{message}");
+    }
+
+    #[test]
+    fn srm_open_loop_abz_nak_is_reported_without_session_error() {
+        let response = codec::encode_frame(
+            codec::message::SYSTEM_COMMAND | 0x80,
+            1,
+            &nak_payload(codec::message::SYSTEM_COMMAND, 3),
+        );
+        let (event_tx, event_rx) = mpsc::channel();
+        let mut session = session(vec![response], device_info(0, 0, 0));
+
+        session
+            .handle_command(SourceCommand::SrmOpenLoopAbz, &event_tx)
+            .expect("SRM open-loop NAK is session-local");
+
+        let SourceEvent::SrmOpenLoopAbzCommandFailed { message } =
+            event_rx.recv().expect("SRM open-loop failure event")
+        else {
+            panic!("expected SRM open-loop failure event");
         };
         assert!(message.contains("bad state"), "{message}");
     }

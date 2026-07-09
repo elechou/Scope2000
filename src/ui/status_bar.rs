@@ -2,7 +2,7 @@ use eframe::egui;
 
 use crate::app::state::{
     AbzZeroingHealthLevel, AbzZeroingSnapshot, CalibrationHealthLevel, CalibrationSnapshot,
-    DcVoltageSnapshot, HardwareState, UiState,
+    DcVoltageSnapshot, HardwareState, SrmOpenLoopHealthLevel, SrmOpenLoopSnapshot, UiState,
 };
 use crate::console::{LogBuffer, LogLevel};
 use crate::theme;
@@ -22,6 +22,7 @@ pub fn show(
     dc_voltage: DcVoltageSnapshot,
     calibration: CalibrationSnapshot,
     abz_zeroing: Option<AbzZeroingSnapshot>,
+    srm_open_loop: Option<SrmOpenLoopSnapshot>,
 ) -> Option<StatusBarAction> {
     // Auto-dismiss promoted status messages after 5 seconds.
     if let Some(ref msg) = log.status_message
@@ -143,12 +144,21 @@ pub fn show(
                     if hardware.connected {
                         if let Some(snapshot) = abz_zeroing {
                             let health = snapshot.health();
-                            let color = match health.level {
+                            let srm_health =
+                                srm_open_loop.and_then(SrmOpenLoopSnapshot::status_health);
+                            let level = srm_health
+                                .map(|health| match health.level {
+                                    SrmOpenLoopHealthLevel::Warning => {
+                                        AbzZeroingHealthLevel::Warning
+                                    }
+                                })
+                                .unwrap_or(health.level);
+                            let color = match level {
                                 AbzZeroingHealthLevel::Normal => theme::TEXT_SUBDUED,
                                 AbzZeroingHealthLevel::Warning => theme::YELLOW,
                                 AbzZeroingHealthLevel::Error => theme::RED,
                             };
-                            let text = if health.level == AbzZeroingHealthLevel::Normal {
+                            let text = if level == AbzZeroingHealthLevel::Normal {
                                 "ABZ Zeroing"
                             } else {
                                 "⚠ ABZ Zeroing"
@@ -160,7 +170,15 @@ pub fn show(
                             if status.clicked() {
                                 ui_state.show_abz_zeroing = !ui_state.show_abz_zeroing;
                             }
-                            status.on_hover_text(format!("{}\n{}", health.label, health.detail));
+                            if let Some(srm_health) = srm_health {
+                                status.on_hover_text(format!(
+                                    "{}\n{}",
+                                    srm_health.label, srm_health.detail
+                                ));
+                            } else {
+                                status
+                                    .on_hover_text(format!("{}\n{}", health.label, health.detail));
+                            }
                             ui.separator();
                         }
 

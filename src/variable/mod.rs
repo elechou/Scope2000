@@ -141,6 +141,16 @@ impl InspectorState {
             .and_then(|index| self.values.get(index).copied().flatten())
     }
 
+    pub fn clear_values_by_name<'a>(&mut self, names: impl IntoIterator<Item = &'a str>) {
+        for name in names {
+            if let Some(index) = self.index_by_name(name)
+                && let Some(slot) = self.values.get_mut(index)
+            {
+                *slot = None;
+            }
+        }
+    }
+
     pub fn update_values(&mut self, indexes: &[usize], values: Vec<u32>) {
         for (&index, bits) in indexes.iter().zip(values.into_iter()) {
             let Some(descriptor) = self.descriptors.get(index) else {
@@ -638,5 +648,16 @@ mod tests {
         state.set_descriptors(vec![descriptor("a")]);
         assert_eq!(state.pinned, vec![0]);
         assert!(state.watch_vars.is_empty());
+    }
+
+    #[test]
+    fn clear_values_by_name_drops_only_named_values() {
+        let mut state = InspectorState::default();
+        state.set_descriptors(vec![descriptor("a"), descriptor("b"), descriptor("c")]);
+        state.values = vec![Some(1.0), Some(2.0), Some(3.0)];
+
+        state.clear_values_by_name(["b", "missing"]);
+
+        assert_eq!(state.values, vec![Some(1.0), None, Some(3.0)]);
     }
 }

@@ -1,0 +1,6 @@
+# vector: cmd_srm_open_loop_abz
+# CMD: SRM_OPEN_LOOP_ABZ, TECHNO2026 temporary RUNNING-only powered SRM ABZ requalification
+# raw  = frame before COBS (ver|type|flags|seq|len|payload|crc32c, all LE)
+# wire = COBS(raw) + 0x00 delimiter, the actual SCI-link octets
+raw: 5a3000110008000700000000000000c0bc833f
+wire: 035a3002110208020701010101010105c0bc833f00

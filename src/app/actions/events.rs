@@ -1,7 +1,10 @@
 use std::{cmp::Ordering, time::Instant};
 
 use crate::app::ScopeApp;
-use crate::app::state::{AbzZeroingCommandResult, CalibrationCommandResult};
+use crate::app::state::{
+    AbzZeroingCommandResult, CalibrationCommandResult, SrmOpenLoopCommandResult, SrmOpenLoopPhase,
+    srm_open_loop_result_label,
+};
 use crate::console::LogLevel;
 use crate::source::{
     CatalogCommand, DeviceStatus, ScopeBlock, ScopeMode, SourceEvent, SystemCommand, SystemState,
@@ -47,6 +50,7 @@ impl ScopeApp {
                     self.hardware.performance.set_available(true);
                     self.calibration.reset_session();
                     self.abz_zeroing.reset_session();
+                    self.srm_open_loop.reset_session();
                     self.next_dc_voltage_read = Instant::now();
                     self.handle_firmware_project();
                 }
@@ -59,6 +63,7 @@ impl ScopeApp {
                     self.hardware.clear_system_command_state();
                     self.calibration.reset_session();
                     self.abz_zeroing.reset_session();
+                    self.srm_open_loop.reset_session();
                     self.next_dc_voltage_read = Instant::now();
                     self.wave.active = false;
                     self.wave.restart_pending = None;
@@ -88,6 +93,7 @@ impl ScopeApp {
                     self.next_dc_voltage_read = Instant::now();
                     self.calibration.next_read = Instant::now();
                     self.abz_zeroing.next_read = Instant::now();
+                    self.srm_open_loop.next_read = Instant::now();
                 }
                 SourceEvent::Status(status) => {
                     let now = Instant::now();
@@ -115,6 +121,7 @@ impl ScopeApp {
                         self.hardware.clear_system_command_state();
                         self.calibration.reset_session();
                         self.abz_zeroing.reset_session();
+                        self.srm_open_loop.reset_session();
                         self.wave.active = false;
                         self.wave.restart_pending = None;
                         self.log.push(
@@ -145,6 +152,7 @@ impl ScopeApp {
                         previous_state,
                         status.system_state,
                         pending_system_start,
+                        self.srm_open_loop.phase == SrmOpenLoopPhase::StartingSystem,
                         &self.wave,
                     );
                     let entered_running =
@@ -175,6 +183,38 @@ impl ScopeApp {
                                 "Start refused: Current Zeroing is not trusted.".to_owned(),
                             );
                         }
+                        if completed.command == SystemCommand::Start
+                            && self.srm_open_loop.phase == SrmOpenLoopPhase::StartingSystem
+                        {
+                            if completed.result == 0 {
+                                self.send_srm_open_loop_abz_wire_command();
+                            } else {
+                                let result = self.srm_open_loop.fail(format!(
+                                    "Viewer2000 Start completed {}",
+                                    command_result_text(completed.result)
+                                ));
+                                log_srm_open_loop_result(&result, &mut self.log);
+                            }
+                        }
+                        if completed.command == SystemCommand::Stop
+                            && self.srm_open_loop.phase == SrmOpenLoopPhase::StoppingSystem
+                        {
+                            self.srm_open_loop.finish_stop();
+                            self.log.push(
+                                LogLevel::Notice,
+                                "SRM Open-loop ABZ workflow stopped Viewer2000".to_owned(),
+                            );
+                        } else if completed.command == SystemCommand::Stop
+                            && self.srm_open_loop.active()
+                        {
+                            if let Some(result) = self.srm_open_loop.fail_and_stop(
+                                "Viewer2000 Stop completed before ABZ requalification finished"
+                                    .to_owned(),
+                            ) {
+                                log_srm_open_loop_result(&result, &mut self.log);
+                            }
+                            self.srm_open_loop.finish_stop();
+                        }
                     }
                     if let Some(expired) = self.hardware.expire_pending_system_command(now) {
                         match expired.sequence {
@@ -193,6 +233,22 @@ impl ScopeApp {
                                 ),
                             ),
                         }
+                        if expired.command == SystemCommand::Start
+                            && self.srm_open_loop.phase == SrmOpenLoopPhase::StartingSystem
+                        {
+                            let result = self
+                                .srm_open_loop
+                                .fail("Viewer2000 Start timed out".to_owned());
+                            log_srm_open_loop_result(&result, &mut self.log);
+                        } else if expired.command == SystemCommand::Stop
+                            && self.srm_open_loop.phase == SrmOpenLoopPhase::StoppingSystem
+                        {
+                            self.srm_open_loop.finish_stop();
+                            self.log.push(
+                                LogLevel::Warn,
+                                "SRM Open-loop ABZ released workflow after Stop timeout".to_owned(),
+                            );
+                        }
                     }
                     if let Some(result) = completed_calibration {
                         log_calibration_result(&result, &mut self.log);
@@ -201,6 +257,11 @@ impl ScopeApp {
                     if let Some(result) = completed_abz_zeroing {
                         log_abz_zeroing_result(&result, &mut self.log);
                         self.abz_zeroing.next_read = Instant::now();
+                    }
+                    if let Some(result) = self.srm_open_loop.expire_pending(now) {
+                        log_srm_open_loop_result(&result, &mut self.log);
+                        self.srm_open_loop.next_read = Instant::now();
+                        self.send_srm_workflow_stop();
                     }
                     if stop_wave {
                         self.stop_acquisition();
@@ -237,10 +298,15 @@ impl ScopeApp {
                     values,
                 } => {
                     self.inspector.update_values(&indexes, values);
+                    self.handle_srm_open_loop_catalog_progress();
                     self.log.push(
                         LogLevel::Debug,
                         format!("Value read sequence {read_sequence}"),
                     );
+                }
+                SourceEvent::ValueReadFailed { message } => {
+                    self.log
+                        .push(LogLevel::Warn, format!("Value read failed: {message}"));
                 }
                 SourceEvent::ChannelsBound { bind_sequence } => {
                     self.wave.binding = std::mem::take(&mut self.wave.pending_binding);
@@ -297,6 +363,30 @@ impl ScopeApp {
                     let result = self.calibration.fail(command, message);
                     log_calibration_result(&result, &mut self.log);
                     self.calibration.next_read = Instant::now();
+                }
+                SourceEvent::SrmOpenLoopAbzAccepted { sequence } => {
+                    if self.srm_open_loop.accept(sequence, Instant::now()) {
+                        self.log.push(
+                            LogLevel::Info,
+                            format!("SRM Open-loop ABZ accepted as sequence {sequence}"),
+                        );
+                    } else {
+                        self.log.push(
+                            LogLevel::Warn,
+                            format!(
+                                "Ignored SRM Open-loop ABZ ACK sequence {sequence} without matching pending command"
+                            ),
+                        );
+                    }
+                    self.srm_open_loop.next_read = Instant::now();
+                    self.abz_zeroing.next_read = Instant::now();
+                }
+                SourceEvent::SrmOpenLoopAbzCommandFailed { message } => {
+                    if let Some(result) = self.srm_open_loop.fail_and_stop(message) {
+                        log_srm_open_loop_result(&result, &mut self.log);
+                        self.send_srm_workflow_stop();
+                    }
+                    self.srm_open_loop.next_read = Instant::now();
                 }
                 #[cfg(test)]
                 SourceEvent::AbzZeroingAccepted { sequence } => {
@@ -432,6 +522,7 @@ impl ScopeApp {
                     self.hardware.clear_system_command_state();
                     self.calibration.reset_session();
                     self.abz_zeroing.reset_session();
+                    self.srm_open_loop.reset_session();
                     self.next_dc_voltage_read = Instant::now();
                     self.hardware.device_summary = self.hardware.device_summary_text();
                     self.workspace_watch_restored = false;
@@ -453,10 +544,56 @@ impl ScopeApp {
                     if let Some(result) = self.abz_zeroing.fail_pending(error.clone()) {
                         log_abz_zeroing_result(&result, &mut self.log);
                     }
+                    if let Some(result) = self.srm_open_loop.fail_pending(error.clone()) {
+                        log_srm_open_loop_result(&result, &mut self.log);
+                    }
                     self.log.push(LogLevel::Error, error);
                 }
                 SourceEvent::Log(message) => self.log.push(LogLevel::Info, message),
             }
+        }
+    }
+
+    fn handle_srm_open_loop_catalog_progress(&mut self) {
+        if self
+            .abz_zeroing_snapshot()
+            .is_some_and(|snapshot| snapshot.ready())
+        {
+            let Some(result) = self.srm_open_loop.complete_when_abz_ready() else {
+                return;
+            };
+            log_srm_open_loop_result(&result, &mut self.log);
+            self.srm_open_loop.next_read = Instant::now();
+            self.abz_zeroing.next_read = Instant::now();
+            self.send_srm_workflow_stop();
+            return;
+        }
+
+        let Some(snapshot) = self.srm_open_loop_snapshot() else {
+            return;
+        };
+        let Some(result) = self
+            .srm_open_loop
+            .fail_if_open_loop_ended_before_abz_ready(snapshot)
+        else {
+            return;
+        };
+        log_srm_open_loop_result(&result, &mut self.log);
+        self.srm_open_loop.next_read = Instant::now();
+        self.abz_zeroing.next_read = Instant::now();
+        self.send_srm_workflow_stop();
+    }
+
+    fn send_srm_workflow_stop(&mut self) {
+        if !self.hardware.is_running() {
+            self.srm_open_loop.finish_stop();
+            return;
+        }
+        if !self.send_system_command(SystemCommand::Stop) {
+            self.log.push(
+                LogLevel::Warn,
+                "SRM Open-loop ABZ could not send Viewer2000 Stop".to_owned(),
+            );
         }
     }
 }
@@ -513,6 +650,45 @@ fn log_abz_zeroing_result(result: &AbzZeroingCommandResult, log: &mut crate::con
     }
 }
 
+fn log_srm_open_loop_result(
+    result: &SrmOpenLoopCommandResult,
+    log: &mut crate::console::LogBuffer,
+) {
+    match result {
+        SrmOpenLoopCommandResult::Completed { sequence, result } => {
+            let text = srm_open_loop_result_label(Some(*result));
+            let level = if *result == 1 {
+                LogLevel::Notice
+            } else {
+                LogLevel::Warn
+            };
+            let seq = sequence.map_or("-".to_owned(), |sequence| sequence.to_string());
+            log.push(
+                level,
+                format!("SRM Open-loop ABZ workflow completed {text} as command sequence {seq}"),
+            );
+        }
+        SrmOpenLoopCommandResult::Failed { message } => {
+            log.push(
+                LogLevel::Warn,
+                format!("SRM Open-loop ABZ request failed: {message}"),
+            );
+        }
+        SrmOpenLoopCommandResult::Expired { sequence } => match sequence {
+            Some(sequence) => log.push(
+                LogLevel::Warn,
+                format!(
+                    "SRM Open-loop ABZ request pending seq {sequence} timed out; released host command state"
+                ),
+            ),
+            None => log.push(
+                LogLevel::Warn,
+                "SRM Open-loop ABZ request send timed out; released host command state".to_owned(),
+            ),
+        },
+    }
+}
+
 fn block_matches_binding(bind_sequence: Option<u16>, block_bind_sequence: u16) -> bool {
     bind_sequence == Some(block_bind_sequence)
 }
@@ -536,10 +712,12 @@ fn should_capture_on_system_start(
     previous_state: Option<SystemState>,
     current_state: SystemState,
     pending_system_start: bool,
+    suppress_for_srm_open_loop: bool,
     wave: &WaveState,
 ) -> bool {
     control.capture_on_system_start
         && pending_system_start
+        && !suppress_for_srm_open_loop
         && system_started_transition(previous_state, current_state)
         && !wave_has_active_or_pending_stop_target(wave)
 }
@@ -852,6 +1030,7 @@ mod tests {
             Some(SystemState::Idle),
             SystemState::Running,
             true,
+            false,
             &WaveState::default()
         ));
 
@@ -859,6 +1038,7 @@ mod tests {
             &control,
             Some(SystemState::Idle),
             SystemState::Running,
+            false,
             false,
             &WaveState::default()
         ));
@@ -872,6 +1052,16 @@ mod tests {
             Some(SystemState::Idle),
             SystemState::Running,
             true,
+            false,
+            &WaveState::default()
+        ));
+
+        assert!(!should_capture_on_system_start(
+            &control,
+            Some(SystemState::Idle),
+            SystemState::Running,
+            true,
+            true,
             &WaveState::default()
         ));
 
@@ -884,6 +1074,7 @@ mod tests {
             Some(SystemState::Idle),
             SystemState::Running,
             true,
+            false,
             &active
         ));
     }

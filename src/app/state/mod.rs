@@ -6,6 +6,8 @@ mod calibration_state;
 mod hardware_state;
 #[path = "project_state.rs"]
 mod project_state;
+#[path = "srm_open_loop_state.rs"]
+mod srm_open_loop_state;
 #[path = "status_snapshot_state.rs"]
 mod status_snapshot_state;
 #[path = "ui_state.rs"]
@@ -36,6 +38,12 @@ pub(crate) use self::{
         LocalBuildScan, LocalProject, MutationPolicy, PROJECT_MANAGER_SPLIT_DEFAULT,
         ProjectBinding, ProjectCandidate, ProjectContext, ProjectStatus, UNTITLED_PROJECT,
         UnresolvedRefs, WorkspaceStore, refresh_local_build, scan_project_directory,
+    },
+    srm_open_loop_state::{
+        SRM_OPEN_LOOP_READ_NAMES, SRM_OPEN_LOOP_READ_PERIOD, SRM_OPEN_LOOP_STATUS_READ_NAMES,
+        SRM_OPEN_LOOP_STATUS_READ_PERIOD, SrmOpenLoopCommandResult, SrmOpenLoopGate,
+        SrmOpenLoopHealthLevel, SrmOpenLoopPhase, SrmOpenLoopSnapshot, SrmOpenLoopState,
+        srm_open_loop_result_label,
     },
     status_snapshot_state::DcVoltageSnapshot,
     ui_state::{UiState, VARMAP_SPLIT_DEFAULT},

@@ -6,6 +6,8 @@ use crate::app::state::{
     ABZ_ZEROING_STATUS_READ_PERIOD, AbzZeroingSnapshot, CALIBRATION_READ_NAMES,
     CALIBRATION_READ_PERIOD, CALIBRATION_STATUS_READ_NAMES, CALIBRATION_STATUS_READ_PERIOD,
     CalibrationGate, CalibrationGateInput, CalibrationSnapshot, DcVoltageSnapshot,
+    SRM_OPEN_LOOP_READ_NAMES, SRM_OPEN_LOOP_READ_PERIOD, SRM_OPEN_LOOP_STATUS_READ_NAMES,
+    SRM_OPEN_LOOP_STATUS_READ_PERIOD, SrmOpenLoopGate, SrmOpenLoopPhase, SrmOpenLoopSnapshot,
     calibration_gate,
 };
 use crate::console::LogLevel;
@@ -34,27 +36,28 @@ impl ScopeApp {
         });
     }
 
-    pub(in crate::app) fn send_system_command(&mut self, command: SystemCommand) {
+    pub(in crate::app) fn send_system_command(&mut self, command: SystemCommand) -> bool {
         if self.hardware.pending_system_command.is_some() {
             self.log.push(
                 LogLevel::Warn,
                 "A system command is already pending".to_owned(),
             );
-            return;
+            return false;
         }
         if !self.hardware.connected {
             self.log.push(LogLevel::Warn, "Not connected".to_owned());
-            return;
+            return false;
         }
         if !self.has_capability(CAP_SYSTEM_CMD) {
             self.log.push(
                 LogLevel::Warn,
                 "SYSTEM_CMD capability is not available".to_owned(),
             );
-            return;
+            return false;
         }
         self.hardware.begin_system_command(command, Instant::now());
         self.send(SourceCommand::SystemCommand(command));
+        true
     }
 
     pub(in crate::app) fn current_sensor_calibration_gate(&self) -> CalibrationGate {
@@ -111,6 +114,7 @@ impl ScopeApp {
         self.hardware.performance.clear();
         self.hardware.clear_system_command_state();
         self.abz_zeroing.reset_session();
+        self.srm_open_loop.reset_session();
         self.next_dc_voltage_read = Instant::now();
         self.send(SourceCommand::Connect(endpoint));
     }
@@ -207,7 +211,11 @@ impl ScopeApp {
         {
             return;
         }
-        if !self.ui.show_abz_zeroing && self.catalog_value_u16("v2k_abz_zeroing.ready") == Some(1) {
+        let active = self.srm_open_loop.active();
+        if !self.ui.show_abz_zeroing
+            && !active
+            && self.catalog_value_u16("v2k_abz_zeroing.ready") == Some(1)
+        {
             return;
         }
 
@@ -216,7 +224,7 @@ impl ScopeApp {
             return;
         }
 
-        let names = if self.ui.show_abz_zeroing {
+        let names = if self.ui.show_abz_zeroing || active {
             ABZ_ZEROING_READ_NAMES
         } else {
             ABZ_ZEROING_STATUS_READ_NAMES
@@ -235,12 +243,48 @@ impl ScopeApp {
         if !reads.is_empty() {
             self.send_catalog(CatalogCommand::ReadValues(reads));
         }
-        let period = if self.ui.show_abz_zeroing {
+        let period = if self.ui.show_abz_zeroing || active {
             ABZ_ZEROING_READ_PERIOD
         } else {
             ABZ_ZEROING_STATUS_READ_PERIOD
         };
         self.abz_zeroing.next_read = now + period;
+    }
+
+    pub(in crate::app) fn poll_srm_open_loop_reads(&mut self) {
+        if !self.hardware.connected
+            || !self.descriptor_catalog_ready
+            || !self.has_capability(CAP_CAL)
+            || !self.has_capability(CAP_ABZ_ZEROING)
+            || !self.srm_open_loop_descriptors_present()
+        {
+            return;
+        }
+
+        let now = Instant::now();
+        if now < self.srm_open_loop.next_read {
+            return;
+        }
+
+        let active = self.srm_open_loop.active()
+            || self
+                .srm_open_loop_snapshot()
+                .is_some_and(SrmOpenLoopSnapshot::running);
+        let names = if self.ui.show_abz_zeroing || active {
+            SRM_OPEN_LOOP_READ_NAMES
+        } else {
+            SRM_OPEN_LOOP_STATUS_READ_NAMES
+        };
+        let reads = self.catalog_reads_by_name(names);
+        if !reads.is_empty() {
+            self.send_catalog(CatalogCommand::ReadValues(reads));
+        }
+        let period = if self.ui.show_abz_zeroing || active {
+            SRM_OPEN_LOOP_READ_PERIOD
+        } else {
+            SRM_OPEN_LOOP_STATUS_READ_PERIOD
+        };
+        self.srm_open_loop.next_read = now + period;
     }
 
     pub(in crate::app) fn current_sensor_calibration_snapshot(&self) -> CalibrationSnapshot {
@@ -289,6 +333,103 @@ impl ScopeApp {
                 npe_last_error_flags: self
                     .catalog_value_u32("v2k_abz_zeroing.npe.last_error_flags"),
             })
+    }
+
+    pub(in crate::app) fn srm_open_loop_snapshot(&self) -> Option<SrmOpenLoopSnapshot> {
+        self.srm_open_loop_descriptors_present()
+            .then(|| SrmOpenLoopSnapshot {
+                state: self.catalog_value_u16("v2k_srm_open_loop.state"),
+                result: self.catalog_value_u16("v2k_srm_open_loop.result"),
+                dc_v: self.catalog_value_f64("v2k_srm_open_loop.dc_v"),
+                peak_duty: self.catalog_value_f64("v2k_srm_open_loop.peak_duty"),
+                ticks: self.catalog_value_u32("v2k_srm_open_loop.ticks"),
+                eqep_errors: self.catalog_value_u32("v2k_srm_open_loop.eqep_errors"),
+            })
+    }
+
+    pub(in crate::app) fn srm_open_loop_gate(&self) -> SrmOpenLoopGate {
+        let reason = if !self.hardware.connected {
+            Some("Not connected")
+        } else if !self.descriptor_catalog_ready {
+            Some("Descriptor catalog is not ready")
+        } else if !self.has_capability(CAP_SYSTEM_CMD) {
+            Some("SYSTEM_CMD capability is not available")
+        } else if !self.has_capability(CAP_CAL) {
+            Some("CAL capability is not available")
+        } else if !self.has_capability(CAP_ABZ_ZEROING) {
+            Some("ABZ_ZEROING capability is not available")
+        } else if !self.srm_open_loop_descriptors_present() {
+            Some("SRM Open-loop ABZ diagnostics are not available")
+        } else if !self.project_policy().system_start {
+            Some("System Start blocked by project safety state")
+        } else if let Some(reason) = self.zeroing_start_block_reason() {
+            Some(reason)
+        } else if self.hardware.pending_system_command.is_some() {
+            Some("A system command is pending")
+        } else if self.srm_open_loop.active() {
+            Some("SRM Open-loop ABZ workflow is active")
+        } else if self
+            .srm_open_loop_snapshot()
+            .is_some_and(SrmOpenLoopSnapshot::running)
+        {
+            Some("SRM Open-loop ABZ is already running")
+        } else if !matches!(
+            self.hardware
+                .status
+                .as_ref()
+                .map(|status| status.system_state),
+            Some(crate::source::SystemState::Idle)
+        ) {
+            Some("Viewer2000 must be IDLE")
+        } else {
+            None
+        };
+        SrmOpenLoopGate {
+            can_run: reason.is_none(),
+            reason,
+        }
+    }
+
+    pub(in crate::app) fn send_srm_open_loop_abz_command(&mut self) {
+        let gate = self.srm_open_loop_gate();
+        if !gate.can_run {
+            self.log.push(
+                LogLevel::Warn,
+                gate.reason
+                    .unwrap_or("SRM Open-loop ABZ command is not available")
+                    .to_owned(),
+            );
+            return;
+        }
+
+        self.srm_open_loop.begin_workflow();
+        if self.send_system_command(SystemCommand::Start) {
+            self.log.push(
+                LogLevel::Info,
+                "SRM Open-loop ABZ workflow started: waiting for Viewer2000 Start".to_owned(),
+            );
+        } else {
+            self.srm_open_loop
+                .fail("Start command could not be sent".to_owned());
+            self.log.push(
+                LogLevel::Warn,
+                "SRM Open-loop ABZ workflow failed: Start command could not be sent".to_owned(),
+            );
+        }
+    }
+
+    pub(in crate::app) fn send_srm_open_loop_abz_wire_command(&mut self) {
+        if self.srm_open_loop.phase != SrmOpenLoopPhase::StartingSystem {
+            return;
+        }
+        self.clear_srm_open_loop_cached_values();
+        self.clear_abz_zeroing_cached_values();
+        self.srm_open_loop.begin_open_loop_command(Instant::now());
+        self.send(SourceCommand::SrmOpenLoopAbz);
+        self.log.push(
+            LogLevel::Info,
+            "SRM Open-loop ABZ command sent; waiting for ABZ Zeroing ready".to_owned(),
+        );
     }
 
     pub(in crate::app) fn zeroing_start_ready(&self) -> bool {
@@ -657,6 +798,20 @@ impl ScopeApp {
             .collect()
     }
 
+    fn catalog_reads_by_name(&self, names: &[&str]) -> Vec<ValueRead> {
+        names
+            .iter()
+            .filter_map(|name| {
+                let descriptor_index = self.inspector.index_by_name(name)?;
+                let descriptor = self.inspector.descriptors.get(descriptor_index)?;
+                Some(ValueRead {
+                    descriptor_index,
+                    var: descriptor.var,
+                })
+            })
+            .collect()
+    }
+
     fn dc_voltage_descriptor_index(&self, channel: u8) -> Option<usize> {
         for name in dc_voltage_candidate_names(channel) {
             if let Some(index) = self.inspector.index_by_name(name) {
@@ -679,6 +834,28 @@ impl ScopeApp {
             .value_by_name(name)
             .filter(|value| value.is_finite() && *value >= 0.0)
             .map(|value| value as u32)
+    }
+
+    fn catalog_value_f64(&self, name: &str) -> Option<f64> {
+        self.inspector
+            .value_by_name(name)
+            .filter(|value| value.is_finite())
+    }
+
+    fn srm_open_loop_descriptors_present(&self) -> bool {
+        SRM_OPEN_LOOP_READ_NAMES
+            .iter()
+            .all(|name| self.inspector.index_by_name(name).is_some())
+    }
+
+    fn clear_srm_open_loop_cached_values(&mut self) {
+        self.inspector
+            .clear_values_by_name(SRM_OPEN_LOOP_READ_NAMES.iter().copied());
+    }
+
+    fn clear_abz_zeroing_cached_values(&mut self) {
+        self.inspector
+            .clear_values_by_name(ABZ_ZEROING_READ_NAMES.iter().copied());
     }
 }
 
@@ -719,12 +896,13 @@ mod tests {
     use crate::app::ScopeApp;
     use crate::app::state::{
         AbzZeroingState, AppConfig, CalibrationState, PROJECT_MANAGER_SPLIT_DEFAULT,
-        ProjectContext, UNTITLED_PROJECT, UiState, UnresolvedRefs, UpdateCheckState,
-        WorkspaceAutosaveState, WorkspaceState,
+        ProjectContext, SrmOpenLoopPhase, SrmOpenLoopState, UNTITLED_PROJECT, UiState,
+        UnresolvedRefs, UpdateCheckState, WorkspaceAutosaveState, WorkspaceState,
     };
     use crate::source::{
-        CAP_CAL, CAP_NATIVE_BLOCK, CAP_PRE_TRIGGER, CAP_SCOPE_CAPTURE, DeviceInfo,
-        MCU_MODEL_F28379D, SourceCommand, SourceEvent, SourceHandle, VarRef, VarType,
+        CAP_ABZ_ZEROING, CAP_CAL, CAP_NATIVE_BLOCK, CAP_PRE_TRIGGER, CAP_SCOPE_CAPTURE,
+        CAP_SYSTEM_CMD, DeviceInfo, DeviceStatus, MCU_MODEL_F28379D, SourceCommand, SourceEvent,
+        SourceHandle, SystemState, VarRef, VarType,
     };
     use crate::variable::InspectorState;
     use crate::wave::csv::CsvState;
@@ -803,6 +981,7 @@ mod tests {
                 ..crate::app::state::HardwareState::default()
             },
             abz_zeroing: AbzZeroingState::new(),
+            srm_open_loop: SrmOpenLoopState::new(),
             calibration: CalibrationState::new(),
             source,
             inspector,
@@ -883,6 +1062,49 @@ mod tests {
         }
     }
 
+    fn device_status(
+        system_state: SystemState,
+        command_ack_seq: Option<u32>,
+        command_result: Option<u16>,
+    ) -> DeviceStatus {
+        DeviceStatus {
+            system_state,
+            fault_code: 0,
+            status_flags: 0,
+            tick: 1,
+            cpu1_heartbeat: 1,
+            cpu2_heartbeat: 0,
+            applied_seq: 0,
+            calibration_result: 0,
+            calibration_fail_index: 0,
+            build_hash: 0x1234_5678,
+            scope_mode: ScopeMode::Off,
+            scope_flags: 0,
+            command_ack_seq,
+            command_result,
+            performance: None,
+            scope_state_seq: 0,
+            scope_frozen_count: 0,
+            scope_trigger_tick: 0,
+            scope_bind_seq: 0,
+        }
+    }
+
+    fn srm_open_loop_descriptors() -> Vec<VarDescriptor> {
+        SRM_OPEN_LOOP_READ_NAMES
+            .iter()
+            .chain(ABZ_ZEROING_READ_NAMES.iter())
+            .map(|name| descriptor(name))
+            .collect()
+    }
+
+    fn enable_srm_open_loop(app: &mut ScopeApp, system_state: SystemState) {
+        app.hardware.info.as_mut().unwrap().capabilities |= CAP_SYSTEM_CMD | CAP_ABZ_ZEROING;
+        app.hardware.status = Some(device_status(system_state, None, None));
+        app.inspector.set_descriptors(srm_open_loop_descriptors());
+        app.inspector.values = vec![Some(0.0); srm_open_loop_descriptors().len()];
+    }
+
     #[test]
     fn start_system_allows_unready_abz_zeroing_but_keeps_current_zeroing_gate() {
         let mut harness = test_harness(None);
@@ -921,6 +1143,236 @@ mod tests {
             Some("Start requires Current Zeroing ready")
         );
         harness.app.start_system();
+        assert!(harness.commands.try_recv().is_err());
+    }
+
+    #[test]
+    fn srm_open_loop_abz_requires_idle_system_state() {
+        let mut harness = test_harness(None);
+        enable_srm_open_loop(&mut harness.app, SystemState::Running);
+
+        let gate = harness.app.srm_open_loop_gate();
+        assert!(!gate.can_run);
+        assert_eq!(gate.reason, Some("Viewer2000 must be IDLE"));
+        harness.app.send_srm_open_loop_abz_command();
+        assert!(harness.commands.try_recv().is_err());
+
+        harness.app.hardware.status = Some(device_status(SystemState::Idle, None, None));
+        assert!(harness.app.srm_open_loop_gate().can_run);
+    }
+
+    #[test]
+    fn srm_open_loop_abz_requires_diagnostic_descriptors() {
+        let mut harness = test_harness(None);
+        harness.app.hardware.info.as_mut().unwrap().capabilities |=
+            CAP_SYSTEM_CMD | CAP_ABZ_ZEROING;
+        harness.app.hardware.status = Some(device_status(SystemState::Idle, None, None));
+        harness
+            .app
+            .inspector
+            .set_descriptors(vec![descriptor("v2k_srm_open_loop.state")]);
+
+        let gate = harness.app.srm_open_loop_gate();
+        assert!(!gate.can_run);
+        assert_eq!(
+            gate.reason,
+            Some("SRM Open-loop ABZ diagnostics are not available")
+        );
+        harness.app.send_srm_open_loop_abz_command();
+        assert!(harness.commands.try_recv().is_err());
+    }
+
+    #[test]
+    fn srm_open_loop_abz_workflow_starts_viewer2000_first() {
+        let mut harness = test_harness(None);
+        enable_srm_open_loop(&mut harness.app, SystemState::Idle);
+
+        harness.app.send_srm_open_loop_abz_command();
+
+        assert!(matches!(
+            harness.commands.try_recv().unwrap(),
+            SourceCommand::SystemCommand(SystemCommand::Start)
+        ));
+        assert_eq!(
+            harness.app.srm_open_loop.phase,
+            SrmOpenLoopPhase::StartingSystem
+        );
+    }
+
+    #[test]
+    fn start_completion_sends_open_loop_command_without_marking_done() {
+        let mut harness = test_harness(None);
+        enable_srm_open_loop(&mut harness.app, SystemState::Idle);
+        let now = Instant::now();
+        harness.app.srm_open_loop.begin_workflow();
+        harness
+            .app
+            .hardware
+            .begin_system_command(SystemCommand::Start, now);
+        assert!(
+            harness
+                .app
+                .hardware
+                .accept_system_command(SystemCommand::Start, 44, now)
+        );
+
+        harness
+            .events
+            .send(SourceEvent::Status(device_status(
+                SystemState::Running,
+                Some(44),
+                Some(0),
+            )))
+            .unwrap();
+        harness.app.poll_events();
+
+        assert!(matches!(
+            harness.commands.try_recv().unwrap(),
+            SourceCommand::SrmOpenLoopAbz
+        ));
+        assert_eq!(
+            harness.app.srm_open_loop.phase,
+            SrmOpenLoopPhase::RequestingOpenLoop
+        );
+        assert!(harness.app.srm_open_loop.last_result.is_none());
+        assert!(harness.app.inspector.values.iter().all(Option::is_none));
+    }
+
+    #[test]
+    fn abz_ready_requests_stop() {
+        let mut harness = test_harness(None);
+        enable_srm_open_loop(&mut harness.app, SystemState::Running);
+        let now = Instant::now();
+        harness.app.srm_open_loop.begin_workflow();
+        harness.app.srm_open_loop.begin_open_loop_command(now);
+        assert!(harness.app.srm_open_loop.accept(55, now));
+        harness.app.inspector.values[0] = Some(1.0);
+        harness.app.inspector.values[1] = Some(0.0);
+
+        harness
+            .events
+            .send(SourceEvent::Values {
+                read_sequence: 1,
+                indexes: vec![0, 1],
+                values: vec![1.0_f32.to_bits(), 0.0_f32.to_bits()],
+            })
+            .unwrap();
+        harness.app.poll_events();
+        assert!(harness.commands.try_recv().is_err());
+
+        let abz_ready_index = SRM_OPEN_LOOP_READ_NAMES.len();
+        let abz_state_index = abz_ready_index + 1;
+        let abz_result_index = abz_ready_index + 2;
+
+        harness
+            .events
+            .send(SourceEvent::Values {
+                read_sequence: 2,
+                indexes: vec![abz_ready_index, abz_state_index, abz_result_index],
+                values: vec![1.0_f32.to_bits(), 2.0_f32.to_bits(), 1.0_f32.to_bits()],
+            })
+            .unwrap();
+        harness.app.poll_events();
+
+        assert!(matches!(
+            harness.commands.try_recv().unwrap(),
+            SourceCommand::SystemCommand(SystemCommand::Stop)
+        ));
+        assert_eq!(
+            harness.app.srm_open_loop.phase,
+            SrmOpenLoopPhase::StoppingSystem
+        );
+    }
+
+    #[test]
+    fn open_loop_ok_before_abz_ready_requests_stop_as_failure() {
+        let mut harness = test_harness(None);
+        enable_srm_open_loop(&mut harness.app, SystemState::Running);
+        let now = Instant::now();
+        harness.app.srm_open_loop.begin_workflow();
+        harness.app.srm_open_loop.begin_open_loop_command(now);
+        assert!(harness.app.srm_open_loop.accept(55, now));
+
+        harness
+            .events
+            .send(SourceEvent::Values {
+                read_sequence: 1,
+                indexes: vec![0, 1],
+                values: vec![1.0_f32.to_bits(), 0.0_f32.to_bits()],
+            })
+            .unwrap();
+        harness.app.poll_events();
+        assert!(harness.commands.try_recv().is_err());
+
+        harness
+            .events
+            .send(SourceEvent::Values {
+                read_sequence: 2,
+                indexes: vec![0, 1],
+                values: vec![2.0_f32.to_bits(), 1.0_f32.to_bits()],
+            })
+            .unwrap();
+        harness.app.poll_events();
+
+        assert!(matches!(
+            harness.commands.try_recv().unwrap(),
+            SourceCommand::SystemCommand(SystemCommand::Stop)
+        ));
+        assert!(matches!(
+            harness.app.srm_open_loop.last_result,
+            Some(crate::app::state::SrmOpenLoopCommandResult::Failed { .. })
+        ));
+    }
+
+    #[test]
+    fn stale_srm_open_loop_cancelled_result_does_not_request_stop_after_ack() {
+        let mut harness = test_harness(None);
+        enable_srm_open_loop(&mut harness.app, SystemState::Idle);
+        harness.app.inspector.values[0] = Some(0.0);
+        harness.app.inspector.values[1] = Some(5.0);
+        let now = Instant::now();
+        harness.app.srm_open_loop.begin_workflow();
+        harness
+            .app
+            .hardware
+            .begin_system_command(SystemCommand::Start, now);
+        assert!(
+            harness
+                .app
+                .hardware
+                .accept_system_command(SystemCommand::Start, 44, now)
+        );
+
+        harness
+            .events
+            .send(SourceEvent::Status(device_status(
+                SystemState::Running,
+                Some(44),
+                Some(0),
+            )))
+            .unwrap();
+        harness.app.poll_events();
+        assert!(matches!(
+            harness.commands.try_recv().unwrap(),
+            SourceCommand::SrmOpenLoopAbz
+        ));
+        assert!(harness.app.inspector.values.iter().all(Option::is_none));
+
+        harness
+            .events
+            .send(SourceEvent::SrmOpenLoopAbzAccepted { sequence: 88 })
+            .unwrap();
+        harness
+            .events
+            .send(SourceEvent::Values {
+                read_sequence: 2,
+                indexes: vec![2],
+                values: vec![12.0_f32.to_bits()],
+            })
+            .unwrap();
+        harness.app.poll_events();
+
+        assert_eq!(harness.app.srm_open_loop.phase, SrmOpenLoopPhase::Running);
         assert!(harness.commands.try_recv().is_err());
     }
 

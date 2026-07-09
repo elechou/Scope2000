@@ -1,15 +1,28 @@
 use eframe::egui;
 
 use crate::app::state::{
-    AbzZeroingHealthLevel, AbzZeroingSnapshot, UiState, abz_zeroing_block_label,
-    abz_zeroing_result_label, abz_zeroing_state_label,
+    AbzZeroingHealthLevel, AbzZeroingSnapshot, SrmOpenLoopGate, SrmOpenLoopSnapshot,
+    SrmOpenLoopState, UiState, abz_zeroing_block_label, abz_zeroing_result_label,
+    abz_zeroing_state_label,
 };
 use crate::theme;
 
-pub fn show(ui: &egui::Ui, ui_state: &mut UiState, snapshot: Option<AbzZeroingSnapshot>) {
+pub enum AbzZeroingAction {
+    RunSrmOpenLoopAbz,
+}
+
+pub fn show(
+    ui: &egui::Ui,
+    ui_state: &mut UiState,
+    srm_open_loop: &mut SrmOpenLoopState,
+    snapshot: Option<AbzZeroingSnapshot>,
+    srm_snapshot: Option<SrmOpenLoopSnapshot>,
+    srm_gate: SrmOpenLoopGate,
+) -> Option<AbzZeroingAction> {
     if !ui_state.show_abz_zeroing {
-        return;
+        return None;
     }
+    let mut action = None;
     egui::Window::new("ABZ Zeroing")
         .id(egui::Id::new("abz_zeroing_window"))
         .open(&mut ui_state.show_abz_zeroing)
@@ -24,7 +37,40 @@ pub fn show(ui: &egui::Ui, ui_state: &mut UiState, snapshot: Option<AbzZeroingSn
             show_status_notice(ui, snapshot);
             ui.separator();
             show_summary(ui, snapshot);
+            ui.separator();
+            show_srm_open_loop(ui, srm_open_loop, srm_snapshot, srm_gate);
         });
+
+    if srm_open_loop.show_run_confirmation {
+        egui::Modal::new("srm_open_loop_abz_confirm".into()).show(ui.ctx(), |ui| {
+            ui.set_width(380.0);
+            ui.add_space(8.0);
+            theme::modal_title(ui, "Start SRM Open-loop ABZ?");
+            ui.add_space(8.0);
+            ui.label(
+                "Scope2000 will Start Viewer2000, keep the powered SRM open-loop ABZ run active, then Stop Viewer2000 when ABZ Zeroing reports ready.",
+            );
+            ui.label(
+                egui::RichText::new("If ABZ Ready stays unknown or not ready, the powered run continues until Stop, Fault, or disconnect.")
+                    .color(theme::TEXT_SUBDUED),
+            );
+            ui.add_space(12.0);
+            ui.horizontal(|ui| {
+                if theme::modal_button(ui, "Start", theme::YELLOW) {
+                    if srm_gate.can_run {
+                        action = Some(AbzZeroingAction::RunSrmOpenLoopAbz);
+                    }
+                    srm_open_loop.show_run_confirmation = false;
+                }
+                if theme::modal_button(ui, "Cancel", theme::WIDGET_BG) {
+                    srm_open_loop.show_run_confirmation = false;
+                }
+            });
+            ui.add_space(4.0);
+        });
+    }
+
+    action
 }
 
 fn show_status_notice(ui: &mut egui::Ui, snapshot: Option<AbzZeroingSnapshot>) {
@@ -173,6 +219,83 @@ fn show_summary(ui: &mut egui::Ui, snapshot: Option<AbzZeroingSnapshot>) {
         });
 }
 
+fn show_srm_open_loop(
+    ui: &mut egui::Ui,
+    srm_open_loop: &mut SrmOpenLoopState,
+    snapshot: Option<SrmOpenLoopSnapshot>,
+    gate: SrmOpenLoopGate,
+) {
+    ui.label(
+        egui::RichText::new("SRM Open-loop ABZ")
+            .strong()
+            .color(theme::TEXT_STRONG),
+    );
+
+    let run_w = ui.available_width();
+    if theme::action_button_w(ui, "Start", theme::YELLOW, gate.can_run, run_w) {
+        srm_open_loop.show_run_confirmation = true;
+    }
+
+    if let Some(text) = srm_workflow_text(srm_open_loop) {
+        ui.colored_label(theme::YELLOW, text);
+    } else if let Some(reason) = gate.reason {
+        ui.colored_label(theme::TEXT_SUBDUED, reason);
+    }
+
+    let Some(snapshot) = snapshot else {
+        return;
+    };
+
+    ui.add_space(4.0);
+    egui::Grid::new("srm_open_loop_summary")
+        .num_columns(2)
+        .spacing(egui::vec2(18.0, 4.0))
+        .striped(true)
+        .show(ui, |ui| {
+            summary_row(
+                ui,
+                "DC Voltage",
+                voltage_text(snapshot.dc_v),
+                theme::TEXT_DEFAULT,
+            );
+            summary_row(
+                ui,
+                "Peak Duty",
+                duty_text(snapshot.peak_duty),
+                theme::TEXT_DEFAULT,
+            );
+            summary_row(ui, "Ticks", u32_text(snapshot.ticks), theme::TEXT_DEFAULT);
+            summary_row(
+                ui,
+                "eQEP Errors",
+                hex_u32_text(snapshot.eqep_errors),
+                if snapshot.eqep_errors.unwrap_or_default() == 0 {
+                    theme::TEXT_DEFAULT
+                } else {
+                    theme::RED
+                },
+            );
+        });
+}
+
+fn srm_workflow_text(srm_open_loop: &SrmOpenLoopState) -> Option<String> {
+    match srm_open_loop.phase {
+        crate::app::state::SrmOpenLoopPhase::Idle => None,
+        crate::app::state::SrmOpenLoopPhase::StartingSystem => {
+            Some("SRM Open-loop ABZ: starting Viewer2000...".to_owned())
+        }
+        crate::app::state::SrmOpenLoopPhase::RequestingOpenLoop => {
+            Some("SRM Open-loop ABZ: requesting powered run...".to_owned())
+        }
+        crate::app::state::SrmOpenLoopPhase::Running => {
+            Some("SRM Open-loop ABZ: powered run active".to_owned())
+        }
+        crate::app::state::SrmOpenLoopPhase::StoppingSystem => {
+            Some("SRM Open-loop ABZ: stopping Viewer2000...".to_owned())
+        }
+    }
+}
+
 fn summary_row(ui: &mut egui::Ui, label: &str, value: String, color: egui::Color32) {
     ui.label(egui::RichText::new(label).color(theme::TEXT_SUBDUED));
     ui.colored_label(color, value);
@@ -249,6 +372,14 @@ fn u16_text(value: Option<u16>) -> String {
 
 fn u32_text(value: Option<u32>) -> String {
     value.map_or("-".to_owned(), |value| value.to_string())
+}
+
+fn voltage_text(value: Option<f64>) -> String {
+    value.map_or("-".to_owned(), |value| format!("{value:.3} V"))
+}
+
+fn duty_text(value: Option<f64>) -> String {
+    value.map_or("-".to_owned(), |value| format!("{:.2}%", value * 100.0))
 }
 
 fn hex_u16_text(value: Option<u16>) -> String {

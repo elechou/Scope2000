@@ -562,6 +562,10 @@ pub fn calibration_command_request(command: CalibrationCommand) -> Vec<u8> {
     command_request(code, 0, 0)
 }
 
+pub fn srm_open_loop_abz_command_request() -> Vec<u8> {
+    command_request(7, 0, 0)
+}
+
 #[cfg(test)]
 pub fn abz_zeroing_command_request() -> Vec<u8> {
     command_request(6, 0, 0)
@@ -687,7 +691,7 @@ mod tests {
                 );
             }
         }
-        assert_eq!(count, 38);
+        assert_eq!(count, 39);
     }
 
     #[test]
@@ -961,6 +965,18 @@ mod tests {
         assert_eq!(
             load_vector_frame("cmd_abz_zeroing.txt").payload,
             vec![6, 0, 0, 0, 0, 0, 0, 0]
+        );
+    }
+
+    #[test]
+    fn srm_open_loop_abz_command_encodes_temporary_system_cmd_code() {
+        assert_eq!(
+            srm_open_loop_abz_command_request(),
+            vec![7, 0, 0, 0, 0, 0, 0, 0]
+        );
+        assert_eq!(
+            load_vector_frame("cmd_srm_open_loop_abz.txt").payload,
+            vec![7, 0, 0, 0, 0, 0, 0, 0]
         );
     }
 }
