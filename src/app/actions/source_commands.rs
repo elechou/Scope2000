@@ -207,10 +207,6 @@ impl ScopeApp {
         {
             return;
         }
-        if !self.ui.show_abz_zeroing && self.catalog_value_u16("v2k_abz_zeroing.ready") == Some(1) {
-            return;
-        }
-
         let now = Instant::now();
         if now < self.abz_zeroing.next_read {
             return;
@@ -922,6 +918,27 @@ mod tests {
         );
         harness.app.start_system();
         assert!(harness.commands.try_recv().is_err());
+    }
+
+    #[test]
+    fn abz_zeroing_status_poll_continues_after_ready() {
+        let mut harness = test_harness(None);
+        harness.app.hardware.info.as_mut().unwrap().capabilities |= CAP_ABZ_ZEROING;
+        harness
+            .app
+            .inspector
+            .set_descriptors(vec![descriptor("v2k_abz_zeroing.ready")]);
+        harness.app.inspector.values = vec![Some(1.0)];
+        harness.app.abz_zeroing.next_read = Instant::now() - Duration::from_secs(1);
+
+        harness.app.poll_abz_zeroing_reads();
+
+        let commands = drain_catalog_commands(&harness.commands);
+        assert_eq!(commands.len(), 1);
+        let CatalogCommand::ReadValues(reads) = &commands[0] else {
+            panic!("expected ABZ zeroing status read");
+        };
+        assert_eq!(reads.len(), 1);
     }
 
     #[test]
