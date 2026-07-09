@@ -208,6 +208,9 @@ pub fn setup_fonts_and_icons(ctx: &egui::Context) {
 }
 
 pub fn apply_theme(ctx: &egui::Context) {
+    ctx.set_theme(egui::Theme::Dark);
+    ctx.send_viewport_cmd(egui::ViewportCommand::SetTheme(egui::SystemTheme::Dark));
+
     let mut visuals = egui::Visuals::dark();
 
     // ---- Backgrounds ----
@@ -282,7 +285,7 @@ pub fn apply_theme(ctx: &egui::Context) {
     visuals.widgets.open.expansion = 0.0;
     visuals.widgets.open.corner_radius = egui::CornerRadius::same(6);
 
-    ctx.set_visuals(visuals);
+    ctx.set_visuals_of(egui::Theme::Dark, visuals);
 
     // ---- Spacing ----
     let mut style = (*ctx.global_style()).clone();

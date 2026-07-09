@@ -3501,7 +3501,7 @@ dependencies = [
 
 [[package]]
 name = "scope2000"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "chrono",
