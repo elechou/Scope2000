@@ -159,6 +159,7 @@ pub const DAQ_FLAG_TRIGGER_DISABLED: u16 = 1 << 0;
 pub const CAL_READ_MAX: usize = 32;
 pub const NO_CAPTURE_ACK: u16 = 0xFFFF;
 pub const FAULT_USER_BASE: u16 = 256;
+pub const FAULT_USER_OVER_SPEED: u16 = FAULT_USER_BASE + 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ScopeMode {
@@ -419,6 +420,7 @@ pub fn fault_code_text(code: u16) -> String {
         5 => "STACK_GUARD".to_owned(),
         6 => "WD_RESET".to_owned(),
         7 => "ITRAP".to_owned(),
+        FAULT_USER_OVER_SPEED => "Over Speed".to_owned(),
         other => fault_user_code(other)
             .map(|user_code| format!("USER_{user_code}"))
             .unwrap_or_else(|| format!("FAULT_{other}")),
@@ -634,7 +636,7 @@ mod tests {
         assert_eq!(fault_code_text(7), "ITRAP");
         assert_eq!(fault_code_text(99), "FAULT_99");
         assert_eq!(fault_code_text(256), "USER_0");
-        assert_eq!(fault_code_text(257), "USER_1");
+        assert_eq!(fault_code_text(257), "Over Speed");
         assert_eq!(fault_code_text(u16::MAX), "USER_65279");
     }
 
@@ -654,7 +656,7 @@ mod tests {
     fn fault_status_text_includes_source() {
         assert_eq!(fault_status_text(0), "No fault (0)");
         assert_eq!(fault_status_text(2), "System fault: OVERCURRENT (2)");
-        assert_eq!(fault_status_text(257), "User fault: USER_1 (257)");
+        assert_eq!(fault_status_text(257), "User fault: Over Speed (257)");
     }
 
     #[test]
