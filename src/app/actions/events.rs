@@ -15,8 +15,7 @@ use crate::wave::{
 
 impl ScopeApp {
     pub(in crate::app) fn poll_events(&mut self) {
-        let events: Vec<_> = self.source.events.try_iter().collect();
-        for event in events {
+        while let Ok(event) = self.source.events.try_recv() {
             match event {
                 SourceEvent::Connected(info) => {
                     self.hardware.connected = true;
@@ -372,12 +371,12 @@ impl ScopeApp {
                     );
                     self.rearm_capture(capture_id);
                 }
-                SourceEvent::Blocks { mode, blocks } => {
+                SourceEvent::Blocks { mode, mut blocks } => {
                     let tick_hz = self.hardware.info.as_ref().map_or(1, |info| info.tick_hz);
                     self.wave.mode = mode;
                     match mode {
                         ScopeMode::Stream => {
-                            for block in blocks {
+                            blocks.retain(|block| {
                                 if !block_matches_binding(self.wave.bind_sequence, block.bind_seq) {
                                     self.log.push(
                                         LogLevel::Warn,
@@ -386,16 +385,17 @@ impl ScopeApp {
                                             block.block_seq, block.bind_seq
                                         ),
                                     );
-                                    continue;
+                                    return false;
                                 }
-                                if let Err(error) = self.plot_data.append_block(
-                                    &block,
-                                    &self.wave.binding,
-                                    tick_hz,
-                                    self.wave.settings_snapshot.prescaler,
-                                ) {
-                                    self.log.push(LogLevel::Warn, error);
-                                }
+                                true
+                            });
+                            for error in self.plot_data.append_blocks(
+                                &blocks,
+                                &self.wave.binding,
+                                tick_hz,
+                                self.wave.settings_snapshot.prescaler,
+                            ) {
+                                self.log.push(LogLevel::Warn, error);
                             }
                         }
                         ScopeMode::CaptureArmed | ScopeMode::CapturePost => {}
@@ -601,10 +601,8 @@ fn redraw_capture_frame(
             Err(error) => log.push(LogLevel::Warn, error),
         }
     }
-    for block in blocks.iter() {
-        if let Err(error) = plot_data.append_block(block, binding, tick_hz, settings.prescaler) {
-            log.push(LogLevel::Warn, error);
-        }
+    for error in plot_data.append_blocks(blocks, binding, tick_hz, settings.prescaler) {
+        log.push(LogLevel::Warn, error);
     }
     log.push(
         LogLevel::Info,
@@ -652,12 +650,20 @@ fn append_requested_capture_window(
         ));
     }
 
-    for row in &rows[start..end] {
-        let time = relative_time_from_ticks(row.tick, trigger_tick, tick_hz);
-        for (descriptor, value) in binding.iter().zip(row.values.iter()) {
-            plot_data.push(&descriptor.name, time, *value);
+    let rows = &rows[start..end];
+    let times: Vec<_> = rows
+        .iter()
+        .map(|row| relative_time_from_ticks(row.tick, trigger_tick, tick_hz))
+        .collect();
+    let mut values: Vec<Vec<f64>> = (0..binding.len())
+        .map(|_| Vec::with_capacity(rows.len()))
+        .collect();
+    for row in rows {
+        for (channel, value) in row.values.iter().copied().enumerate() {
+            values[channel].push(value);
         }
     }
+    plot_data.append_channel_samples(binding, &times, &values)?;
     Ok(requested)
 }
 
@@ -1005,11 +1011,19 @@ mod tests {
         let series = &plot_data.series["signal"];
         assert_eq!(plot_data.trigger_time, Some(0.0));
         assert_eq!(
-            series.times.iter().copied().collect::<Vec<_>>(),
+            series
+                .points
+                .iter()
+                .map(|point| point.x)
+                .collect::<Vec<_>>(),
             vec![-0.5, 0.5]
         );
         assert_eq!(
-            series.values.iter().copied().collect::<Vec<_>>(),
+            series
+                .points
+                .iter()
+                .map(|point| point.y)
+                .collect::<Vec<_>>(),
             vec![1.0, 2.0]
         );
     }
@@ -1047,11 +1061,11 @@ mod tests {
         );
 
         let series = &plot_data.series["signal"];
-        assert_eq!(series.times.len(), 20);
-        assert_eq!(series.times.front().copied(), Some(-10.0));
-        assert_eq!(series.times.back().copied(), Some(9.0));
-        assert_eq!(series.values.front().copied(), Some(5.0));
-        assert_eq!(series.values.back().copied(), Some(24.0));
+        assert_eq!(series.points.len(), 20);
+        assert_eq!(series.points.front().map(|point| point.x), Some(-10.0));
+        assert_eq!(series.points.back().map(|point| point.x), Some(9.0));
+        assert_eq!(series.points.front().map(|point| point.y), Some(5.0));
+        assert_eq!(series.points.back().map(|point| point.y), Some(24.0));
     }
 
     #[test]

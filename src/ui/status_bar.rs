@@ -23,15 +23,22 @@ pub fn show(
     calibration: CalibrationSnapshot,
     abz_zeroing: Option<AbzZeroingSnapshot>,
 ) -> Option<StatusBarAction> {
-    // Auto-dismiss promoted status messages after 5 seconds.
-    if let Some(ref msg) = log.status_message
-        && matches!(
+    // Auto-dismiss promoted status messages after 5 seconds. Schedule the
+    // exact wake-up because a connected device no longer forces 60 FPS.
+    if let Some(ref msg) = log.status_message {
+        let is_transient = matches!(
             msg.level,
             LogLevel::Notice | LogLevel::Warn | LogLevel::Error
-        )
-        && msg.timestamp.elapsed() > std::time::Duration::from_secs(5)
-    {
-        log.status_message = None;
+        );
+        if is_transient {
+            let timeout = std::time::Duration::from_secs(5);
+            let elapsed = msg.timestamp.elapsed();
+            if elapsed >= timeout {
+                log.status_message = None;
+            } else {
+                ui.ctx().request_repaint_after(timeout - elapsed);
+            }
+        }
     }
 
     let mut connect_clicked = false;

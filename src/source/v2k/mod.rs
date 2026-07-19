@@ -80,17 +80,42 @@ fn ack_status_label(status: u8) -> &'static str {
 }
 
 #[derive(Default)]
-pub struct V2kSource;
+pub struct V2kSource {
+    repaint_ctx: Option<eframe::egui::Context>,
+}
+
+impl V2kSource {
+    pub fn with_repaint_context(repaint_ctx: eframe::egui::Context) -> Self {
+        Self {
+            repaint_ctx: Some(repaint_ctx),
+        }
+    }
+}
 
 impl DataSource for V2kSource {
     fn spawn(self: Box<Self>) -> SourceHandle {
         let (command_tx, command_rx) = mpsc::channel();
+        let (worker_event_tx, worker_event_rx) = mpsc::channel();
         let (event_tx, event_rx) = mpsc::channel();
         let worker = thread::Builder::new()
             .name("v2k-source".into())
-            .spawn(move || worker(command_rx, event_tx))
+            .spawn(move || worker(command_rx, worker_event_tx))
             .expect("spawn V2kSource worker");
-        SourceHandle::new(command_tx, event_rx, worker)
+        let repaint_ctx = self.repaint_ctx;
+        let event_forwarder = thread::Builder::new()
+            .name("v2k-ui-events".into())
+            .spawn(move || {
+                while let Ok(event) = worker_event_rx.recv() {
+                    if event_tx.send(event).is_err() {
+                        break;
+                    }
+                    if let Some(ctx) = &repaint_ctx {
+                        ctx.request_repaint();
+                    }
+                }
+            })
+            .expect("spawn V2kSource UI event forwarder");
+        SourceHandle::new_with_event_forwarder(command_tx, event_rx, worker, event_forwarder)
     }
 }
 
@@ -1143,7 +1168,7 @@ mod tests {
 
     #[test]
     fn spawned_source_shutdown_exits_worker() {
-        let mut source = Box::new(V2kSource).spawn();
+        let mut source = Box::new(V2kSource::default()).spawn();
 
         source.shutdown();
     }

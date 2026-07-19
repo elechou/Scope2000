@@ -223,6 +223,6 @@ fn time_series_pane_has_samples(pane: &ViewPane, plot_data: &PlotData) -> bool {
         plot_data
             .series
             .get(&series.var_name)
-            .is_some_and(|data| !data.times.is_empty())
+            .is_some_and(|data| !data.points.is_empty())
     })
 }

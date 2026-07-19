@@ -1,6 +1,6 @@
 use eframe::egui;
 use egui::Vec2;
-use egui_plot::{Axis, Legend, Line, LineStyle, PlotPoints, VLine};
+use egui_plot::{Axis, Legend, Line, LineStyle, VLine};
 use egui_tiles::TileId;
 
 use super::MyTilesDelegate;
@@ -130,29 +130,8 @@ impl<'a> MyTilesDelegate<'a> {
         };
 
         let trigger_x = self.data.trigger_time;
-
-        let series_data: Vec<_> = pane
-            .series
-            .iter()
-            .filter_map(|s| {
-                self.data.series.get(&s.var_name).map(|ts| {
-                    let points: Vec<[f64; 2]> = ts
-                        .times
-                        .iter()
-                        .zip(ts.values.iter())
-                        .map(|(&t, &v)| [t, v])
-                        .collect();
-                    (s.label().to_string(), s.color, points, s.width)
-                })
-            })
-            .collect();
-
         let props = &pane.properties;
         let highlight_var = self.highlight_var;
-        let has_time_axis_data = series_data
-            .iter()
-            .any(|(_, _, points, _)| !points.is_empty());
-
         ui.style_mut().visuals.extreme_bg_color = props.background;
 
         let show_grid = props.show_grid;
@@ -163,6 +142,31 @@ impl<'a> MyTilesDelegate<'a> {
         let scalar_range = props.scalar_axis_range.clone();
         let time_is_auto = matches!(time_range, AxisRange::Auto);
         let scalar_is_auto = matches!(scalar_range, AxisRange::Auto);
+        let render_x_range = match &time_range {
+            AxisRange::Auto => None,
+            AxisRange::Manual { min, max } => Some((*min, *max)),
+        };
+        // Two extrema per horizontal pixel preserves narrow spikes without
+        // feeding tens of thousands of off-screen points to egui_plot.
+        let point_budget = ((ui.available_width().max(128.0) * 2.0) as usize).clamp(256, 8192);
+        let series_data: Vec<_> = pane
+            .series
+            .iter()
+            .filter_map(|series| {
+                self.data.series.get(&series.var_name).map(|data| {
+                    (
+                        series.label().to_owned(),
+                        series.color,
+                        data.render_points(render_x_range, point_budget),
+                        series.width,
+                        data.bounds(),
+                    )
+                })
+            })
+            .collect();
+        let has_time_axis_data = series_data
+            .iter()
+            .any(|(_, _, points, _, _)| !points.is_empty());
         let apply_pending = std::mem::take(&mut pane.properties.axis_apply_pending);
 
         let (padded_x, padded_y) = {
@@ -170,20 +174,12 @@ impl<'a> MyTilesDelegate<'a> {
             let mut x_max = f64::NEG_INFINITY;
             let mut y_min = f64::INFINITY;
             let mut y_max = f64::NEG_INFINITY;
-            for (_, _, points, _) in &series_data {
-                for &[x, y] in points.iter() {
-                    if x < x_min {
-                        x_min = x;
-                    }
-                    if x > x_max {
-                        x_max = x;
-                    }
-                    if y < y_min {
-                        y_min = y;
-                    }
-                    if y > y_max {
-                        y_max = y;
-                    }
+            for (_, _, _, _, bounds) in &series_data {
+                if let Some(bounds) = bounds {
+                    x_min = x_min.min(bounds.x_min);
+                    x_max = x_max.max(bounds.x_max);
+                    y_min = y_min.min(bounds.y_min);
+                    y_max = y_max.max(bounds.y_max);
                 }
             }
             let pad = |lo: f64, hi: f64| -> (f64, f64) {
@@ -292,13 +288,13 @@ impl<'a> MyTilesDelegate<'a> {
                         );
                     }
 
-                    for (name, color, points, width) in &series_data {
+                    for (name, color, points, width, _) in &series_data {
                         if !points.is_empty() {
                             let item_id = egui::Id::new(name.as_str());
                             let is_highlighted = highlight_var
                                 .is_some_and(|(tid, vid)| tid == tile_id && vid == item_id);
                             plot_ui.line(
-                                Line::new(name.as_str(), PlotPoints::new(points.clone()))
+                                Line::new(name.as_str(), *points)
                                     .color(*color)
                                     .width(*width)
                                     .highlight(is_highlighted),

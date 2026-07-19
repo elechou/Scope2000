@@ -98,7 +98,7 @@ impl ScopeApp {
             hardware,
             abz_zeroing: AbzZeroingState::new(),
             calibration: CalibrationState::new(),
-            source: Box::new(V2kSource).spawn(),
+            source: Box::new(V2kSource::with_repaint_context(cc.egui_ctx.clone())).spawn(),
             inspector: InspectorState::default(),
             viewport: ViewportState::new(),
             wave: WaveState {
@@ -515,7 +515,10 @@ impl eframe::App for ScopeApp {
         self.poll_current_sensor_calibration_reads();
         self.poll_abz_zeroing_reads();
         if self.hardware.connected {
-            ui.ctx().request_repaint_after(Duration::from_millis(16));
+            // Hardware events wake egui immediately. This low-frequency wake
+            // only services the fastest host-side polling timer while idle;
+            // the running-header animation schedules its own 16 ms repaint.
+            ui.ctx().request_repaint_after(Duration::from_millis(250));
         }
 
         if std::mem::take(&mut self.ui.apply_panel_sizes) {

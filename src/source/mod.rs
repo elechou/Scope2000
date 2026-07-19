@@ -575,6 +575,7 @@ pub struct SourceHandle {
     pub commands: mpsc::Sender<SourceCommand>,
     pub events: mpsc::Receiver<SourceEvent>,
     worker: Option<thread::JoinHandle<()>>,
+    event_forwarder: Option<thread::JoinHandle<()>>,
 }
 
 impl SourceHandle {
@@ -587,6 +588,21 @@ impl SourceHandle {
             commands,
             events,
             worker: Some(worker),
+            event_forwarder: None,
+        }
+    }
+
+    pub fn new_with_event_forwarder(
+        commands: mpsc::Sender<SourceCommand>,
+        events: mpsc::Receiver<SourceEvent>,
+        worker: thread::JoinHandle<()>,
+        event_forwarder: thread::JoinHandle<()>,
+    ) -> Self {
+        Self {
+            commands,
+            events,
+            worker: Some(worker),
+            event_forwarder: Some(event_forwarder),
         }
     }
 
@@ -594,6 +610,9 @@ impl SourceHandle {
         let _ = self.commands.send(SourceCommand::Shutdown);
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
+        }
+        if let Some(event_forwarder) = self.event_forwarder.take() {
+            let _ = event_forwarder.join();
         }
     }
 }

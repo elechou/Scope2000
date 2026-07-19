@@ -21,13 +21,13 @@ impl ScopeApp {
             let Some(series) = self.plot_data.series.get(&name) else {
                 continue;
             };
-            if series.times.is_empty() {
+            if series.points.is_empty() {
                 continue;
             }
             if times.is_none() {
-                times = Some(series.times.iter().copied().collect());
+                times = Some(series.points.iter().map(|point| point.x).collect());
             }
-            values.push(series.values.iter().copied().collect());
+            values.push(series.points.iter().map(|point| point.y).collect());
             channel_names.push(name);
         }
 

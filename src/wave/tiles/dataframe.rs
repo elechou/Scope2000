@@ -1,4 +1,5 @@
 use eframe::egui;
+use egui_extras::{Column, TableBuilder};
 use egui_tiles::TileId;
 
 use super::MyTilesDelegate;
@@ -14,22 +15,9 @@ impl<'a> MyTilesDelegate<'a> {
         tile_id: TileId,
         pane: &mut ViewPane,
     ) -> egui_tiles::UiResponse {
-        let display_data: Vec<_> = if pane.series.is_empty() {
-            self.inspector
-                .descriptors
-                .iter()
-                .enumerate()
-                .map(|(i, descriptor)| {
-                    let val = self
-                        .inspector
-                        .values
-                        .get(i)
-                        .copied()
-                        .flatten()
-                        .unwrap_or(0.0);
-                    (descriptor.name.as_str(), val, !descriptor.is_user())
-                })
-                .collect()
+        let show_all = pane.series.is_empty();
+        let selected_data: Vec<_> = if show_all {
+            Vec::new()
         } else {
             pane.series
                 .iter()
@@ -50,43 +38,70 @@ impl<'a> MyTilesDelegate<'a> {
                 })
                 .collect()
         };
+        let row_count = if show_all {
+            self.inspector.descriptors.len()
+        } else {
+            selected_data.len()
+        };
 
         let (inner_resp, payload) =
             ui.dnd_drop_zone::<VarDragPayload, _>(egui::Frame::default(), |ui| {
                 ui.painter().rect_filled(ui.max_rect(), 0.0, theme::BG_BODY);
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    egui::Grid::new("dataframe_grid")
-                        .striped(true)
-                        .num_columns(2)
-                        .show(ui, |ui| {
+                TableBuilder::new(ui)
+                    .id_salt(("dataframe_table", tile_id))
+                    .striped(true)
+                    .cell_layout(egui::Layout::left_to_right(egui::Align::Center))
+                    .column(Column::remainder())
+                    .column(Column::exact(96.0))
+                    .header(20.0, |mut header| {
+                        header.col(|ui| {
                             ui.strong("Variable");
+                        });
+                        header.col(|ui| {
                             ui.strong("Value");
-                            ui.end_row();
-
-                            for (name, value, is_system_variable) in &display_data {
-                                if *is_system_variable {
+                        });
+                    })
+                    .body(|body| {
+                        body.rows(20.0, row_count, |mut row| {
+                            let row_index = row.index();
+                            let (name, value, is_system_variable) = if show_all {
+                                let descriptor = &self.inspector.descriptors[row_index];
+                                let value = self
+                                    .inspector
+                                    .values
+                                    .get(row_index)
+                                    .copied()
+                                    .flatten()
+                                    .unwrap_or(0.0);
+                                (descriptor.name.as_str(), value, !descriptor.is_user())
+                            } else {
+                                selected_data[row_index]
+                            };
+                            row.col(|ui| {
+                                if is_system_variable {
                                     ui.horizontal(|ui| {
                                         ui.spacing_mut().item_spacing.x =
                                             theme::SYSTEM_VARIABLE_BADGE_GAP;
                                         theme::system_variable_badge(ui, 1.0);
                                         ui.label(
-                                            egui::RichText::new(*name)
+                                            egui::RichText::new(name)
                                                 .monospace()
                                                 .color(theme::TEXT_DEFAULT),
                                         );
                                     });
                                 } else {
                                     ui.label(
-                                        egui::RichText::new(*name)
+                                        egui::RichText::new(name)
                                             .monospace()
                                             .color(theme::TEXT_DEFAULT),
                                     );
                                 }
+                            });
+                            row.col(|ui| {
                                 ui.monospace(format!("{value:.2}"));
-                                ui.end_row();
-                            }
+                            });
                         });
-                });
+                    });
             });
 
         if self.can_edit_variable_refs
