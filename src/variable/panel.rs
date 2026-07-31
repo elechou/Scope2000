@@ -15,8 +15,11 @@ const ICON_TRASH: &str = "\u{f1f8}";
 const DISPLAY_NAME_MAX_CHARS: usize = 24;
 const SYSTEM_DISPLAY_NAME_MAX_CHARS: usize = 20;
 const VALUE_SIGNIFICANT_DIGITS: usize = 6;
-const VARMAP_TRASH_HEIGHT: f32 = 44.0;
+const VARMAP_TRASH_HEIGHT: f32 = 34.0;
 const VARMAP_TRASH_MARGIN: f32 = 6.0;
+const VARMAP_TRASH_RADIUS: u8 = 6;
+/// Gap between the trash glyph and its label.
+const VARMAP_TRASH_ICON_GAP: f32 = 6.0;
 const VAR_CTRL_ARROW_W: f32 = 24.0;
 const VAR_CTRL_MIN_TEXT_COL_W: f32 = 40.0;
 
@@ -871,39 +874,77 @@ fn variable_map_trash_drop(
         *drop_action = Some(DropAction::Delete);
     }
 
-    let layer_id = egui::LayerId::new(egui::Order::Tooltip, ui.id().with("varmap_trash_drop"));
+    // `Order::Foreground`, not `Tooltip`: the zone has to float over the
+    // variable list, but the drag pill (`Order::Tooltip`) must stay on top of
+    // it. Both layers used to sit on `Tooltip`, where neither is registered as
+    // an Area — so egui painted them in hash-map order and the pill randomly
+    // disappeared behind the zone.
+    let layer_id = egui::LayerId::new(egui::Order::Foreground, ui.id().with("varmap_trash_drop"));
     let painter = ui.ctx().layer_painter(layer_id);
-    let fill = if trash_active {
-        egui::Color32::from_rgb(236, 60, 75)
-    } else {
-        theme::RED
-    };
-    let stroke = egui::Stroke::new(
-        if trash_active { 2.0 } else { 1.0 },
-        egui::Color32::from_rgb(255, 132, 142),
-    );
-    painter.rect_filled(trash_rect, egui::CornerRadius::same(4), fill);
-    painter.rect_stroke(
-        trash_rect,
-        egui::CornerRadius::same(4),
-        stroke,
-        egui::StrokeKind::Inside,
+    let radius = egui::CornerRadius::same(VARMAP_TRASH_RADIUS);
+
+    // Soft shadow so the bar reads as floating above the list it covers.
+    painter.add(
+        egui::Shadow {
+            offset: [0, 2],
+            blur: 10,
+            spread: 0,
+            color: egui::Color32::from_black_alpha(90),
+        }
+        .as_shape(trash_rect, radius),
     );
 
-    let font = egui::TextStyle::Button.resolve(ui.style());
-    painter.text(
-        trash_rect.center() - egui::vec2(24.0, 0.0),
-        egui::Align2::CENTER_CENTER,
-        ICON_TRASH,
-        font.clone(),
-        theme::TEXT_STRONG,
+    // Dark red-tinted surface instead of a solid red block: same drop-target
+    // language as the blue pane overlay, just in the destructive hue.
+    let fill = theme::mix_color(
+        theme::BG_PANEL,
+        theme::RED,
+        if trash_active { 0.42 } else { 0.16 },
     );
-    painter.text(
-        trash_rect.center() + egui::vec2(10.0, 0.0),
-        egui::Align2::CENTER_CENTER,
-        "Remove",
-        font,
-        theme::TEXT_STRONG,
+    let stroke = egui::Stroke::new(
+        1.0,
+        if trash_active {
+            theme::RED
+        } else {
+            theme::RED.gamma_multiply(0.55)
+        },
+    );
+    painter.rect(trash_rect, radius, fill, stroke, egui::StrokeKind::Inside);
+    if trash_active {
+        // Faint outer ring — the hover cue, without pumping up the fill.
+        painter.rect_stroke(
+            trash_rect.expand(2.0),
+            radius + egui::CornerRadius::same(2),
+            egui::Stroke::new(1.0, theme::RED.gamma_multiply(0.30)),
+            egui::StrokeKind::Outside,
+        );
+    }
+
+    // Glyph + label centered as one group (long label first, short if it
+    // would not fit the side panel's width).
+    let font = egui::TextStyle::Button.resolve(ui.style());
+    let content = if trash_active {
+        theme::TEXT_STRONG
+    } else {
+        theme::TEXT_DEFAULT
+    };
+    let icon = painter.layout_no_wrap(ICON_TRASH.to_owned(), font.clone(), content);
+    let icon_size = icon.size();
+    let mut label = painter.layout_no_wrap("Drop here to remove".to_owned(), font.clone(), content);
+    if icon_size.x + VARMAP_TRASH_ICON_GAP + label.size().x > trash_rect.width() - 16.0 {
+        label = painter.layout_no_wrap("Remove".to_owned(), font, content);
+    }
+    let label_size = label.size();
+    let left = trash_rect.center().x - (icon_size.x + VARMAP_TRASH_ICON_GAP + label_size.x) * 0.5;
+    let top = |height: f32| trash_rect.center().y - height * 0.5;
+    painter.galley(egui::pos2(left, top(icon_size.y)), icon, content);
+    painter.galley(
+        egui::pos2(
+            left + icon_size.x + VARMAP_TRASH_ICON_GAP,
+            top(label_size.y),
+        ),
+        label,
+        content,
     );
 
     if trash_active && ui.ctx().input(|input| input.pointer.any_released()) {

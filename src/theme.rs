@@ -689,7 +689,8 @@ fn color_to_shader_rgba(color: Color32) -> [f32; 4] {
 /// Unified action button height across side-panel sections.
 pub const ACTION_BUTTON_HEIGHT: f32 = 22.0;
 
-fn mix_color(a: Color32, b: Color32, t: f32) -> Color32 {
+/// Linear blend between two colors (`t == 0` → `a`, `t == 1` → `b`).
+pub fn mix_color(a: Color32, b: Color32, t: f32) -> Color32 {
     let mix = |a: u8, b: u8| (a as f32 + (b as f32 - a as f32) * t).round() as u8;
     Color32::from_rgba_premultiplied(
         mix(a.r(), b.r()),
