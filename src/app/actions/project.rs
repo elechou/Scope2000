@@ -26,7 +26,7 @@ impl ScopeApp {
             );
             return;
         }
-        if let Some(reason) = self.zeroing_start_block_reason() {
+        if let Some(reason) = self.current_zeroing_start_block_reason() {
             self.log.push(LogLevel::Warn, reason.to_owned());
             return;
         }

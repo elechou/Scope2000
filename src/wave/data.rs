@@ -237,6 +237,7 @@ impl PlotData {
 
     /// Push a single value. Streaming and capture paths use the batched APIs
     /// below so name lookup and render-cache rebuilding are not done per point.
+    #[cfg(test)]
     pub fn push(&mut self, name: &str, time: f64, value: f64) {
         self.series
             .entry(name.to_owned())
@@ -302,6 +303,7 @@ impl PlotData {
         Ok(())
     }
 
+    #[cfg(test)]
     pub fn append_block(
         &mut self,
         block: &ScopeBlock,

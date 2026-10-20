@@ -1,8 +1,7 @@
 use eframe::egui;
 
 use crate::app::state::{
-    AbzZeroingHealthLevel, AbzZeroingSnapshot, CalibrationHealthLevel, CalibrationSnapshot,
-    DcVoltageSnapshot, HardwareState, UiState,
+    CalibrationHealthLevel, CalibrationSnapshot, DcVoltageSnapshot, HardwareState, UiState,
 };
 use crate::console::{LogBuffer, LogLevel};
 use crate::theme;
@@ -21,7 +20,6 @@ pub fn show(
     log: &mut LogBuffer,
     dc_voltage: DcVoltageSnapshot,
     calibration: CalibrationSnapshot,
-    abz_zeroing: Option<AbzZeroingSnapshot>,
 ) -> Option<StatusBarAction> {
     // Auto-dismiss promoted status messages after 5 seconds. Schedule the
     // exact wake-up because a connected device no longer forces 60 FPS.
@@ -148,29 +146,6 @@ pub fn show(
                     }
 
                     if hardware.connected {
-                        if let Some(snapshot) = abz_zeroing {
-                            let health = snapshot.health();
-                            let color = match health.level {
-                                AbzZeroingHealthLevel::Normal => theme::TEXT_SUBDUED,
-                                AbzZeroingHealthLevel::Warning => theme::YELLOW,
-                                AbzZeroingHealthLevel::Error => theme::RED,
-                            };
-                            let text = if health.level == AbzZeroingHealthLevel::Normal {
-                                "ABZ Zeroing"
-                            } else {
-                                "⚠ ABZ Zeroing"
-                            };
-                            let status = ui.add(
-                                egui::Button::new(egui::RichText::new(text).color(color))
-                                    .frame(false),
-                            );
-                            if status.clicked() {
-                                ui_state.show_abz_zeroing = !ui_state.show_abz_zeroing;
-                            }
-                            status.on_hover_text(format!("{}\n{}", health.label, health.detail));
-                            ui.separator();
-                        }
-
                         let calibration_health = calibration.health();
                         let calibration_color = match calibration_health.level {
                             CalibrationHealthLevel::Normal => theme::TEXT_SUBDUED,

@@ -5,7 +5,7 @@ use crate::source::{
     SystemState, VarDescriptor, VarRef, VarType,
 };
 
-pub const WIRE_VERSION: u8 = 10;
+pub const WIRE_VERSION: u8 = 11;
 pub const VERSION_MAGIC: u8 = 0x50 | WIRE_VERSION;
 pub const MAX_PAYLOAD: usize = 1024;
 pub const ENUM_MAX_NAME_LEN: usize = 128;
@@ -562,11 +562,6 @@ pub fn calibration_command_request(command: CalibrationCommand) -> Vec<u8> {
     command_request(code, 0, 0)
 }
 
-#[cfg(test)]
-pub fn abz_zeroing_command_request() -> Vec<u8> {
-    command_request(6, 0, 0)
-}
-
 fn command_request(code: u16, arg0: u16, arg1: u32) -> Vec<u8> {
     let mut payload = Vec::with_capacity(8);
     put_u16(&mut payload, code);
@@ -687,7 +682,7 @@ mod tests {
                 );
             }
         }
-        assert_eq!(count, 38);
+        assert_eq!(count, 36);
     }
 
     #[test]
@@ -817,27 +812,14 @@ mod tests {
         );
         assert_eq!(info.firmware_name, "viewer2000");
         assert_eq!(info.tick_hz, 20_000);
+        assert_eq!(info.capabilities, 0x0000_01FF);
+        assert!(info.has(crate::source::CAP_CAPTURE_FORCE));
         assert_eq!(info.project_name, "phase4-demo");
         assert_eq!(info.build_time_utc, 1_781_913_600);
         assert_eq!(info.mcu_model, 2);
         assert_eq!(info.scope_max_ch, 32);
         assert_eq!(info.scope_block_ticks, 7);
         assert_eq!(info.scope_ring_words, 0xF838);
-    }
-
-    #[test]
-    fn hello_vector_matches_optional_abz_zeroing_capability() {
-        let frame = load_vector_frame("hello_resp_abz_zeroing.txt");
-
-        let info = parse_hello(&frame.payload).expect("parse HELLO");
-
-        assert_eq!(info.protocol_version, u16::from(WIRE_VERSION));
-        assert_eq!(
-            info.contract_version,
-            super::super::EXPECTED_CONTRACT_VERSION
-        );
-        assert!(info.has(crate::source::CAP_ABZ_ZEROING));
-        assert_eq!(info.capabilities, 0x0000_03FF);
     }
 
     #[test]
@@ -953,14 +935,5 @@ mod tests {
         assert_eq!(ack.status, 0);
         assert_eq!(ack.echoed_type, message::SYSTEM_COMMAND);
         assert_eq!(ack.data, 3);
-    }
-
-    #[test]
-    fn abz_zeroing_command_encodes_optional_system_cmd_code() {
-        assert_eq!(abz_zeroing_command_request(), vec![6, 0, 0, 0, 0, 0, 0, 0]);
-        assert_eq!(
-            load_vector_frame("cmd_abz_zeroing.txt").payload,
-            vec![6, 0, 0, 0, 0, 0, 0, 0]
-        );
     }
 }

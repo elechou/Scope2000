@@ -469,10 +469,6 @@ impl Session {
             SourceCommand::CalibrationCommand(command) => {
                 self.handle_calibration_command(command, events)?;
             }
-            #[cfg(test)]
-            SourceCommand::AbzZeroing => {
-                self.handle_abz_zeroing_command(events)?;
-            }
         }
         Ok(true)
     }
@@ -511,33 +507,6 @@ impl Session {
                     events,
                     SourceEvent::CalibrationCommandFailed {
                         command,
-                        message: error.to_string(),
-                    },
-                );
-            }
-            Err(error) => return Err(error),
-        }
-        Ok(())
-    }
-
-    #[cfg(test)]
-    fn handle_abz_zeroing_command(&mut self, events: &mpsc::Sender<SourceEvent>) -> Result<()> {
-        let response = self.request(
-            codec::message::SYSTEM_COMMAND,
-            &codec::abz_zeroing_command_request(),
-            events,
-        )?;
-        match require_ack(&response, codec::message::SYSTEM_COMMAND) {
-            Ok(ack) => {
-                send_event(
-                    events,
-                    SourceEvent::AbzZeroingAccepted { sequence: ack.data },
-                );
-            }
-            Err(error) if error.is::<DeviceNak>() => {
-                send_event(
-                    events,
-                    SourceEvent::AbzZeroingCommandFailed {
                         message: error.to_string(),
                     },
                 );
@@ -1039,7 +1008,8 @@ fn require_ack(frame: &Frame, request_type: u8) -> Result<codec::Ack> {
 fn validate_device_info(info: &DeviceInfo) -> Result<()> {
     if info.protocol_version != u16::from(codec::WIRE_VERSION) {
         bail!(
-            "firmware/Scope2000 wire version mismatch; reflash v10 firmware or use a matching Scope2000 build (device={}, host={})",
+            "firmware/Scope2000 wire version mismatch; reflash v{} firmware or use a matching Scope2000 build (device={}, host={})",
+            codec::WIRE_VERSION,
             info.protocol_version,
             codec::WIRE_VERSION
         );
@@ -1654,12 +1624,8 @@ mod tests {
 
     #[test]
     fn request_reports_valid_wrong_wire_magic_as_version_mismatch() {
-        let response = encode_frame_with_magic(
-            codec::VERSION_MAGIC - 1,
-            codec::message::HELLO | 0x80,
-            1,
-            &[],
-        );
+        // v10 firmware frames start with 0x5A.
+        let response = encode_frame_with_magic(0x5A, codec::message::HELLO | 0x80, 1, &[]);
         let (event_tx, _event_rx) = mpsc::channel();
         let mut session = session(vec![response], device_info(0, 0, 0));
 
@@ -1669,7 +1635,8 @@ mod tests {
         let message = error.to_string();
 
         assert!(message.contains("wire version mismatch"), "{message}");
-        assert!(message.contains("device magic=0x59"), "{message}");
+        assert!(message.contains("device magic=0x5A"), "{message}");
+        assert!(message.contains("host magic=0x5B"), "{message}");
     }
 
     #[test]
@@ -1898,28 +1865,6 @@ mod tests {
     }
 
     #[test]
-    fn abz_zeroing_ack_data_is_emitted_as_sequence() {
-        let response = codec::encode_frame(
-            codec::message::SYSTEM_COMMAND | 0x80,
-            1,
-            &ack_payload(codec::message::SYSTEM_COMMAND, 88),
-        );
-        let (event_tx, event_rx) = mpsc::channel();
-        let mut session = session(vec![response], device_info(0, 0, 0));
-
-        session
-            .handle_command(SourceCommand::AbzZeroing, &event_tx)
-            .expect("ABZ zeroing accepted");
-
-        let SourceEvent::AbzZeroingAccepted { sequence } =
-            event_rx.recv().expect("ABZ zeroing accepted event")
-        else {
-            panic!("expected ABZ zeroing accepted event");
-        };
-        assert_eq!(sequence, 88);
-    }
-
-    #[test]
     fn calibration_commit_ack_data_is_final_commit_sequence() {
         let response = codec::encode_frame(
             codec::message::SYSTEM_COMMAND | 0x80,
@@ -1967,28 +1912,6 @@ mod tests {
             panic!("expected calibration failure event");
         };
         assert_eq!(command, CalibrationCommand::CommitToFlash);
-        assert!(message.contains("bad state"), "{message}");
-    }
-
-    #[test]
-    fn abz_zeroing_nak_is_reported_without_session_error() {
-        let response = codec::encode_frame(
-            codec::message::SYSTEM_COMMAND | 0x80,
-            1,
-            &nak_payload(codec::message::SYSTEM_COMMAND, 3),
-        );
-        let (event_tx, event_rx) = mpsc::channel();
-        let mut session = session(vec![response], device_info(0, 0, 0));
-
-        session
-            .handle_command(SourceCommand::AbzZeroing, &event_tx)
-            .expect("ABZ zeroing NAK is session-local");
-
-        let SourceEvent::AbzZeroingCommandFailed { message } =
-            event_rx.recv().expect("ABZ zeroing failure event")
-        else {
-            panic!("expected ABZ zeroing failure event");
-        };
         assert!(message.contains("bad state"), "{message}");
     }
 

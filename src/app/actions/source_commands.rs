@@ -2,18 +2,16 @@ use std::time::Instant;
 
 use crate::app::ScopeApp;
 use crate::app::state::{
-    ABZ_ZEROING_READ_NAMES, ABZ_ZEROING_READ_PERIOD, ABZ_ZEROING_STATUS_READ_NAMES,
-    ABZ_ZEROING_STATUS_READ_PERIOD, AbzZeroingSnapshot, CALIBRATION_READ_NAMES,
-    CALIBRATION_READ_PERIOD, CALIBRATION_STATUS_READ_NAMES, CALIBRATION_STATUS_READ_PERIOD,
-    CalibrationGate, CalibrationGateInput, CalibrationSnapshot, DcVoltageSnapshot,
-    calibration_gate,
+    CALIBRATION_READ_NAMES, CALIBRATION_READ_PERIOD, CALIBRATION_STATUS_READ_NAMES,
+    CALIBRATION_STATUS_READ_PERIOD, CalibrationGate, CalibrationGateInput, CalibrationSnapshot,
+    DcVoltageSnapshot, calibration_gate,
 };
 use crate::console::LogLevel;
 use crate::source::{
-    CAL_READ_MAX, CAP_ABZ_ZEROING, CAP_CAL, CAP_CAPTURE_FORCE, CAP_CT_ZERO_CAL, CAP_NATIVE_BLOCK,
-    CAP_PRE_TRIGGER, CAP_SCOPE_CAPTURE, CAP_SCOPE_STREAM, CAP_SYSTEM_CMD, CalibrationCommand,
-    CatalogCommand, DAQ_FLAG_TRIGGER_DISABLED, NO_CAPTURE_ACK, ParamWrite, ScopeConfig, ScopeMode,
-    SourceCommand, SystemCommand, TriggerEdge, ValueRead, VarDescriptor,
+    CAL_READ_MAX, CAP_CAL, CAP_CAPTURE_FORCE, CAP_CT_ZERO_CAL, CAP_NATIVE_BLOCK, CAP_PRE_TRIGGER,
+    CAP_SCOPE_CAPTURE, CAP_SCOPE_STREAM, CAP_SYSTEM_CMD, CalibrationCommand, CatalogCommand,
+    DAQ_FLAG_TRIGGER_DISABLED, NO_CAPTURE_ACK, ParamWrite, ScopeConfig, ScopeMode, SourceCommand,
+    SystemCommand, TriggerEdge, ValueRead, VarDescriptor,
 };
 use crate::wave::{max_record_points_for_binding, scope_channel_limit};
 
@@ -110,7 +108,6 @@ impl ScopeApp {
         self.hardware.status = None;
         self.hardware.performance.clear();
         self.hardware.clear_system_command_state();
-        self.abz_zeroing.reset_session();
         self.next_dc_voltage_read = Instant::now();
         self.send(SourceCommand::Connect(endpoint));
     }
@@ -199,46 +196,6 @@ impl ScopeApp {
         self.calibration.next_read = now + period;
     }
 
-    pub(in crate::app) fn poll_abz_zeroing_reads(&mut self) {
-        if !self.hardware.connected
-            || !self.descriptor_catalog_ready
-            || !self.has_capability(CAP_CAL)
-            || !self.has_capability(CAP_ABZ_ZEROING)
-        {
-            return;
-        }
-        let now = Instant::now();
-        if now < self.abz_zeroing.next_read {
-            return;
-        }
-
-        let names = if self.ui.show_abz_zeroing {
-            ABZ_ZEROING_READ_NAMES
-        } else {
-            ABZ_ZEROING_STATUS_READ_NAMES
-        };
-        let reads: Vec<ValueRead> = names
-            .iter()
-            .filter_map(|name| {
-                let descriptor_index = self.inspector.index_by_name(name)?;
-                let descriptor = self.inspector.descriptors.get(descriptor_index)?;
-                Some(ValueRead {
-                    descriptor_index,
-                    var: descriptor.var,
-                })
-            })
-            .collect();
-        if !reads.is_empty() {
-            self.send_catalog(CatalogCommand::ReadValues(reads));
-        }
-        let period = if self.ui.show_abz_zeroing {
-            ABZ_ZEROING_READ_PERIOD
-        } else {
-            ABZ_ZEROING_STATUS_READ_PERIOD
-        };
-        self.abz_zeroing.next_read = now + period;
-    }
-
     pub(in crate::app) fn current_sensor_calibration_snapshot(&self) -> CalibrationSnapshot {
         CalibrationSnapshot {
             state: self.catalog_value_u16("v2k_cal.state"),
@@ -257,41 +214,14 @@ impl ScopeApp {
         }
     }
 
-    pub(in crate::app) fn abz_zeroing_snapshot(&self) -> Option<AbzZeroingSnapshot> {
-        self.has_capability(CAP_ABZ_ZEROING)
-            .then(|| AbzZeroingSnapshot {
-                ready: self.catalog_value_u16("v2k_abz_zeroing.ready"),
-                state: self.catalog_value_u16("v2k_abz_zeroing.state"),
-                result: self.catalog_value_u16("v2k_abz_zeroing.result"),
-                block_reason: self.catalog_value_u16("v2k_abz_zeroing.block_reason"),
-                attempt_sequence: self.catalog_value_u32("v2k_abz_zeroing.attempt_seq"),
-                eqep2_raw_count: self.catalog_value_u16("v2k_abz.eqep2.raw_count"),
-                eqep2_index_count: self.catalog_value_u32("v2k_abz.eqep2.index_count"),
-                eqep2_index_latch: self.catalog_value_u16("v2k_abz.eqep2.index_latch"),
-                eqep2_index_event: self.catalog_value_u16("v2k_abz.eqep2.index_event"),
-                eqep2_dir_change: self.catalog_value_u16("v2k_abz.eqep2.dir_change"),
-                eqep2_status: self.catalog_value_u16("v2k_abz.eqep2.status"),
-                eqep2_error_flags: self.catalog_value_u32("v2k_abz.eqep2.error_flags"),
-                npe_z_good: self.catalog_value_u16("v2k_abz_zeroing.npe.z_good"),
-                npe_z_seen: self.catalog_value_u32("v2k_abz_zeroing.npe.z_seen"),
-                npe_z_rejects: self.catalog_value_u32("v2k_abz_zeroing.npe.z_rejects"),
-                npe_first_latch: self.catalog_value_u16("v2k_abz_zeroing.npe.first_latch"),
-                npe_last_latch: self.catalog_value_u16("v2k_abz_zeroing.npe.last_latch"),
-                npe_last_reject_latch: self
-                    .catalog_value_u16("v2k_abz_zeroing.npe.last_reject_latch"),
-                npe_dir_changes: self.catalog_value_u32("v2k_abz_zeroing.npe.dir_changes"),
-                npe_dir_resets: self.catalog_value_u32("v2k_abz_zeroing.npe.dir_resets"),
-                npe_error_resets: self.catalog_value_u32("v2k_abz_zeroing.npe.error_resets"),
-                npe_last_error_flags: self
-                    .catalog_value_u32("v2k_abz_zeroing.npe.last_error_flags"),
-            })
+    pub(in crate::app) fn current_zeroing_start_ready(&self) -> bool {
+        if !self.has_capability(CAP_CAL) || !self.has_capability(CAP_CT_ZERO_CAL) {
+            return true;
+        }
+        self.current_sensor_calibration_snapshot().start_ready()
     }
 
-    pub(in crate::app) fn zeroing_start_ready(&self) -> bool {
-        self.current_zeroing_start_ready()
-    }
-
-    pub(in crate::app) fn zeroing_start_block_reason(&self) -> Option<&'static str> {
+    pub(in crate::app) fn current_zeroing_start_block_reason(&self) -> Option<&'static str> {
         if self.current_zeroing_start_ready() {
             None
         } else {
@@ -612,13 +542,6 @@ impl ScopeApp {
         state == Some(2) && result == Some(1)
     }
 
-    fn current_zeroing_start_ready(&self) -> bool {
-        if !self.has_capability(CAP_CAL) || !self.has_capability(CAP_CT_ZERO_CAL) {
-            return true;
-        }
-        self.current_sensor_calibration_snapshot().start_ready()
-    }
-
     fn catalog_value_dc_voltage(&self, channel: u8) -> Option<f64> {
         let index = self.dc_voltage_descriptor_index(channel)?;
         self.inspector
@@ -714,9 +637,9 @@ mod tests {
     use super::*;
     use crate::app::ScopeApp;
     use crate::app::state::{
-        AbzZeroingState, AppConfig, CalibrationState, PROJECT_MANAGER_SPLIT_DEFAULT,
-        ProjectContext, UNTITLED_PROJECT, UiState, UnresolvedRefs, UpdateCheckState,
-        WorkspaceAutosaveState, WorkspaceState,
+        AppConfig, CalibrationState, PROJECT_MANAGER_SPLIT_DEFAULT, ProjectContext,
+        UNTITLED_PROJECT, UiState, UnresolvedRefs, UpdateCheckState, WorkspaceAutosaveState,
+        WorkspaceState,
     };
     use crate::source::{
         CAP_CAL, CAP_NATIVE_BLOCK, CAP_PRE_TRIGGER, CAP_SCOPE_CAPTURE, DeviceInfo,
@@ -748,7 +671,7 @@ mod tests {
 
     fn device_info() -> DeviceInfo {
         DeviceInfo {
-            protocol_version: 10,
+            protocol_version: 11,
             contract_version: 20,
             build_hash: 0x1234_5678,
             descriptor_count: 1,
@@ -798,7 +721,6 @@ mod tests {
                 info: Some(device_info()),
                 ..crate::app::state::HardwareState::default()
             },
-            abz_zeroing: AbzZeroingState::new(),
             calibration: CalibrationState::new(),
             source,
             inspector,
@@ -880,29 +802,19 @@ mod tests {
     }
 
     #[test]
-    fn start_system_allows_unready_abz_zeroing_but_keeps_current_zeroing_gate() {
+    fn start_system_requires_current_zeroing_ready() {
         let mut harness = test_harness(None);
         harness.app.hardware.info.as_mut().unwrap().capabilities |=
-            CAP_SYSTEM_CMD | CAP_CT_ZERO_CAL | CAP_ABZ_ZEROING;
+            CAP_SYSTEM_CMD | CAP_CT_ZERO_CAL;
         harness.app.inspector.set_descriptors(vec![
             descriptor("v2k_cal.state"),
             descriptor("v2k_cal.result"),
             descriptor("v2k_cal.applied_src"),
-            descriptor("v2k_abz_zeroing.ready"),
-            descriptor("v2k_abz_zeroing.state"),
-            descriptor("v2k_abz_zeroing.result"),
         ]);
-        harness.app.inspector.values = vec![
-            Some(2.0),
-            Some(1.0),
-            Some(2.0),
-            Some(0.0),
-            Some(0.0),
-            Some(0.0),
-        ];
+        harness.app.inspector.values = vec![Some(2.0), Some(1.0), Some(2.0)];
 
-        assert!(harness.app.zeroing_start_ready());
-        assert_eq!(harness.app.zeroing_start_block_reason(), None);
+        assert!(harness.app.current_zeroing_start_ready());
+        assert_eq!(harness.app.current_zeroing_start_block_reason(), None);
         harness.app.start_system();
         assert!(matches!(
             harness.commands.try_recv().unwrap(),
@@ -911,34 +823,13 @@ mod tests {
 
         harness.app.hardware.clear_system_command_state();
         harness.app.inspector.values[1] = Some(0.0);
-        assert!(!harness.app.zeroing_start_ready());
+        assert!(!harness.app.current_zeroing_start_ready());
         assert_eq!(
-            harness.app.zeroing_start_block_reason(),
+            harness.app.current_zeroing_start_block_reason(),
             Some("Start requires Current Zeroing ready")
         );
         harness.app.start_system();
         assert!(harness.commands.try_recv().is_err());
-    }
-
-    #[test]
-    fn abz_zeroing_status_poll_continues_after_ready() {
-        let mut harness = test_harness(None);
-        harness.app.hardware.info.as_mut().unwrap().capabilities |= CAP_ABZ_ZEROING;
-        harness
-            .app
-            .inspector
-            .set_descriptors(vec![descriptor("v2k_abz_zeroing.ready")]);
-        harness.app.inspector.values = vec![Some(1.0)];
-        harness.app.abz_zeroing.next_read = Instant::now() - Duration::from_secs(1);
-
-        harness.app.poll_abz_zeroing_reads();
-
-        let commands = drain_catalog_commands(&harness.commands);
-        assert_eq!(commands.len(), 1);
-        let CatalogCommand::ReadValues(reads) = &commands[0] else {
-            panic!("expected ABZ zeroing status read");
-        };
-        assert_eq!(reads.len(), 1);
     }
 
     #[test]

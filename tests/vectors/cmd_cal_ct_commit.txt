@@ -2,5 +2,5 @@
 # CMD: CAL_CT_COMMIT, CPU2-local flash persistence of the last passing measurement
 # raw  = frame before COBS (ver|type|flags|seq|len|payload|crc32c, all LE)
 # wire = COBS(raw) + 0x00 delimiter, the actual SCI-link octets
-raw: 5a30000f00080005000000000000004cb1949d
-wire: 035a30020f02080205010101010101054cb1949d00
+raw: 5b30000f00080005000000000000004d4c1afa
+wire: 035b30020f02080205010101010101054d4c1afa00

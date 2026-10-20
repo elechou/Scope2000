@@ -20,9 +20,9 @@ use crate::wave::viewer_panel::ViewportPanelState;
 use crate::wave::{PLOT_MAX_POINTS, WaveState, pane::PaneKind};
 
 use self::state::{
-    AbzZeroingState, AppConfig, CalibrationState, HardwareState, ProjectCandidate, ProjectContext,
-    UiState, UpdateCheckState, UpdateCheckStatus, ViewportState, WorkspaceAutosaveState,
-    WorkspaceState, WorkspaceStore,
+    AppConfig, CalibrationState, HardwareState, ProjectCandidate, ProjectContext, UiState,
+    UpdateCheckState, UpdateCheckStatus, ViewportState, WorkspaceAutosaveState, WorkspaceState,
+    WorkspaceStore,
 };
 
 const WATCH_READ_PERIOD: Duration = Duration::from_secs(1);
@@ -33,7 +33,6 @@ pub(in crate::app) const LOCAL_METADATA_REFRESH_PERIOD: Duration = Duration::fro
 
 pub struct ScopeApp {
     hardware: HardwareState,
-    abz_zeroing: AbzZeroingState,
     calibration: CalibrationState,
     source: SourceHandle,
     inspector: InspectorState,
@@ -96,7 +95,6 @@ impl ScopeApp {
 
         let mut app = Self {
             hardware,
-            abz_zeroing: AbzZeroingState::new(),
             calibration: CalibrationState::new(),
             source: Box::new(V2kSource::with_repaint_context(cc.egui_ctx.clone())).spawn(),
             inspector: InspectorState::default(),
@@ -197,7 +195,7 @@ impl ScopeApp {
         let can_start = can_send_system_command
             && self.project_policy().system_start
             && matches!(system_state, Some(SystemState::Idle))
-            && self.zeroing_start_ready();
+            && self.current_zeroing_start_ready();
         let can_stop =
             can_send_system_command && matches!(system_state, Some(SystemState::Running));
 
@@ -234,7 +232,7 @@ impl ScopeApp {
         if let Some(text) = self.hardware.last_system_command_text() {
             ui.colored_label(theme::TEXT_SUBDUED, text);
         }
-        if let Some(reason) = self.zeroing_start_block_reason()
+        if let Some(reason) = self.current_zeroing_start_block_reason()
             && can_send_system_command
             && matches!(system_state, Some(SystemState::Idle))
         {
@@ -513,7 +511,6 @@ impl eframe::App for ScopeApp {
         self.poll_watch_reads();
         self.poll_dc_voltage_reads();
         self.poll_current_sensor_calibration_reads();
-        self.poll_abz_zeroing_reads();
         if self.hardware.connected {
             // Hardware events wake egui immediately. This low-frequency wake
             // only services the fastest host-side polling timer while idle;
@@ -564,7 +561,6 @@ impl eframe::App for ScopeApp {
         }
         let calibration_snapshot = self.current_sensor_calibration_snapshot();
         let dc_voltage_snapshot = self.dc_voltage_snapshot();
-        let abz_zeroing_snapshot = self.abz_zeroing_snapshot();
         if let Some(action) = crate::ui::status_bar::show(
             ui,
             &mut self.hardware,
@@ -572,7 +568,6 @@ impl eframe::App for ScopeApp {
             &mut self.log,
             dc_voltage_snapshot,
             calibration_snapshot,
-            abz_zeroing_snapshot,
         ) {
             use crate::ui::status_bar::StatusBarAction;
             match action {
@@ -588,7 +583,6 @@ impl eframe::App for ScopeApp {
             calibration_snapshot,
             &mut self.ui,
         );
-        crate::ui::abz_zeroing::show(ui, &mut self.ui, abz_zeroing_snapshot);
         let calibration_gate = self.current_sensor_calibration_gate();
         if let Some(action) = crate::ui::current_sensor_calibration::show(
             ui,
